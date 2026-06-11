@@ -5,6 +5,11 @@
  * findRuntimeAncestorPid() calls execFileSync("ps", ...) internally via the
  * private readProcess() helper. We mock node:child_process to control what
  * process ancestry looks like without spawning real `ps` processes.
+ *
+ * On win32 the ancestry walk is replaced by a daemon-pid anchor read from
+ * PID_FILE; node:fs and session/store are mocked to control that path. The
+ * host platform is pinned per test so the suite behaves identically on
+ * POSIX and Windows dev machines.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,8 +21,29 @@ vi.mock("node:child_process", () => ({
   execFileSync: mockExecFileSync,
 }));
 
+// runtime.ts reads PID_FILE via node:fs and checks it with isPidAlive on win32
+const mockReadFileSync = vi.fn<[string, string], string>();
+
+vi.mock("node:fs", () => ({
+  readFileSync: mockReadFileSync,
+}));
+
+const mockIsPidAlive = vi.fn<[number], boolean>();
+
+vi.mock("../src/session/store.js", () => ({
+  isPidAlive: mockIsPidAlive,
+}));
+
 // Import after mocks are registered
 const { detectRuntime, findRuntimeAncestorPid } = await import("../src/agent/runtime.js");
+
+// ── Platform pinning ──────────────────────────────────────────────────────────
+
+const realPlatform = process.platform;
+
+function setPlatform(platform: NodeJS.Platform) {
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,15 +61,20 @@ function clearRuntimeEnv() {
   delete process.env.COPILOT_CLI;
   delete process.env.HERMES_INTERACTIVE;
   delete process.env.HERMES_SESSION_KEY;
+  delete process.env.AK_LEADER_PID;
 }
 
 beforeEach(() => {
   clearRuntimeEnv();
   vi.clearAllMocks();
+  // Existing ancestry-walk tests assume a POSIX `ps`; pin the platform so
+  // they pass identically on Windows dev machines. win32 tests override.
+  setPlatform("linux");
 });
 
 afterEach(() => {
   clearRuntimeEnv();
+  setPlatform(realPlatform);
 });
 
 // ── detectRuntime ─────────────────────────────────────────────────────────────
@@ -193,5 +224,68 @@ describe("findRuntimeAncestorPid — 32-hop hard cap", () => {
     expect(result).toBeNull();
     // Should have called ps at most 32 times (the hard cap)
     expect(mockExecFileSync).toHaveBeenCalledTimes(32);
+  });
+});
+
+// ── findRuntimeAncestorPid — AK_LEADER_PID override ──────────────────────────
+
+describe("findRuntimeAncestorPid — AK_LEADER_PID override", () => {
+  it("returns AK_LEADER_PID without walking ancestry when set to a valid pid", () => {
+    process.env.AK_LEADER_PID = "4242";
+    expect(findRuntimeAncestorPid("claude")).toBe(4242);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("wins on win32 too, without touching the pid file", () => {
+    setPlatform("win32");
+    process.env.AK_LEADER_PID = "4242";
+    expect(findRuntimeAncestorPid("claude")).toBe(4242);
+    expect(mockReadFileSync).not.toHaveBeenCalled();
+  });
+
+  it("still returns null for an unknown runtime even when set", () => {
+    process.env.AK_LEADER_PID = "4242";
+    expect(findRuntimeAncestorPid("unknown-runtime")).toBeNull();
+  });
+
+  it.each(["not-a-pid", "0", "-5"])("ignores invalid value %j and falls back to the ancestry walk", (value) => {
+    process.env.AK_LEADER_PID = value;
+    mockExecFileSync.mockReturnValueOnce(psLine(1, "/usr/local/bin/claude"));
+    expect(findRuntimeAncestorPid("claude")).toBe(process.ppid);
+  });
+});
+
+// ── findRuntimeAncestorPid — win32 daemon anchor ──────────────────────────────
+
+describe("findRuntimeAncestorPid — win32 daemon anchor", () => {
+  beforeEach(() => {
+    setPlatform("win32");
+  });
+
+  it("anchors to the daemon pid from PID_FILE when the daemon is alive", () => {
+    mockReadFileSync.mockReturnValue("1234\n");
+    mockIsPidAlive.mockReturnValue(true);
+    expect(findRuntimeAncestorPid("claude")).toBe(1234);
+    // POSIX ps must never be spawned on win32
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the pid file does not exist", () => {
+    mockReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    expect(findRuntimeAncestorPid("claude")).toBeNull();
+  });
+
+  it("returns null when the daemon pid is no longer alive", () => {
+    mockReadFileSync.mockReturnValue("1234\n");
+    mockIsPidAlive.mockReturnValue(false);
+    expect(findRuntimeAncestorPid("claude")).toBeNull();
+  });
+
+  it("returns null when the pid file contains garbage", () => {
+    mockReadFileSync.mockReturnValue("not-a-pid");
+    expect(findRuntimeAncestorPid("claude")).toBeNull();
+    expect(mockIsPidAlive).not.toHaveBeenCalled();
   });
 });

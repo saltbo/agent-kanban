@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { PID_FILE } from "../paths.js";
+import { isPidAlive } from "../session/store.js";
 
 interface RuntimeSpec {
   /** Environment variables set by the runtime when it spawns subprocesses. */
@@ -48,12 +51,32 @@ function readProcess(pid: number): { ppid: number; command: string } | null {
 export function findRuntimeAncestorPid(runtime: string): number | null {
   const pattern = RUNTIMES[runtime]?.commandPattern;
   if (!pattern) return null;
+  const override = Number.parseInt(process.env.AK_LEADER_PID ?? "", 10);
+  if (Number.isInteger(override) && override > 0) return override;
+  if (process.platform === "win32") return findDaemonAnchorPid();
   let pid = process.ppid;
   for (let i = 0; i < 32 && pid > 1; i++) {
     const info = readProcess(pid);
     if (!info) return null;
     if (pattern.test(info.command)) return pid;
     pid = info.ppid;
+  }
+  return null;
+}
+
+/**
+ * Windows fallback: POSIX `ps` does not exist and the WMI/PowerShell
+ * equivalents can hang for minutes on some machines, so the parent chain
+ * cannot be walked reliably. Anchor leader sessions to the daemon process
+ * instead — the only long-lived local pid discoverable without WMI. Callers
+ * that need a precise anchor can set AK_LEADER_PID explicitly.
+ */
+function findDaemonAnchorPid(): number | null {
+  try {
+    const pid = Number.parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
+    if (Number.isInteger(pid) && pid > 0 && isPidAlive(pid)) return pid;
+  } catch {
+    /* no daemon pid file — same as "no ancestor found" */
   }
   return null;
 }
