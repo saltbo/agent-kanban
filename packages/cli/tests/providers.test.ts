@@ -1176,11 +1176,13 @@ describe("geminiProvider.resolveGeminiCommand", () => {
 
   it("uses the Volta package bin when installed", async () => {
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.existsSync).mockImplementation((path) => String(path).endsWith("/tools/image/packages/@google/gemini-cli/bin/gemini"));
+    const { join } = await import("node:path");
+    // Build the expected path with join() so the assertion holds on hosts
+    // whose path separator is a backslash.
+    const voltaBin = join("/Users/saltbo/.volta", "tools", "image", "packages", "@google", "gemini-cli", "bin", "gemini");
+    vi.mocked(fsModule.existsSync).mockImplementation((path) => String(path) === voltaBin);
 
-    expect(resolveGeminiCommand({ VOLTA_HOME: "/Users/saltbo/.volta" })).toBe(
-      "/Users/saltbo/.volta/tools/image/packages/@google/gemini-cli/bin/gemini",
-    );
+    expect(resolveGeminiCommand({ VOLTA_HOME: "/Users/saltbo/.volta" })).toBe(voltaBin);
   });
 });
 

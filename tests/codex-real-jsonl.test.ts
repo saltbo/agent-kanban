@@ -15,8 +15,8 @@ const CODEX_DIR = join(homedir(), ".codex", "sessions");
 const hasCodexSessions = existsSync(CODEX_DIR);
 
 describe.skipIf(!hasCodexSessions)("readCodexJsonl — real JSONL data", () => {
-  // Find a real thread ID from local sessions
-  function findThreadId(): string | null {
+  // Collect real thread IDs from local sessions
+  function* findThreadIds(): Generator<string> {
     const { readdirSync } = require("node:fs");
     try {
       for (const year of readdirSync(CODEX_DIR)) {
@@ -29,13 +29,27 @@ describe.skipIf(!hasCodexSessions)("readCodexJsonl — real JSONL data", () => {
               if (!file.endsWith(".jsonl")) continue;
               // Extract thread ID: rollout-...-{uuid}.jsonl
               const match = file.match(/([0-9a-f-]{36})\.jsonl$/);
-              if (match) return match[1];
+              if (match) yield match[1];
             }
           }
         }
       }
     } catch {
       /* empty */
+    }
+  }
+
+  // The chronologically first session is not guaranteed to contain assistant
+  // messages (it may have been aborted before the first response), so scan
+  // for a thread the assertions below can meaningfully run against.
+  function findThreadId(): string | null {
+    for (const id of findThreadIds()) {
+      try {
+        const events = readCodexJsonl(id);
+        if (events.length > 0 && events.some((e: any) => e.event.type === "message")) return id;
+      } catch {
+        /* unreadable session — try the next one */
+      }
     }
     return null;
   }

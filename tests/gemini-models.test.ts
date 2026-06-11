@@ -75,7 +75,8 @@ describe("geminiProvider.listModels", () => {
 
     const models = await geminiProvider.listModels?.();
 
-    expect(fs.readFileSync).toHaveBeenCalledWith(expect.stringMatching(/\.gemini\/oauth_creds\.json$/), "utf-8");
+    // Separator-agnostic so the assertion holds on Windows hosts too
+    expect(fs.readFileSync).toHaveBeenCalledWith(expect.stringMatching(/\.gemini[\\/]oauth_creds\.json$/), "utf-8");
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch).toHaveBeenNthCalledWith(
       1,
