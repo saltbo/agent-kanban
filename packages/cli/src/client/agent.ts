@@ -26,9 +26,13 @@ export class AgentClient extends ApiClient {
   }
 
   protected async authorize(): Promise<string> {
+    // Backdate iat by 30s: the server verifies with zero clock tolerance, so a
+    // client clock even one second ahead of the server rejects every request
+    // with invalid_jwt. exp is still resolved from the current time, so the
+    // token's validity window is unchanged.
     const jwt = await new SignJWT({ sub: this.sessionId, aid: this.agentId, jti: randomUUID(), aud: this.baseUrl })
       .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
-      .setIssuedAt()
+      .setIssuedAt(Math.floor(Date.now() / 1000) - 30)
       .setExpirationTime("60s")
       .sign(this.privateKey);
     return `Bearer ${jwt}`;

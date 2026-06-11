@@ -425,6 +425,24 @@ describe("AgentClient — authorize and messaging methods", () => {
     expect(opts.headers.Authorization).toMatch(/^Bearer /);
   });
 
+  it("backdates iat by 30s for clock skew without shrinking the validity window", async () => {
+    const client = await makeAgentClient();
+    stubFetchOk([]);
+    const before = Math.floor(Date.now() / 1000);
+    await client.listAgents();
+    const after = Math.floor(Date.now() / 1000);
+    const [, opts] = (vi.mocked(fetch) as any).mock.calls[0];
+    const token = (opts.headers.Authorization as string).replace(/^Bearer /, "");
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf-8"));
+    // iat sits 30s in the past so a server whose clock trails the client's
+    // by up to 30s still sees it as not-from-the-future
+    expect(payload.iat).toBeGreaterThanOrEqual(before - 30);
+    expect(payload.iat).toBeLessThanOrEqual(after - 30);
+    // exp is still resolved from the current time, not the backdated iat
+    expect(payload.exp).toBeGreaterThanOrEqual(before + 60);
+    expect(payload.exp).toBeLessThanOrEqual(after + 60);
+  });
+
   it("sendMessage posts to the messages endpoint", async () => {
     const client = await makeAgentClient();
     stubFetchOk({});
