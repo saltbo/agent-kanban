@@ -44,6 +44,38 @@ async function getSubagentDetails(client: ApiClient, subagentIds: string[]): Pro
 
 // ---- Agent environment / GPG helpers ----
 
+let msysGpg: boolean | null = null;
+
+/**
+ * Git for Windows ships an MSYS build of gpg that resolves Windows-style
+ * GNUPGHOME values (`C:\...` and even `C:/...`) as paths relative to the
+ * current directory and aborts with "directory does not exist" / "no writable
+ * keyring". Detect that build by the path dialect gpgconf reports for its
+ * compiled-in bindir (POSIX-style for MSYS, drive-letter for native builds
+ * like Gpg4win) — `--list-dirs` output is machine-readable and not localized.
+ */
+function isMsysGpg(): boolean {
+  if (msysGpg !== null) return msysGpg;
+  const out = execBoundary("gpgconf-detect", () => execFileSync("gpgconf", ["--list-dirs", "bindir"], { encoding: "utf-8", stdio: "pipe" }));
+  msysGpg = String(out ?? "")
+    .trim()
+    .startsWith("/");
+  return msysGpg;
+}
+
+/**
+ * Convert a GNUPGHOME path to the dialect the local gpg build understands.
+ * Only rewrites drive-letter paths on win32 with an MSYS gpg:
+ * `C:\Users\x` → `/c/Users/x`. Node-side fs calls must keep using the
+ * original Windows path.
+ */
+export function gpgEnvPath(gnupgHome: string): string {
+  if (process.platform !== "win32") return gnupgHome;
+  if (!/^[A-Za-z]:[\\/]/.test(gnupgHome)) return gnupgHome;
+  if (!isMsysGpg()) return gnupgHome;
+  return gnupgHome.replace(/^([A-Za-z]):[\\/]/, (_m, drive: string) => `/${drive.toLowerCase()}/`).replace(/\\/g, "/");
+}
+
 export interface BuildEnvOpts {
   agentId: string;
   sessionId: string;
@@ -69,7 +101,7 @@ export function buildAgentEnv(opts: BuildEnvOpts): Record<string, string> {
     GIT_COMMITTER_EMAIL: email,
   };
   if (gnupgHome && gpgSubkeyId) {
-    env.GNUPGHOME = gnupgHome;
+    env.GNUPGHOME = gpgEnvPath(gnupgHome);
     env.GIT_CONFIG_COUNT = "3";
     env.GIT_CONFIG_KEY_0 = "gpg.format";
     env.GIT_CONFIG_VALUE_0 = "openpgp";
@@ -87,7 +119,7 @@ export function setupGnupgHome(armoredPrivateKey: string): string {
   fsSync("write-gpg-key", () => writeFileSync(keyFile, armoredPrivateKey, { mode: 0o600 }));
   execBoundary("gpg-import", () =>
     execFileSync("gpg", ["--batch", "--import", keyFile], {
-      env: { ...process.env, GNUPGHOME: gnupgHome },
+      env: { ...process.env, GNUPGHOME: gpgEnvPath(gnupgHome) },
       stdio: "pipe",
     }),
   );
@@ -99,7 +131,7 @@ export function cleanupGnupgHome(gnupgHome: string | null): void {
   if (!gnupgHome) return;
   execBoundary("gpg-kill-agent", () =>
     execFileSync("gpgconf", ["--kill", "gpg-agent"], {
-      env: { ...process.env, GNUPGHOME: gnupgHome },
+      env: { ...process.env, GNUPGHOME: gpgEnvPath(gnupgHome) },
       stdio: "pipe",
     }),
   );
