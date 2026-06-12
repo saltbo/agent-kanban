@@ -284,6 +284,32 @@ describe("isPidAlive", () => {
     // PID 4194304 is beyond the Linux kernel's pid_max and will always be dead.
     expect(isPidAlive(4194304)).toBe(false);
   });
+
+  it("returns true when process.kill throws EPERM (cross-session process exists)", () => {
+    // Windows S4U daemon runs in Session 0; probing it from a user session is
+    // denied with EPERM. The process is alive — we just may not signal it.
+    const eperm = Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    const spy = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw eperm;
+    });
+    try {
+      expect(isPidAlive(1234)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("returns false when process.kill throws a non-EPERM error (ESRCH = no such process)", () => {
+    const esrch = Object.assign(new Error("no such process"), { code: "ESRCH" });
+    const spy = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw esrch;
+    });
+    try {
+      expect(isPidAlive(1234)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 // ── clearAllSessions ─────────────────────────────────────────────────────────

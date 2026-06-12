@@ -15,8 +15,14 @@ function isDaemonAlive(): boolean {
     const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // EPERM means the daemon process exists but lives in a security context we
+    // may not signal. On Windows this happens when `ak start` is launched by
+    // Task Scheduler (S4U) into Session 0 (Services) and we probe it from a
+    // normal user session — the cross-session signal is denied, not absent.
+    // Treat EPERM as alive, otherwise `ak get task` aborts with the spurious
+    // "Could not locate claude process in ancestry" error.
+    return (err as NodeJS.ErrnoException)?.code === "EPERM";
   }
 }
 

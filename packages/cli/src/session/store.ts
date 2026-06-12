@@ -109,8 +109,13 @@ export function isPidAlive(pid: number | undefined): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // EPERM means the process exists but belongs to another security context
+    // we may not signal. On Windows this happens when the daemon was started
+    // by Task Scheduler (S4U) in Session 0 (Services) and we probe it from a
+    // normal user session — the cross-session signal is denied, not absent.
+    // Treat EPERM as alive so daemon/leader liveness checks don't false-negative.
+    return (err as NodeJS.ErrnoException)?.code === "EPERM";
   }
 }
 
