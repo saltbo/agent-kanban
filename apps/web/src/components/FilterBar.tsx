@@ -1,4 +1,5 @@
 import { Check, ChevronDown } from "lucide-react";
+import type { ReactNode } from "react";
 import { Button } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
@@ -9,6 +10,8 @@ interface FilterBarProps {
   activeLabel: string | null;
   onRepositoryChange: (repository: string | null) => void;
   onLabelChange: (label: string | null) => void;
+  /** Extra actions pinned to the right end of the bar (e.g. "New task"). */
+  actions?: ReactNode;
 }
 
 const VISIBLE_LABEL_LIMIT = 6;
@@ -36,13 +39,13 @@ function splitLabels(labels: FilterBarProps["labels"], activeLabel: string | nul
   };
 }
 
-export function FilterBar({ repositories, labels, activeRepository, activeLabel, onRepositoryChange, onLabelChange }: FilterBarProps) {
-  if (repositories.length === 0 && labels.length === 0) return null;
+export function FilterBar({ repositories, labels, activeRepository, activeLabel, onRepositoryChange, onLabelChange, actions }: FilterBarProps) {
+  if (repositories.length === 0 && labels.length === 0 && !actions) return null;
   const { visible, overflow } = splitLabels(labels, activeLabel);
 
   return (
     <div className="flex items-center justify-between gap-3 px-5 py-2.5 border-b border-border">
-      {repositories.length > 0 && (
+      {repositories.length > 0 ? (
         <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <Button variant={activeRepository === null ? "secondary" : "outline"} size="xs" onClick={() => onRepositoryChange(null)}>
             All repos
@@ -53,6 +56,8 @@ export function FilterBar({ repositories, labels, activeRepository, activeLabel,
             </Button>
           ))}
         </div>
+      ) : (
+        <div className="min-w-0 flex-1" />
       )}
       {labels.length > 0 && (
         <div className="ml-auto flex max-w-[50%] shrink-0 justify-end gap-2 pb-1 max-md:max-w-full">
@@ -114,6 +119,7 @@ export function FilterBar({ repositories, labels, activeRepository, activeLabel,
           )}
         </div>
       )}
+      {actions && <div className="flex shrink-0 items-center gap-2 pb-1">{actions}</div>}
     </div>
   );
 }

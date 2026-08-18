@@ -36,6 +36,7 @@ function coerceSubtaskStatus(raw: unknown): SubtaskStatus {
 const logger = createLogger("claude");
 
 const CREDENTIALS_PATH = join(homedir(), ".claude", ".credentials.json");
+const CLAUDE_SETTINGS_PATH = join(homedir(), ".claude", "settings.json");
 const USAGE_API = "https://api.anthropic.com/api/oauth/usage";
 
 const CLAUDE_WINDOW_LABELS: Record<string, string> = {
@@ -66,6 +67,44 @@ function readOAuthToken(): string | null {
     return cachedToken;
   } catch {
     return null;
+  }
+}
+
+interface ClaudeCustomEndpoint {
+  baseUrl?: string;
+  via: "environment" | "settings.json";
+}
+
+// Claude Code authenticates non-OAuth deployments (relays, gateways, enterprise
+// proxies) with ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY, set either in the
+// process environment or in the `env` block of ~/.claude/settings.json (the
+// spawned CLI applies that block itself, so it works even when the daemon's own
+// env lacks these variables). An `apiKeyHelper` setting implies the same. When
+// any of these is present, Claude Code prefers it over the OAuth login, so AK
+// must treat the runtime as authenticated even without an OAuth token.
+function readCustomEndpoint(): ClaudeCustomEndpoint | null {
+  if (process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY) {
+    return { baseUrl: process.env.ANTHROPIC_BASE_URL || undefined, via: "environment" };
+  }
+  try {
+    const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, "utf-8")) as { env?: Record<string, unknown>; apiKeyHelper?: unknown };
+    const settingsEnv = settings?.env ?? {};
+    if (settingsEnv.ANTHROPIC_AUTH_TOKEN || settingsEnv.ANTHROPIC_API_KEY || settings.apiKeyHelper) {
+      const baseUrl =
+        typeof settingsEnv.ANTHROPIC_BASE_URL === "string" && settingsEnv.ANTHROPIC_BASE_URL ? settingsEnv.ANTHROPIC_BASE_URL : undefined;
+      return { baseUrl, via: "settings.json" };
+    }
+  } catch {
+    // No settings file or invalid JSON — fall through to OAuth detection.
+  }
+  return null;
+}
+
+function endpointHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
   }
 }
 
@@ -396,7 +435,16 @@ export const claudeProvider: AgentProvider = {
   label: "Claude Code",
 
   async checkAvailability() {
-    if (!readOAuthToken()) return { status: "unauthorized" as const, detail: "Claude Code is not logged in" };
+    const custom = readCustomEndpoint();
+    if (custom) {
+      // Quota windows are an OAuth-plan concept; relays/proxies don't expose
+      // the usage API, so credential presence is all we can assert. Runtime
+      // rate limits are still handled via turn.rate_limit events mid-execution.
+      const host = custom.baseUrl ? ` (${endpointHost(custom.baseUrl)})` : "";
+      return { status: "ready" as const, detail: `authenticated via ${custom.via}${host}` };
+    }
+    if (!readOAuthToken())
+      return { status: "unauthorized" as const, detail: "Claude Code is not logged in (or set ANTHROPIC_AUTH_TOKEN for a custom endpoint)" };
     try {
       return availabilityFromUsage(await this.fetchUsage!());
     } catch (err) {
@@ -492,6 +540,9 @@ export const claudeProvider: AgentProvider = {
   },
 
   async fetchUsage(): Promise<UsageInfo | null> {
+    // Custom-endpoint credentials can't call the OAuth usage API; report no
+    // windows (the collector treats null as a quiet success).
+    if (readCustomEndpoint()) return null;
     const token = readOAuthToken();
     if (!token) return null;
 

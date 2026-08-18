@@ -22,6 +22,18 @@ import { agentColor } from "../lib/agentIdentity";
 
 type Step = "choose" | "recruit" | "form";
 
+// Upstream templates don't carry a username; derive one from the display name
+// so the recruit form is submittable out of the box. Must satisfy the server's
+// username rule: ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$.
+function slugifyUsername(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+}
+
 export function AgentNewPage() {
   const navigate = useNavigate();
   const { agents } = useAgents();
@@ -45,7 +57,7 @@ export function AgentNewPage() {
   function applyTemplate(t: AgentTemplate) {
     setSelectedTemplate(t);
     setName(t.name);
-    setUsername(t.username || "");
+    setUsername(t.username || slugifyUsername(t.name));
     setBio(t.bio || "");
     setSoul(t.soul || "");
     setRole(t.role || "");
@@ -71,7 +83,10 @@ export function AgentNewPage() {
   }
 
   async function handleCreate() {
-    if (!username.trim()) return;
+    if (!username.trim()) {
+      setError("Username is required (lowercase letters, numbers, hyphens).");
+      return;
+    }
     setError(null);
     const invalidSkill = findInvalidSkillRef(skills);
     if (invalidSkill) {

@@ -17,8 +17,10 @@ import { LabelChip } from "./LabelChip";
 import { SubtaskList } from "./SubtaskList";
 import { TaskChatDrawer } from "./TaskChatDrawer";
 import { Field, FieldLabel, formatRelative } from "./TaskDetailFields";
+import { TaskFormDialog } from "./TaskFormDialog";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Separator } from "./ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./ui/sheet";
 import { Skeleton } from "./ui/skeleton";
@@ -82,16 +84,13 @@ function LiveDuration({ startedAt, finishedMinutes }: { startedAt: string | null
   return <span className="font-mono text-[13px]">{formatElapsed(finishedMinutes! * 60_000)}</span>;
 }
 
-function annotationValue(task: any, key: string): string | null {
-  const annotations = task?.metadata?.annotations;
-  if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) return null;
-  const value = annotations[key];
-  return typeof value === "string" && value ? value : null;
-}
-
 export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentClick: _onAgentClick }: TaskDetailProps) {
   const queryClient = useQueryClient();
   const [chatOpen, setChatOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { notes: sseNotes, reconnecting } = useSSE({ taskId, enabled: true });
   const labelByName = new Map(labels.map((label) => [label.name, label]));
 
@@ -126,6 +125,20 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
     else await api.tasks.complete(taskId);
     await reload();
     onRefresh();
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.tasks.delete(taskId);
+      setDeleteOpen(false);
+      onClose();
+      onRefresh();
+    } catch (err: any) {
+      setDeleteError(err?.message ?? "Delete failed");
+      setDeleting(false);
+    }
   }
 
   const content = loading ? (
@@ -324,9 +337,17 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
                   })}
                 </div>
               </div>
-              <Button variant="ghost" size="icon-sm" onClick={onClose}>
-                ✕
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="xs" onClick={() => setEditOpen(true)}>
+                  Edit
+                </Button>
+                <Button variant="ghost" size="xs" className="text-error hover:text-error" onClick={() => setDeleteOpen(true)}>
+                  Delete
+                </Button>
+                <Button variant="ghost" size="icon-sm" onClick={onClose}>
+                  ✕
+                </Button>
+              </div>
             </div>
 
             {detailsContent}
@@ -352,6 +373,48 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
           className="z-[60] !w-[50%] max-md:!w-full"
         />
       )}
+
+      <TaskFormDialog
+        mode="edit"
+        open={editOpen}
+        boardId={task.board_id}
+        boardType={task.board_type}
+        labels={labels}
+        initialTask={{
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          repository_id: task.repository_id,
+          labels: task.labels ?? [],
+          assigned_to: task.assigned_to,
+          status: task.status,
+        }}
+        onClose={() => setEditOpen(false)}
+        onSaved={() => {
+          void reload();
+          onRefresh();
+        }}
+      />
+
+      <Dialog open={deleteOpen} onOpenChange={(nextOpen) => !nextOpen && setDeleteOpen(false)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete task</DialogTitle>
+            <DialogDescription>
+              Permanently delete &quot;{task.title}&quot;? This removes the task and its history. Cancelled work cannot be recovered.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && <p className="text-xs text-error">{deleteError}</p>}
+          <DialogFooter className="flex-col sm:flex-row">
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
+              {deleting ? "Deleting..." : "Delete task"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -7,6 +7,8 @@ import { Header } from "../components/Header";
 import { KanbanColumn } from "../components/KanbanColumn";
 import { TaskChatDrawer } from "../components/TaskChatDrawer";
 import { TaskDetail } from "../components/TaskDetail";
+import { TaskFormDialog } from "../components/TaskFormDialog";
+import { Button } from "../components/ui/button";
 import { useAgentPresence } from "../hooks/useAgentPresence";
 import { useBoard } from "../hooks/useBoard";
 
@@ -30,6 +32,7 @@ export function BoardPage() {
   const [activeRepository, setActiveRepository] = useState<string | null>(null);
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState(0);
+  const [taskFormOpen, setTaskFormOpen] = useState(false);
 
   const repositories = useMemo(() => {
     if (!board?.tasks) return [];
@@ -100,6 +103,11 @@ export function BoardPage() {
         activeLabel={activeLabel}
         onRepositoryChange={setActiveRepository}
         onLabelChange={setActiveLabel}
+        actions={
+          <Button size="xs" onClick={() => setTaskFormOpen(true)}>
+            + New task
+          </Button>
+        }
       />
 
       {error && (
@@ -143,6 +151,16 @@ export function BoardPage() {
       </div>
 
       <AgentAvatarOverlay avatars={avatars} />
+
+      <TaskFormDialog
+        mode="create"
+        open={taskFormOpen}
+        boardId={board.id}
+        boardType={board.type}
+        labels={board.labels ?? []}
+        onClose={() => setTaskFormOpen(false)}
+        onSaved={refresh}
+      />
 
       {selectedTask && (
         <TaskDetail

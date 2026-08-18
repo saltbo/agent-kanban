@@ -939,7 +939,7 @@ api.get("/api/share/:slug/badge.svg", async (c) => {
   });
 });
 
-api.get("/api/sitemap.xml", async (c) => {
+api.get("/api/sitemap.xml", async () => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://agent-kanban.dev/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
@@ -995,7 +995,7 @@ api.get("/.well-known/openpgpkey/hu/:hash", async (c) => {
 });
 
 // WKD policy file — required by the protocol
-api.get("/.well-known/openpgpkey/policy", (c) => {
+api.get("/.well-known/openpgpkey/policy", () => {
   return new Response("", { headers: { "Content-Type": "text/plain" } });
 });
 
@@ -1765,6 +1765,10 @@ api.patch("/api/tasks/:id", async (c) => {
     const existing = await c.env.DB.prepare("SELECT created_by FROM tasks WHERE id = ?").bind(c.req.param("id")).first<{ created_by: string }>();
     if (!existing) throw new HTTPException(404, { message: "Task not found" });
     if (existing.created_by !== c.get("agentId")) throw new HTTPException(403, { message: "Workers can only update tasks they created" });
+  } else {
+    // All other identities: the task must belong to the caller's tenant.
+    const owned = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+    if (!owned) throw new HTTPException(404, { message: "Task not found" });
   }
 
   const task = await updateTask(c.env.DB, c.req.param("id"), body);
@@ -1778,6 +1782,10 @@ api.delete("/api/tasks/:id", async (c) => {
     const existing = await c.env.DB.prepare("SELECT created_by FROM tasks WHERE id = ?").bind(c.req.param("id")).first<{ created_by: string }>();
     if (!existing) throw new HTTPException(404, { message: "Task not found" });
     if (existing.created_by !== c.get("agentId")) throw new HTTPException(403, { message: "Workers can only delete tasks they created" });
+  } else {
+    // All other identities: the task must belong to the caller's tenant.
+    const owned = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+    if (!owned) throw new HTTPException(404, { message: "Task not found" });
   }
 
   const deleted = await deleteTask(c.env.DB, c.req.param("id"));

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock child_process so readOAuthToken never shells out
 vi.mock("node:child_process", () => ({
@@ -47,6 +47,33 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { claudeProvider, mapSDKMessage } from "../packages/cli/src/providers/claude.js";
+
+// ---------------------------------------------------------------------------
+// Host-environment isolation
+// ---------------------------------------------------------------------------
+// The provider treats ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY (from the
+// process env or ~/.claude/settings.json) as an authenticated custom endpoint
+// and short-circuits the OAuth path. Dev machines may export these (relay
+// setups), which would break the OAuth-path tests below. Stub them to empty
+// strings (falsy disables detection) for every test; the custom-endpoint
+// describe block re-stubs them with real values as needed.
+beforeEach(() => {
+  vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "");
+  vi.stubEnv("ANTHROPIC_API_KEY", "");
+  vi.stubEnv("ANTHROPIC_BASE_URL", "");
+});
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  // Drain unconsumed once-mocks and re-establish the default readFileSync
+  // behavior (throw) so no test can poison the next one's settings.json or
+  // credentials reads.
+  const fsModule = await import("node:fs");
+  vi.mocked(fsModule.readFileSync).mockReset();
+  vi.mocked(fsModule.readFileSync).mockImplementation(() => {
+    throw new Error("ENOENT");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // mapSDKMessage — rate_limit_event
@@ -313,7 +340,7 @@ describe("mapSDKMessage — assistant with error field", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.type).toBe("turn.rate_limit");
     if (result[0]?.type === "turn.rate_limit") {
-      const resetMs = new Date(result[0].resetAt).getTime();
+      const resetMs = new Date(result[0].resetAt!).getTime();
       expect(resetMs).toBeGreaterThanOrEqual(before + 60 * 60 * 1000 - 100);
       expect(resetMs).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 100);
     }
@@ -1198,7 +1225,7 @@ describe("mapSDKMessageStream — rateLimitSeen deduplication", () => {
 
     expect(event.type).toBe("turn.rate_limit");
     if (event.type === "turn.rate_limit") {
-      const resetMs = new Date(event.resetAt).getTime();
+      const resetMs = new Date(event.resetAt!).getTime();
       expect(resetMs).toBeGreaterThanOrEqual(before + 60 * 60 * 1000 - 100);
       expect(resetMs).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 100);
     }
@@ -1415,6 +1442,20 @@ describe("claudeProvider.listModels", () => {
 // fetchUsage — platform() is mocked to "linux" so readFileSync path is taken.
 // ---------------------------------------------------------------------------
 
+// Path-aware credentials mock. fetchUsage()/checkAvailability() first call
+// readCustomEndpoint(), which performs a settings.json read BEFORE the OAuth
+// credentials read — so a single mockReturnValueOnce would be consumed by the
+// wrong file. This mock misses (throws) for settings.json (no custom endpoint)
+// and yields `token` for the credentials file, regardless of read order/count.
+function mockOAuthToken(fsModule: typeof import("node:fs"), token: string) {
+  vi.mocked(fsModule.readFileSync).mockImplementation(((p: unknown) => {
+    if (String(p).endsWith(".credentials.json")) {
+      return JSON.stringify({ claudeAiOauth: { accessToken: token } });
+    }
+    throw new Error("ENOENT");
+  }) as any);
+}
+
 describe("claudeProvider.fetchUsage — no token", () => {
   it("returns null when readOAuthToken returns null (execSync and readFileSync both throw)", async () => {
     const result = await claudeProvider.fetchUsage?.();
@@ -1426,7 +1467,7 @@ describe("claudeProvider.fetchUsage — non-OK fetch response", () => {
   it("throws UsageFetchError when usage API returns a non-OK status", async () => {
     const { UsageFetchError } = await import("../packages/cli/src/providers/types.js");
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "test-token-bad-status" } }) as any);
+    mockOAuthToken(fsModule, "test-token-bad-status");
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: false,
       status: 429,
@@ -1440,7 +1481,7 @@ describe("claudeProvider.fetchUsage — non-OK fetch response", () => {
   it("throws UsageFetchError with status=429 when API returns 429", async () => {
     const { UsageFetchError } = await import("../packages/cli/src/providers/types.js");
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "test-token-429" } }) as any);
+    mockOAuthToken(fsModule, "test-token-429");
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: false,
       status: 429,
@@ -1461,7 +1502,7 @@ describe("claudeProvider.fetchUsage — non-OK fetch response", () => {
   it("throws UsageFetchError with parsed retryAfterMs when Retry-After header is present", async () => {
     const { UsageFetchError } = await import("../packages/cli/src/providers/types.js");
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "test-token-retry" } }) as any);
+    mockOAuthToken(fsModule, "test-token-retry");
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: false,
       status: 429,
@@ -1484,7 +1525,7 @@ describe("claudeProvider.fetchUsage — fetch throws", () => {
   it("throws UsageFetchError when fetch itself rejects (network error)", async () => {
     const { UsageFetchError } = await import("../packages/cli/src/providers/types.js");
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "test-token-throw" } }) as any);
+    mockOAuthToken(fsModule, "test-token-throw");
     const fetchSpy = vi.spyOn(global, "fetch").mockRejectedValueOnce(new Error("network error"));
 
     await expect(claudeProvider.fetchUsage?.()).rejects.toBeInstanceOf(UsageFetchError);
@@ -1495,7 +1536,7 @@ describe("claudeProvider.fetchUsage — fetch throws", () => {
 describe("claudeProvider.fetchUsage — successful fetch", () => {
   it("returns usage data with windows array when API succeeds", async () => {
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "test-token-xyz" } }) as any);
+    mockOAuthToken(fsModule, "test-token-xyz");
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: true,
       headers: { get: () => null },
@@ -1516,7 +1557,7 @@ describe("claudeProvider.fetchUsage — successful fetch", () => {
 
   it("normalizes legacy ratio utilization values from the API", async () => {
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "test-token-xyz" } }) as any);
+    mockOAuthToken(fsModule, "test-token-xyz");
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: true,
       headers: { get: () => null },
@@ -1533,9 +1574,7 @@ describe("claudeProvider.fetchUsage — successful fetch", () => {
 
   it("makes a fresh HTTP request every call (no module-level cache)", async () => {
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync)
-      .mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "tok-a" } }) as any)
-      .mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "tok-b" } }) as any);
+    mockOAuthToken(fsModule, "tok-a");
     const successResponse = () => ({
       ok: true,
       headers: { get: () => null },
@@ -1553,7 +1592,7 @@ describe("claudeProvider.fetchUsage — successful fetch", () => {
 
   it("returns only windows for keys present in CLAUDE_WINDOW_LABELS", async () => {
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "tok-label" } }) as any);
+    mockOAuthToken(fsModule, "tok-label");
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: true,
       headers: { get: () => null },
@@ -1598,18 +1637,10 @@ describe("claudeProvider.fetchUsage — 401 invalidates cachedToken", () => {
   it("re-reads credentials from disk on the next call after a 401 (cache invalidated)", async () => {
     const fsModule = await import("node:fs");
 
-    // Reset the readFileSync mock queue: prior tests may have accumulated
-    // unconsumed once-mocks that would poison the cachedToken read below.
-    // Re-establish the default: always throw so readOAuthToken returns null.
-    vi.mocked(fsModule.readFileSync).mockReset();
-    vi.mocked(fsModule.readFileSync).mockImplementation(() => {
-      throw new Error("ENOENT");
-    });
-
     // First call — supply a known token so the fetch reaches the server,
     // then the server returns 401 which clears cachedToken.
     const firstToken = "token-before-401";
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: firstToken } }) as any);
+    mockOAuthToken(fsModule, firstToken);
     const fetchSpy401 = vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: false,
       status: 401,
@@ -1622,13 +1653,13 @@ describe("claudeProvider.fetchUsage — 401 invalidates cachedToken", () => {
     }
     fetchSpy401.mockRestore();
 
-    // Second call — cachedToken must be null now, so readFileSync is called again.
-    // We supply a distinct token so we can verify the Authorization header.
+    // Second call — cachedToken must be null now, so the credentials file is
+    // read again. Supply a distinct token and verify the Authorization header.
     const freshToken = "token-fresh-after-401";
-    vi.mocked(fsModule.readFileSync).mockReturnValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: freshToken } }) as any);
+    mockOAuthToken(fsModule, freshToken);
 
     let capturedAuthHeader: string | undefined;
-    const fetchSpy2 = vi.spyOn(global, "fetch").mockImplementationOnce(async (url, init) => {
+    const fetchSpy2 = vi.spyOn(global, "fetch").mockImplementationOnce(async (_url, init) => {
       capturedAuthHeader = (init?.headers as Record<string, string>)?.Authorization;
       return {
         ok: true,
@@ -1640,10 +1671,149 @@ describe("claudeProvider.fetchUsage — 401 invalidates cachedToken", () => {
     await claudeProvider.fetchUsage?.();
     expect(capturedAuthHeader).toBe(`Bearer ${freshToken}`);
     fetchSpy2.mockRestore();
+  });
+});
 
-    // Restore the default mock behavior for any tests that follow.
-    vi.mocked(fsModule.readFileSync).mockImplementation(() => {
+// ---------------------------------------------------------------------------
+// Custom endpoint ("local/relay API") mode
+// ---------------------------------------------------------------------------
+// ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY — from the process environment or
+// the env block of ~/.claude/settings.json (or an apiKeyHelper setting) —
+// means Claude Code authenticates against a relay/gateway instead of the
+// OAuth plan. The provider must report ready without an OAuth token and must
+// never call the OAuth usage API.
+
+describe("claudeProvider — custom endpoint (local/relay API)", () => {
+  beforeEach(async () => {
+    // Drop any OAuth token the provider module cached during earlier tests:
+    // a 401 response makes fetchUsage() forget its in-memory token. When no
+    // token is cached the fetch is simply never made. (Env vars are still
+    // stubbed to "" by the outer beforeEach at this point and readFileSync
+    // throws, so this call walks the plain OAuth path.)
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+    } as any);
+    await claudeProvider.fetchUsage?.().catch(() => {});
+    fetchSpy.mockRestore();
+  });
+
+  it("env-based: reports ready via environment; fetchUsage returns null without calling fetch", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "sk-custom-env");
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    const availability = await claudeProvider.checkAvailability!();
+    expect(availability.status).toBe("ready");
+    expect(availability.detail).toContain("authenticated via environment");
+
+    const usage = await claudeProvider.fetchUsage?.();
+    expect(usage).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("env-based with ANTHROPIC_BASE_URL: the detail names the relay host", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "sk-custom-env");
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.kimi.com/anthropic");
+
+    const availability = await claudeProvider.checkAvailability!();
+    expect(availability.status).toBe("ready");
+    expect(availability.detail).toContain("authenticated via environment");
+    expect(availability.detail).toContain("api.kimi.com");
+  });
+
+  it("settings.json-based: env-block credentials authenticate via settings.json", async () => {
+    const fsModule = await import("node:fs");
+    vi.mocked(fsModule.readFileSync).mockImplementation(((p: unknown) => {
+      if (String(p).endsWith("settings.json")) {
+        return JSON.stringify({
+          env: { ANTHROPIC_AUTH_TOKEN: "sk-x", ANTHROPIC_BASE_URL: "https://relay.example.com" },
+        });
+      }
+      throw new Error("ENOENT"); // no credentials file
+    }) as any);
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    const availability = await claudeProvider.checkAvailability!();
+    expect(availability.status).toBe("ready");
+    expect(availability.detail).toContain("authenticated via settings.json");
+    expect(availability.detail).toContain("relay.example.com");
+
+    expect(await claudeProvider.fetchUsage?.()).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("settings.json-based: apiKeyHelper alone counts as authenticated", async () => {
+    const fsModule = await import("node:fs");
+    vi.mocked(fsModule.readFileSync).mockImplementation(((p: unknown) => {
+      if (String(p).endsWith("settings.json")) {
+        return JSON.stringify({ apiKeyHelper: "/bin/echo sk" });
+      }
       throw new Error("ENOENT");
-    });
+    }) as any);
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    const availability = await claudeProvider.checkAvailability!();
+    expect(availability.status).toBe("ready");
+    expect(availability.detail).toContain("authenticated via settings.json");
+
+    expect(await claudeProvider.fetchUsage?.()).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("precedence: a custom endpoint wins over a present OAuth token and skips the usage API", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "sk-custom-env");
+    const fsModule = await import("node:fs");
+    // OAuth credentials exist on disk — they must be ignored entirely.
+    vi.mocked(fsModule.readFileSync).mockImplementation(((p: unknown) => {
+      if (String(p).endsWith(".credentials.json")) {
+        return JSON.stringify({ claudeAiOauth: { accessToken: "oauth-token-present" } });
+      }
+      throw new Error("ENOENT");
+    }) as any);
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    const availability = await claudeProvider.checkAvailability!();
+    expect(availability.status).toBe("ready");
+    expect(availability.detail).toContain("authenticated via environment");
+
+    expect(await claudeProvider.fetchUsage?.()).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("neither custom endpoint nor OAuth login: unauthorized with the custom-endpoint hint", async () => {
+    // Env vars are stubbed to "" by the outer beforeEach, the fs mock throws
+    // for every path, and the cached OAuth token was cleared above.
+    const availability = await claudeProvider.checkAvailability!();
+    expect(availability.status).toBe("unauthorized");
+    expect(availability.detail).toBe("Claude Code is not logged in (or set ANTHROPIC_AUTH_TOKEN for a custom endpoint)");
+  });
+
+  it("invalid settings.json JSON falls through to OAuth behavior", async () => {
+    const fsModule = await import("node:fs");
+    vi.mocked(fsModule.readFileSync).mockImplementation(((p: unknown) => {
+      const s = String(p);
+      if (s.endsWith("settings.json")) return "{ definitely not json";
+      if (s.endsWith(".credentials.json")) {
+        return JSON.stringify({ claudeAiOauth: { accessToken: "oauth-after-bad-settings" } });
+      }
+      throw new Error("ENOENT");
+    }) as any);
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({ five_hour: { utilization: 10, resets_at: "2026-04-12T00:00:00Z" } }),
+    } as any);
+
+    const usage = await claudeProvider.fetchUsage?.();
+    expect(usage).not.toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = fetchSpy.mock.calls[0]?.[1] as { headers?: Record<string, string> } | undefined;
+    expect(init?.headers?.Authorization).toBe("Bearer oauth-after-bad-settings");
+    fetchSpy.mockRestore();
   });
 });
