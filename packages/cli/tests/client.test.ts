@@ -1254,28 +1254,60 @@ describe("ApiClient method stubs", () => {
     await expect(c.getTask("x")).rejects.toThrow(/retry after 60s/i);
   });
 
-  it("retries once on ECONNRESET and returns on second success", async () => {
+  it.each(
+    (["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"] as const).flatMap((code) => (["code", "cause.code"] as const).map((shape) => ({ code, shape }))),
+  )("retries $code from $shape exactly once and returns the second success", async ({ code, shape }) => {
     const c = await makeAgentClient();
-    const connReset = Object.assign(new Error("ECONNRESET"), { cause: { code: "ECONNRESET" } });
-    let calls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockImplementation(async () => {
-        calls++;
-        if (calls === 1) throw connReset;
-        return { ok: true, status: 200, json: async () => ({}), headers: { get: () => null } };
-      }),
-    );
+    const retryable = shape === "code" ? Object.assign(new Error(code), { code }) : Object.assign(new Error(code), { cause: { code } });
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(retryable)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}), headers: { get: () => null } });
+    vi.stubGlobal("fetch", fetchMock);
+
     await c.getTask("retry-task");
-    expect(calls).toBe(2);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does not retry on non-ECONNRESET errors", async () => {
+  it.each(
+    (["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"] as const).flatMap((code) => (["code", "cause.code"] as const).map((shape) => ({ code, shape }))),
+  )("passes through the second failure after retrying $code from $shape once", async ({ code, shape }) => {
     const c = await makeAgentClient();
-    const err = new Error("ETIMEDOUT");
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(err));
-    await expect(c.getTask("x")).rejects.toThrow("ETIMEDOUT");
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    const retryable = shape === "code" ? Object.assign(new Error(code), { code }) : Object.assign(new Error(code), { cause: { code } });
+    const secondFailure = new Error(`second failure after ${code}`);
+    const fetchMock = vi.fn().mockRejectedValueOnce(retryable).mockRejectedValueOnce(secondFailure);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(c.getTask("retry-task")).rejects.toBe(secondFailure);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["code", "cause.code"] as const)("does not replay createTask POST for UND_ERR_SOCKET from %s", async (shape) => {
+    const c = await makeAgentClient();
+    const staleSocket =
+      shape === "code"
+        ? Object.assign(new Error("stale socket"), { code: "UND_ERR_SOCKET" })
+        : Object.assign(new Error("stale socket"), { cause: { code: "UND_ERR_SOCKET" } });
+    const fetchMock = vi.fn().mockRejectedValue(staleSocket);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(c.createTask({ title: "must not duplicate" })).rejects.toBe(staleSocket);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ method: "POST" }));
+  });
+
+  it.each([
+    ["ordinary error", new Error("ordinary failure")],
+    ["direct timeout code", Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })],
+    ["nested Undici timeout code", Object.assign(new Error("fetch timed out"), { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } })],
+  ])("does not retry a non-retryable %s", async (_label, error) => {
+    const c = await makeAgentClient();
+    const fetchMock = vi.fn().mockRejectedValue(error);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(c.getTask("x")).rejects.toBe(error);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("updateBoardMaintainer sends PATCH /api/boards/:boardId/maintainers/:maintainerId", async () => {

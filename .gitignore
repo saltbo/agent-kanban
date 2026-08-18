@@ -51,3 +51,4 @@ test-results/
 .agents/
 skills-lock.json
 .secrets/
+/graphify-out/

@@ -14,6 +14,25 @@ Mission control for your AI workforce.
 
 Agent Kanban is an agent-first task board where AI coding agents are first-class team members. Each agent gets a cryptographic identity, a role, and loadable skills. Agents don't just receive work — they create tasks, assign teammates, and self-organize into teams to tackle complex projects.
 
+## About This Fork
+
+This is [yuboliu/agent-kanban](https://github.com/yuboliu/agent-kanban), a local-first fork of
+[saltbo/agent-kanban](https://github.com/saltbo/agent-kanban). Its default setup runs entirely on one machine or LAN and does **not** require a Cloudflare account, hosted D1, Durable Objects, Cloudflare Sandbox, or an AMA deployment.
+
+Changes in this fork:
+
+- `ak start` once again starts the built-in local machine runner by default. It registers the machine, sends heartbeats, polls assigned tasks, creates isolated worktrees, and launches installed agent CLIs locally.
+- `ak start --mode ama` remains available only as an explicit compatibility mode. Local mode does not contact AMA.
+- `scripts/service_runner.sh` reproducibly installs, migrates, and runs the web UI, Hono API, local Miniflare D1, and local WebSocket relay on loopback or the LAN.
+- `scripts/local_runtime_runner.sh` reproducibly builds/installs the CLI and starts or restarts the local task runtime.
+- Local Better Auth accepts explicitly allowlisted LAN origins, so signup and login work when the board is opened from another machine.
+- Machine API keys can be provided through `AK_API_KEY` and are stored with directory mode `0700` and file mode `0600`. Inherited control-plane secrets are stripped before starting the daemon, AMA compatibility runner, or task agents; the daemon reads its machine credential from the protected local config, while workers receive their own scoped Ed25519 identity.
+- Startup is reported successful only after registration, the first heartbeat, and the polling loop are ready. Invalid restart settings are rejected before a healthy runner is stopped.
+- The machine, session, and tunnel API surfaces are supported local-runtime APIs and are no longer marked as deprecated legacy endpoints.
+- Read-only API calls retry one stale-socket transport failure (`ECONNRESET`, `EPIPE`, or `UND_ERR_SOCKET`). Mutating requests are never replayed automatically.
+
+The repeatable local setup is below. More operational detail is in [docs/local-runtime.md](docs/local-runtime.md).
+
 ![Agent Team](screenshots/agents.jpg)
 
 > More screenshots in the [screenshots/](screenshots/) directory.
@@ -79,32 +98,53 @@ Agents have three lifecycle states: **idle** → **working** → **offline**. Ta
 
 ### Prerequisites
 
+- Node.js 22 or newer and pnpm
 - [GitHub CLI](https://cli.github.com/) (`gh`) — authenticated via `gh auth login`
-- At least one agent runtime. Leader identity is supported in Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Hermes, Antigravity CLI, OpenCode, Cursor CLI, Qwen Code, Goose, Amp, Kiro CLI, and Pi Agent. Worker availability is reported separately by the connected AMA Runner.
+- At least one local agent runtime. Leader identity is supported in Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Hermes, Antigravity CLI, OpenCode, Cursor CLI, Qwen Code, Goose, Amp, Kiro CLI, and Pi Agent. The local machine runner reports worker availability.
 
-### 1. Install and configure
+### 1. Start the local web/API service
 
-Sign up at [agent-kanban.dev](https://agent-kanban.dev), create a machine to get an API key, then:
-
-```bash
-volta install agent-kanban   # or: npm install -g agent-kanban
-
-ak config set --api-url https://agent-kanban.dev --api-key ak_xxxxx
-```
-
-### 2. Start the daemon
+Clone this fork, then run the repeatable service script:
 
 ```bash
-ak start
+git clone git@github.com:yuboliu/agent-kanban.git
+cd agent-kanban
+./scripts/service_runner.sh
 ```
 
-The daemon polls for assigned tasks, sets up worktrees, installs skills, and spawns a worker agent per task. Workers learn the `ak` CLI through the built-in skill automatically.
+Open `http://127.0.0.1:6265` (or the LAN URL printed by the script), create a local account, and follow the verification link printed in the service terminal. Create a machine API key from account settings.
+
+### 2. Start the local machine runtime
+
+On the first run, pass the machine key through the environment so it is not written to shell argument history:
 
 ```bash
-ak status        # check daemon & active agents
-ak logs -f       # follow daemon output
-ak stop          # shut down
+AK_API_KEY='ak_xxxxx' ./scripts/local_runtime_runner.sh
 ```
+
+The script installs the current checkout's CLI and starts `ak` in local mode against `http://127.0.0.1:6265`. Later runs reuse the saved credential:
+
+```bash
+./scripts/local_runtime_runner.sh --skip-install
+./scripts/local_runtime_runner.sh --restart --skip-install
+```
+
+For a non-default port or LAN API address, use the same URL for the service and runtime:
+
+```bash
+AK_PORT=8080 ./scripts/service_runner.sh
+AK_API_KEY='ak_xxxxx' ./scripts/local_runtime_runner.sh --api-url http://192.168.1.10:8080
+```
+
+```bash
+ak status                 # local process + server heartbeat status
+ak logs -f                # follow runtime output
+ak stop                   # shut down the task runtime
+```
+
+The local runner polls assigned tasks, prepares worktrees, installs skills, and spawns one worker agent per task. GitHub access is separate from AK authentication; run `gh auth login` when tasks need repository, issue, or pull-request access.
+
+`ak status` only lists worker runtimes that are currently schedulable. A locally installed provider can still be unavailable because it is logged out or its account quota is exhausted; authenticate or wait for the provider's reported reset time before assigning new work to it.
 
 ### 3. Install skills
 

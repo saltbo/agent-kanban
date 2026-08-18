@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CONFIG_FILE } from "./paths.js";
 
@@ -32,6 +32,7 @@ function migrate(raw: Record<string, any>): Config {
 }
 
 export function readConfig(): Config {
+  protectConfigPermissions();
   try {
     const raw = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
     // Detect legacy format: has top-level api-url instead of credentials
@@ -45,8 +46,16 @@ export function readConfig(): Config {
 }
 
 export function writeConfig(config: Config): void {
-  mkdirSync(dirname(CONFIG_FILE), { recursive: true });
-  writeFileSync(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`);
+  protectConfigPermissions();
+  writeFileSync(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(CONFIG_FILE, 0o600);
+}
+
+function protectConfigPermissions(): void {
+  const configDir = dirname(CONFIG_FILE);
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
+  if (existsSync(CONFIG_FILE)) chmodSync(CONFIG_FILE, 0o600);
 }
 
 export function getCredentials(host?: string): { apiUrl: string; apiKey: string } {

@@ -4269,9 +4269,9 @@ describe("routes", () => {
     expect(res.headers.get("Content-Type")).toBe("text/event-stream");
   });
 
-  // ─── Legacy Runtime Tunnel ───
+  // ─── Local Runtime Tunnel ───
 
-  it("GET /api/tunnel/ws keeps the legacy relay available", async () => {
+  it("GET /api/tunnel/ws identifies the local daemon relay without deprecation headers", async () => {
     const previous = env.TUNNEL_RELAY;
     const relayFetch = vi.fn(async () => new Response("ok"));
     Object.assign(env, {
@@ -4285,8 +4285,9 @@ describe("routes", () => {
       const res = await apiRequest("GET", "/api/tunnel/ws?role=browser&sessionId=test-session", undefined, apiKey);
 
       expect(res.status).toBe(200);
-      expect(res.headers.get("Deprecation")).toBe("true");
-      expect(res.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+      expect(res.headers.get("Deprecation")).toBeNull();
+      expect(res.headers.get("Sunset")).toBeNull();
+      expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
       expect(await res.text()).toBe("ok");
       expect(relayFetch).toHaveBeenCalledOnce();
     } finally {
@@ -4294,7 +4295,7 @@ describe("routes", () => {
     }
   });
 
-  it("legacy daemon APIs remain available once AMA dispatch is configured", async () => {
+  it("local daemon APIs remain available once AMA dispatch is configured", async () => {
     const previous = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
@@ -4328,10 +4329,14 @@ describe("routes", () => {
       const sessionsRes = await apiRequest("GET", `/api/agents/${agentId}/sessions`, undefined, apiKey);
 
       expect(machinesRes.status).toBe(200);
-      expect(machinesRes.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+      expect(machinesRes.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
+      expect(machinesRes.headers.get("Deprecation")).toBeNull();
+      expect(machinesRes.headers.get("Sunset")).toBeNull();
       expect(Array.isArray(await machinesRes.json())).toBe(true);
       expect(sessionsRes.status).toBe(200);
-      expect(sessionsRes.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+      expect(sessionsRes.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
+      expect(sessionsRes.headers.get("Deprecation")).toBeNull();
+      expect(sessionsRes.headers.get("Sunset")).toBeNull();
       expect(Array.isArray(await sessionsRes.json())).toBe(true);
     } finally {
       Object.assign(env, previous);
@@ -4344,8 +4349,9 @@ describe("routes", () => {
   it("GET /api/machines lists machines", async () => {
     const res = await apiRequest("GET", "/api/machines", undefined, apiKey);
     expect(res.status).toBe(200);
-    expect(res.headers.get("Deprecation")).toBe("true");
-    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(res.headers.get("Sunset")).toBeNull();
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
     const body = (await res.json()) as any;
     expect(Array.isArray(body)).toBe(true);
     expect(body[0]).not.toHaveProperty("ama_environment_id");
@@ -4533,6 +4539,9 @@ describe("routes", () => {
   it("POST /api/machines/:id/heartbeat updates machine", async () => {
     const res = await apiRequest("POST", `/api/machines/${machineId}/heartbeat`, { version: "2.0.0" }, apiKey);
     expect(res.status).toBe(200);
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(res.headers.get("Sunset")).toBeNull();
     await expect(res.json()).resolves.not.toHaveProperty("ama_environment_id");
   });
 
@@ -4601,6 +4610,9 @@ describe("routes", () => {
   it("POST /api/machines requires name, os, version, runtimes", async () => {
     const res = await apiRequest("POST", "/api/machines", { name: "incomplete" }, apiKey);
     expect(res.status).toBe(400);
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(res.headers.get("Sunset")).toBeNull();
   });
 
   it("POST /api/machines rejects invalid runtime status with 400", async () => {
@@ -4646,8 +4658,9 @@ describe("routes", () => {
   it("GET /api/agents/:agentId/sessions lists sessions", async () => {
     const res = await apiRequest("GET", `/api/agents/${agentId}/sessions`, undefined, apiKey);
     expect(res.status).toBe(200);
-    expect(res.headers.get("Deprecation")).toBe("true");
-    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(res.headers.get("Sunset")).toBeNull();
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
     const body = (await res.json()) as any;
     expect(Array.isArray(body)).toBe(true);
   });
@@ -4681,16 +4694,25 @@ describe("routes", () => {
   it("POST /api/agents/:agentId/sessions requires fields", async () => {
     const res = await apiRequest("POST", `/api/agents/${agentId}/sessions`, {}, apiKey);
     expect(res.status).toBe(400);
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(res.headers.get("Sunset")).toBeNull();
   });
 
   it("DELETE /api/agents/:agentId/sessions/:sessionId closes session", async () => {
     const res = await apiRequest("DELETE", `/api/agents/${agentId}/sessions/${sessionId}`, undefined, apiKey);
     expect(res.status).toBe(200);
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(res.headers.get("Sunset")).toBeNull();
   });
 
   it("POST /api/agents/:agentId/sessions/:sessionId/reopen reopens session", async () => {
     const res = await apiRequest("POST", `/api/agents/${agentId}/sessions/${sessionId}/reopen`, {}, apiKey);
     expect(res.status).toBe(200);
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("local-daemon");
+    expect(res.headers.get("Deprecation")).toBeNull();
+    expect(res.headers.get("Sunset")).toBeNull();
   });
 
   it("POST /api/agents/:agentId/sessions/:sessionId/reopen returns 404 for nonexistent session", async () => {

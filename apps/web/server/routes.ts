@@ -196,10 +196,8 @@ import type { Env } from "./types";
 const api = new Hono<{ Bindings: Env }>();
 const logger = createLogger("api");
 
-function markLegacyRuntimeSurface(c: { header: (name: string, value: string) => void }) {
-  c.header("Deprecation", "true");
-  c.header("Sunset", "2026-09-01T00:00:00Z");
-  c.header("X-AK-Runtime-Surface", "legacy-daemon");
+function markLocalRuntimeSurface(c: { header: (name: string, value: string) => void }) {
+  c.header("X-AK-Runtime-Surface", "local-daemon");
 }
 
 const SUBAGENT_RUNTIMES = new Set(["claude", "codex", "copilot"]);
@@ -1074,7 +1072,7 @@ api.use("/api/*", metricsMiddleware);
 // ─── Machines ───
 
 api.post("/api/machines/:id/heartbeat", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   const body = await c.req.json<{ version?: string; runtimes?: MachineRuntime[]; usage_info?: any }>();
   if (body.runtimes !== undefined) assertValidMachineRuntimes(body.runtimes);
   const machineId = c.req.param("id");
@@ -1101,7 +1099,7 @@ api.post("/api/machines/:id/heartbeat", async (c) => {
 });
 
 api.get("/api/machines", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machines = await listMachines(c.env.DB, c.get("ownerId"));
   const machinesWithStatus = await machinesWithRuntimeStatus(c.env.DB, c.env, c.get("ownerId"), machines);
@@ -1109,7 +1107,7 @@ api.get("/api/machines", async (c) => {
 });
 
 api.get("/api/machines/:id", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machine = await getMachine(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!machine) throw new HTTPException(404, { message: "Machine not found" });
@@ -1118,7 +1116,7 @@ api.get("/api/machines/:id", async (c) => {
 });
 
 api.post("/api/machines", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   const ownerId = c.get("ownerId");
   const body = await c.req.json<{ name: string; os: string; version: string; runtimes: MachineRuntime[]; device_id: string }>();
   if (!body.name || !body.os || !body.version || !body.runtimes || !body.device_id) {
@@ -1182,7 +1180,7 @@ api.post("/api/machines/cloud", async (c) => {
 });
 
 api.delete("/api/machines/:id", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   const ownerId = c.get("ownerId");
   const machineId = c.req.param("id");
   // AMA has no hard delete; archive the machine's AMA environment (soft delete)
@@ -1551,7 +1549,7 @@ api.delete("/api/subagents/:id", async (c) => {
 // ─── Agent Sessions ───
 
 api.post("/api/agents/:agentId/sessions", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   const body = await c.req.json<{ session_id: string; session_public_key: string }>();
   if (!body.session_id || !body.session_public_key) {
     throw new HTTPException(400, { message: "session_id and session_public_key are required" });
@@ -1564,19 +1562,19 @@ api.post("/api/agents/:agentId/sessions", async (c) => {
 });
 
 api.delete("/api/agents/:agentId/sessions/:sessionId", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   await closeSession(c.env.DB, c.req.param("sessionId"));
   return c.json({ ok: true });
 });
 
 api.post("/api/agents/:agentId/sessions/:sessionId/reopen", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   await reopenSession(c.env.DB, c.req.param("sessionId"));
   return c.json({ ok: true });
 });
 
 api.get("/api/agents/:agentId/sessions", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   const sessions = await listSessions(c.env.DB, c.req.param("agentId"));
   if (!isAmaTaskDispatchConfigured(c.env)) return c.json(sessions);
 
@@ -1996,7 +1994,7 @@ api.get("/api/tasks/:id/messages", async (c) => {
 // ─── WebSocket Relay ───
 
 api.get("/api/tunnel/ws", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   const ownerId = c.get("ownerId");
   const id = c.env.TUNNEL_RELAY.idFromName(ownerId);
   const stub = c.env.TUNNEL_RELAY.get(id);
@@ -2005,9 +2003,7 @@ api.get("/api/tunnel/ws", async (c) => {
   url.searchParams.set("ownerId", ownerId);
   const upstream = await stub.fetch(new Request(url.toString(), c.req.raw));
   const response = new Response(upstream.body, upstream);
-  response.headers.set("Deprecation", "true");
-  response.headers.set("Sunset", "2026-09-01T00:00:00Z");
-  response.headers.set("X-AK-Runtime-Surface", "legacy-daemon");
+  response.headers.set("X-AK-Runtime-Surface", "local-daemon");
   return response;
 });
 
@@ -2783,7 +2779,7 @@ api.get("/api/admin/stats", async (c) => {
 });
 
 api.get("/api/admin/machines", async (c) => {
-  markLegacyRuntimeSurface(c);
+  markLocalRuntimeSurface(c);
   requireAdmin(c);
   if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machines = await listAllMachines(c.env.DB);

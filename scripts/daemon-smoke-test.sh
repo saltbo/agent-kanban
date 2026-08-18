@@ -175,11 +175,33 @@ create_repo() {
 # provider defaults that may select the most expensive tier.
 runtime_default_model() {
   local runtime="$1"
+  if [ -n "${AK_SMOKE_MODEL:-}" ]; then
+    printf '%s\n' "$AK_SMOKE_MODEL"
+    return
+  fi
+
+  local server_model=""
+  server_model="$(ak get model --runtime "$runtime" -o json 2>/dev/null | json_query "data[0]?.id" 2>/dev/null || true)"
+  if [ -n "$server_model" ]; then
+    printf '%s\n' "$server_model"
+    return
+  fi
+
   case "$runtime" in
-    codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
-    claude) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id.includes('opus'))?.id || data[0]?.id" ;;
-    ama) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
-    *) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
+    # A standalone AK server intentionally has no AMA model catalog. Codex
+    # already maintains the authoritative local model cache, so pick its
+    # lowest-priority visible model for a cheap deterministic smoke run.
+    codex)
+      local cache="${CODEX_HOME:-$HOME/.codex}/models_cache.json"
+      [ -f "$cache" ] || return 0
+      node -e '
+const fs = require("fs");
+const models = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).models || [];
+const visible = models.filter((model) => model.visibility !== "hide").sort((a, b) => (a.priority || 0) - (b.priority || 0));
+if (visible.length) process.stdout.write(visible[visible.length - 1].slug || "");
+' "$cache"
+      ;;
+    *) return 0 ;;
   esac
 }
 
@@ -253,14 +275,17 @@ wait_subagent_evidence() {
   local task_id="$1" timeout_secs="${2:-120}"
   local elapsed=0
   local needle
+  local output
   needle=$(printf '%s' "$SUBAGENT_TOKEN" | tr '[:upper:]' '[:lower:]')
   while [ "$elapsed" -lt "$timeout_secs" ]; do
-    if ak describe task "$task_id" -o json 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -q "$needle"; then
-      return 0
-    fi
-    if ak get task "$task_id" --session -o json 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -q "$needle"; then
-      return 0
-    fi
+    # Capture command output before matching. With pipefail, `grep -q` can
+    # close the pipe early and turn a successful match into an upstream EPIPE.
+    output="$(ak describe task "$task_id" -o json 2>/dev/null || true)"
+    output="$(printf '%s' "$output" | tr '[:upper:]' '[:lower:]')"
+    case "$output" in *"$needle"*) return 0 ;; esac
+    output="$(ak get task "$task_id" --session -o json 2>/dev/null || true)"
+    output="$(printf '%s' "$output" | tr '[:upper:]' '[:lower:]')"
+    case "$output" in *"$needle"*) return 0 ;; esac
     sleep 2
     elapsed=$((elapsed + 2))
   done

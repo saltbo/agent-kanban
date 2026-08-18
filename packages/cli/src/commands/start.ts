@@ -21,6 +21,8 @@ import type { Command } from "commander";
 import { type AmaRunnerVersionInfo, resolveAmaRunnerBinary } from "../amaRunner.js";
 import { MachineClient } from "../client/machine.js";
 import { getCredentials, saveCredentials, setCurrent } from "../config.js";
+import { withoutControlPlaneSecrets } from "../controlPlaneEnv.js";
+import { assertDaemonDependencies } from "../daemon/preflight.js";
 import { generateDeviceId } from "../device.js";
 import { resolveMachineName } from "../machineName.js";
 import { DAEMON_STATE_FILE, LOGS_DIR, PID_FILE, SESSIONS_DIR, STATE_DIR } from "../paths.js";
@@ -30,6 +32,14 @@ import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
 const DEFAULT_MAX_CONCURRENT = 5;
+const DEFAULT_POLL_INTERVAL = 10_000;
+const DEFAULT_TASK_TIMEOUT = 7_200_000;
+const MAX_CONCURRENT_LIMIT = 64;
+const MIN_POLL_INTERVAL = 5_000;
+const MAX_POLL_INTERVAL = 300_000;
+const MIN_TASK_TIMEOUT = 1_000;
+const MAX_TASK_TIMEOUT = 604_800_000;
+const LOCAL_READY_TIMEOUT_MS = 30_000;
 // Where ama-runner persists device-login credentials. AK pins this so the login
 // store is deterministic, kept under AK's own state, and isolated from a
 // standalone ama-runner install that may target a different origin.
@@ -42,7 +52,9 @@ interface DaemonState {
   maxConcurrent: number;
   apiUrl: string;
   startedAt: string;
-  runtime?: "ama-runner";
+  runtime?: "local-daemon" | "ama-runner";
+  pollInterval?: number;
+  taskTimeout?: number;
   runnerPath?: string;
   runnerVersion?: AmaRunnerVersionInfo | null;
   machineId?: string;
@@ -59,6 +71,41 @@ interface RegisteredMachine {
   id: string;
   name: string;
   runner?: AmaRunnerOnboardingResponse | null;
+}
+
+type RunnerMode = "local" | "ama";
+
+function runnerMode(value: unknown): RunnerMode {
+  if (value === "local" || value === "ama") return value;
+  throw new Error(`Invalid runner mode "${String(value)}". Expected local or ama.`);
+}
+
+function boundedInteger(name: string, value: unknown, min: number, max: number, allowZero = false): number {
+  const raw = String(value).trim();
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer`);
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || (allowZero && parsed === 0 ? false : parsed < min) || parsed > max) {
+    const range = allowZero ? `0 or ${min}-${max}` : `${min}-${max}`;
+    throw new Error(`${name} must be ${range}`);
+  }
+  return parsed;
+}
+
+export function parseLocalDaemonOptions(opts: Record<string, unknown>): {
+  maxConcurrent: number;
+  pollInterval: number;
+  taskTimeout: number;
+} {
+  return {
+    maxConcurrent: boundedInteger("--max-concurrent", opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT, 1, MAX_CONCURRENT_LIMIT),
+    pollInterval: boundedInteger("--poll-interval", opts.pollInterval ?? DEFAULT_POLL_INTERVAL, MIN_POLL_INTERVAL, MAX_POLL_INTERVAL),
+    taskTimeout: boundedInteger("--task-timeout", opts.taskTimeout ?? DEFAULT_TASK_TIMEOUT, MIN_TASK_TIMEOUT, MAX_TASK_TIMEOUT, true),
+  };
+}
+
+function useEnvironmentCredentials(opts: Record<string, unknown>): void {
+  if (!opts.apiUrl && process.env.AK_API_URL) opts.apiUrl = process.env.AK_API_URL;
+  if (!opts.apiKey && process.env.AK_API_KEY) opts.apiKey = process.env.AK_API_KEY;
 }
 
 function rotateLogs(): void {
@@ -298,6 +345,58 @@ async function waitForSpawn(child: ReturnType<typeof spawn>, runnerBin: string):
   });
 }
 
+async function waitForLocalReady(child: ReturnType<typeof spawn>): Promise<{ machineId: string; pid: number }> {
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let terminating = false;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.removeListener("message", onMessage);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+    };
+    const finish = (error: Error | null, machineId?: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) {
+        reject(error);
+        return;
+      }
+      if (typeof child.pid !== "number" || !machineId) {
+        reject(new Error("Local machine runner reported readiness without a process or machine id"));
+        return;
+      }
+      if (child.connected) child.disconnect();
+      resolve({ machineId, pid: child.pid });
+    };
+    const onMessage = (message: unknown) => {
+      const ready = message as { type?: unknown; machineId?: unknown };
+      if (ready?.type === "ready" && typeof ready.machineId === "string" && ready.machineId) finish(null, ready.machineId);
+    };
+    const onError = (error: Error) => finish(error);
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (terminating) return;
+      finish(new Error(`Local machine runner exited before readiness (code ${code ?? "none"}, signal ${signal ?? "none"})`));
+    };
+    const timeout = setTimeout(() => {
+      void (async () => {
+        terminating = true;
+        try {
+          if (typeof child.pid === "number") await stopRunner(child.pid);
+          if (child.connected) child.disconnect();
+          finish(new Error(`Local machine runner did not become ready within ${LOCAL_READY_TIMEOUT_MS / 1000}s; inspect ak logs`));
+        } catch (error) {
+          finish(new Error(`Failed to terminate unready local machine runner: ${error instanceof Error ? error.message : String(error)}`));
+        }
+      })();
+    }, LOCAL_READY_TIMEOUT_MS);
+    child.on("message", onMessage);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
 async function startAmaRunner(opts: Record<string, unknown>) {
   const existingPid = readDaemonPid();
   if (existingPid) {
@@ -310,9 +409,7 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   const logFile = join(LOGS_DIR, "daemon.log");
   await applyAmaRunnerOnboarding(opts);
   const runner = await resolveAmaRunnerBinary(typeof opts.amaRunnerVersion === "string" ? opts.amaRunnerVersion : null);
-  const env = { ...process.env };
-  delete env.AMA_TOKEN;
-  delete env.AMA_RUNNER_CONFIG;
+  const env = withoutControlPlaneSecrets(process.env);
   env.AMA_RUNNER_CREDENTIALS = AMA_RUNNER_CREDENTIALS_FILE;
   // Authenticate before opening the daemon log: login is interactive and writes
   // to the terminal, while the detached runner's output belongs in the log file.
@@ -348,9 +445,9 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   console.log(`  Logs:        ${logFile}`);
 }
 
-async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
+async function registerMachine(opts: Record<string, unknown>): Promise<RegisteredMachine> {
   if (typeof opts.apiUrl !== "string" || typeof opts.apiKey !== "string") {
-    throw new Error("API credentials are required to start the machine runner");
+    throw new Error("API credentials are required to register the local machine");
   }
   const creds = { apiUrl: opts.apiUrl, apiKey: opts.apiKey };
 
@@ -373,7 +470,11 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
   if (!machineResponse.ok) {
     throw new Error(`Machine registration failed with HTTP ${machineResponse.status}: ${await machineResponse.text()}`);
   }
-  const machine = (await machineResponse.json()) as RegisteredMachine;
+  return (await machineResponse.json()) as RegisteredMachine;
+}
+
+async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
+  const machine = await registerMachine(opts);
   const onboarding = machine.runner;
   if (!onboarding) {
     throw new Error("Machine registration did not return runner onboarding details");
@@ -385,14 +486,96 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
   opts.amaEnvironmentId = onboarding.environmentId;
 }
 
+async function startLocalDaemon(opts: Record<string, unknown>) {
+  const existingPid = readDaemonPid();
+  if (existingPid) {
+    console.error(`Runtime already running (PID ${existingPid}). Stop it first or remove ${PID_FILE}`);
+    process.exit(1);
+  }
+  if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+
+  assertDaemonDependencies();
+  rotateLogs();
+
+  const { maxConcurrent, pollInterval, taskTimeout } = parseLocalDaemonOptions(opts);
+  const logFile = join(LOGS_DIR, "daemon.log");
+  const logFd = openSync(logFile, "a");
+  const child = spawn(
+    process.execPath,
+    [
+      process.argv[1],
+      "__daemon",
+      "--max-concurrent",
+      String(maxConcurrent),
+      "--poll-interval",
+      String(pollInterval),
+      "--task-timeout",
+      String(taskTimeout),
+    ],
+    {
+      detached: true,
+      stdio: ["ignore", logFd, logFd, "ipc"],
+      windowsHide: true,
+      env: withoutControlPlaneSecrets(process.env),
+    },
+  );
+
+  let ready: { machineId: string; pid: number };
+  try {
+    ready = await waitForLocalReady(child);
+  } catch (error) {
+    closeSync(logFd);
+    throw error;
+  }
+  closeSync(logFd);
+
+  mkdirSync(STATE_DIR, { recursive: true });
+  writeFileSync(PID_FILE, String(ready.pid));
+  const state: DaemonState = {
+    providers: Array.isArray(opts.providers) ? (opts.providers as string[]) : machineRuntimes().map((runtime) => runtime.name),
+    maxConcurrent,
+    pollInterval,
+    taskTimeout,
+    apiUrl: opts.apiUrl as string,
+    startedAt: new Date().toISOString(),
+    runtime: "local-daemon",
+    machineId: ready.machineId,
+  };
+  writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
+  child.unref();
+
+  const timeoutLabel = taskTimeout === 0 ? "none" : `${taskTimeout / 1000}s`;
+  console.log(`● Local machine runner started (PID ${ready.pid}, v${getVersion()})`);
+  console.log(`  Machine:     ${ready.machineId}`);
+  console.log(`  Providers:   ${formatProviders(state.providers)}`);
+  console.log(`  Concurrency: ${maxConcurrent}`);
+  console.log(`  Poll:        ${pollInterval / 1000}s`);
+  console.log(`  Timeout:     ${timeoutLabel}`);
+  console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
+  console.log(`  Logs:        ${logFile}`);
+}
+
+async function startRunner(mode: RunnerMode, opts: Record<string, unknown>): Promise<void> {
+  if (mode === "ama") {
+    opts.maxConcurrent = String(parseLocalDaemonOptions(opts).maxConcurrent);
+    await startAmaRunner(opts);
+    return;
+  }
+  await startLocalDaemon(opts);
+}
+
 export function registerStartCommand(program: Command) {
   program
     .command("start")
-    .description("Start the Machine runner")
+    .description("Start the local Machine runner")
     .option("--api-url <url>", "API server URL")
     .option("--api-key <key>", "AK API key")
-    .option("--max-concurrent <n>", "Max concurrent agents", String(DEFAULT_MAX_CONCURRENT))
+    .option("--mode <mode>", "Runner mode: local or ama", "local")
+    .option("--max-concurrent <n>", `Max concurrent agents (1-${MAX_CONCURRENT_LIMIT})`, String(DEFAULT_MAX_CONCURRENT))
+    .option("--poll-interval <ms>", `Local task poll interval (${MIN_POLL_INTERVAL}-${MAX_POLL_INTERVAL} ms)`, String(DEFAULT_POLL_INTERVAL))
+    .option("--task-timeout <ms>", `Local task timeout (0 or ${MIN_TASK_TIMEOUT}-${MAX_TASK_TIMEOUT} ms)`, String(DEFAULT_TASK_TIMEOUT))
     .action(async (opts) => {
+      useEnvironmentCredentials(opts);
       // Save or resolve credentials
       if (opts.apiUrl && opts.apiKey) {
         saveCredentials(opts.apiUrl, opts.apiKey);
@@ -421,7 +604,7 @@ export function registerStartCommand(program: Command) {
       if (prevState && prevState.apiUrl !== creds.apiUrl) {
         rmSync(SESSIONS_DIR, { recursive: true, force: true });
       }
-      await startAmaRunner({ ...opts, apiUrl: creds.apiUrl, apiKey: creds.apiKey });
+      await startRunner(runnerMode(opts.mode), { ...opts, apiUrl: creds.apiUrl, apiKey: creds.apiKey });
     });
 }
 
@@ -479,6 +662,7 @@ export function registerStatusCommand(program: Command) {
       console.log(`● Machine runner running (PID ${pid}, v${getVersion()})`);
       if (uptimeStr) console.log(`  Uptime:      ${uptimeStr}`);
       if (state) {
+        console.log(`  Mode:        ${state.runtime === "ama-runner" ? "ama" : "local"}`);
         const providersLabel = formatProviders(state.providers ?? []);
         console.log(`  Providers:   ${providersLabel}`);
         console.log(`  Concurrency: ${state.maxConcurrent}`);
@@ -487,7 +671,7 @@ export function registerStatusCommand(program: Command) {
 
       // The runner reports to the server, not local stdout — surface its real
       // health (a live local process does not imply it is heartbeating).
-      if (state?.runtime === "ama-runner" && state.machineId) {
+      if (state?.machineId) {
         try {
           const machine = await new MachineClient().getMachine(state.machineId);
           const online = machine.status === "online";
@@ -508,22 +692,19 @@ export function registerRestartCommand(program: Command) {
     .description("Restart the Machine runner")
     .option("--api-url <url>", "API server URL")
     .option("--api-key <key>", "AK API key")
-    .option("--max-concurrent <n>", "Max concurrent agents")
+    .option("--mode <mode>", "Runner mode: local or ama")
+    .option("--max-concurrent <n>", `Max concurrent agents (1-${MAX_CONCURRENT_LIMIT})`)
+    .option("--poll-interval <ms>", `Local task poll interval (${MIN_POLL_INTERVAL}-${MAX_POLL_INTERVAL} ms)`)
+    .option("--task-timeout <ms>", `Local task timeout (0 or ${MIN_TASK_TIMEOUT}-${MAX_TASK_TIMEOUT} ms)`)
     .action(async (opts) => {
+      useEnvironmentCredentials(opts);
       const prevState = readDaemonState();
-
-      // Stop existing runtime if running
-      const pid = readDaemonPid();
-      if (pid) {
-        const forceKilled = await stopRunner(pid);
-        if (forceKilled) {
-          console.log(`● Machine runner force-killed (PID ${pid})`);
-        } else {
-          console.log(`● Machine runner stopped (PID ${pid})`);
-        }
-      } else {
-        console.log("○ Machine runner was not running");
-      }
+      const mode = runnerMode(opts.mode ?? (prevState?.runtime === "ama-runner" ? "ama" : "local"));
+      const localOptions = parseLocalDaemonOptions({
+        maxConcurrent: opts.maxConcurrent ?? prevState?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT,
+        pollInterval: opts.pollInterval ?? prevState?.pollInterval ?? DEFAULT_POLL_INTERVAL,
+        taskTimeout: opts.taskTimeout ?? prevState?.taskTimeout ?? DEFAULT_TASK_TIMEOUT,
+      });
 
       if (opts.apiUrl && opts.apiKey) {
         saveCredentials(opts.apiUrl, opts.apiKey);
@@ -544,15 +725,29 @@ export function registerRestartCommand(program: Command) {
         process.exit(1);
       }
 
+      // Only stop a healthy runner after all replacement settings and
+      // credentials have been validated. A typo must not cause an outage.
+      const pid = readDaemonPid();
+      if (pid) {
+        const forceKilled = await stopRunner(pid);
+        if (forceKilled) {
+          console.log(`● Machine runner force-killed (PID ${pid})`);
+        } else {
+          console.log(`● Machine runner stopped (PID ${pid})`);
+        }
+      } else {
+        console.log("○ Machine runner was not running");
+      }
+
       // Clear session cache if API URL changed
       if (prevState && prevState.apiUrl !== creds.apiUrl) {
         rmSync(SESSIONS_DIR, { recursive: true, force: true });
       }
-      await startAmaRunner({
+      await startRunner(mode, {
         ...opts,
         apiUrl: creds.apiUrl,
         apiKey: creds.apiKey,
-        maxConcurrent: opts.maxConcurrent ?? String(prevState?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT),
+        ...localOptions,
       });
     });
 }
@@ -583,6 +778,9 @@ async function stopRunner(pid: number): Promise<boolean> {
     }
     throw error;
   }
+  const killDeadline = Date.now() + 2_000;
+  while (Date.now() < killDeadline && isPidAlive(pid)) await sleep(50);
+  if (isPidAlive(pid)) throw new Error(`Machine runner PID ${pid} remained alive after SIGKILL`);
   return true;
 }
 

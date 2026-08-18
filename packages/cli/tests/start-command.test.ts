@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,35 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const testSessionsDir = join(tmpdir(), `ak-start-command-test-${randomUUID()}`);
 const testRunnerBin = join(testSessionsDir, "runners", "ama-runner");
-const spawnMock = vi.fn(() => ({ pid: 12345, unref: vi.fn() }));
+let localSpawnBehavior: "ready" | "error" | "exit" | "manual" = "ready";
+let lastSpawnChild: EventEmitter | undefined;
+const spawnMock = vi.fn((command: string, args: string[], options: { env?: Record<string, string>; stdio?: unknown[] }) => {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number;
+    connected: boolean;
+    disconnect: ReturnType<typeof vi.fn>;
+    kill: ReturnType<typeof vi.fn>;
+    unref: ReturnType<typeof vi.fn>;
+  };
+  child.pid = 12345;
+  child.connected = true;
+  child.disconnect = vi.fn(() => {
+    child.connected = false;
+  });
+  child.kill = vi.fn();
+  child.unref = vi.fn();
+  lastSpawnChild = child;
+  queueMicrotask(() => {
+    if (command === process.execPath && args.includes("__daemon") && options.stdio?.[3] === "ipc") {
+      if (localSpawnBehavior === "ready") child.emit("message", { type: "ready", machineId: "machine_local" });
+      if (localSpawnBehavior === "error") child.emit("error", new Error("local spawn failed"));
+      if (localSpawnBehavior === "exit") child.emit("exit", 1, null);
+      return;
+    }
+    child.emit("spawn");
+  });
+  return child;
+});
 const spawnSyncMock = vi.fn(() => ({ status: 0 }));
 
 vi.mock("node:child_process", () => ({ spawn: spawnMock, spawnSync: spawnSyncMock }));
@@ -61,8 +90,14 @@ vi.mock("../src/paths.js", async () => {
 });
 
 const { clearAllSessions } = await import("../src/session/store.js");
-const { readLastLogLines, registerRestartCommand, registerStartCommand, registerStatusCommand, registerStopCommand, registerLogsCommand } =
-  await import("../src/commands/start.js");
+const {
+  readLastLogLines,
+  registerRestartCommand: registerRestartCommandSource,
+  registerStartCommand: registerStartCommandSource,
+  registerStatusCommand,
+  registerStopCommand,
+  registerLogsCommand,
+} = await import("../src/commands/start.js");
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 
@@ -89,6 +124,18 @@ function _setTTY(stdin: boolean, stdout: boolean): void {
 const credentialsFilePath = join(testSessionsDir, "ama-runner-credentials.json");
 const legacyLoginFilePath = join(testSessionsDir, "ama-runner-login.json");
 
+// Most historical tests in this file exercise AMA runner onboarding. Keep that
+// coverage explicit now that the product default is the local daemon.
+function registerStartCommand(program: Command): void {
+  registerStartCommandSource(program);
+  program.commands.find((command) => command.name() === "start")?.setOptionValueWithSource("mode", "ama", "default");
+}
+
+function registerRestartCommand(program: Command): void {
+  registerRestartCommandSource(program);
+  program.commands.find((command) => command.name() === "restart")?.setOptionValueWithSource("mode", "ama", "default");
+}
+
 function writeCredentialStore(profile: { apiServer: string; accessToken?: string; refreshToken?: string; expiresAt?: string; accountId?: string }) {
   const accountId = profile.accountId ?? "account_1";
   writeFileSync(
@@ -110,6 +157,8 @@ function writeCredentialStore(profile: { apiServer: string; accessToken?: string
 
 beforeEach(() => {
   mkdirSync(testSessionsDir, { recursive: true });
+  localSpawnBehavior = "ready";
+  lastSpawnChild = undefined;
   spawnMock.mockClear();
   spawnSyncMock.mockClear();
   spawnSyncMock.mockReturnValue({ status: 0 });
@@ -117,6 +166,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
   clearAllSessions();
   rmSync(testSessionsDir, { recursive: true, force: true });
   if (stdinTTY) Object.defineProperty(process.stdin, "isTTY", stdinTTY);
@@ -126,6 +177,201 @@ afterEach(() => {
 });
 
 describe("start runtime command", () => {
+  it("defaults to the local daemon, registers the machine, and skips AMA onboarding", async () => {
+    const program = new Command();
+    registerStartCommandSource(program);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await program.parseAsync(
+      ["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key", "--poll-interval", "5000", "--task-timeout", "60000"],
+      { from: "user" },
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledWith(
+      process.execPath,
+      [process.argv[1], "__daemon", "--max-concurrent", "5", "--poll-interval", "5000", "--task-timeout", "60000"],
+      expect.objectContaining({ detached: true, stdio: expect.arrayContaining(["ipc"]), windowsHide: true }),
+    );
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Local machine runner started"));
+    expect(JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"))).toMatchObject({
+      runtime: "local-daemon",
+      machineId: "machine_local",
+      pollInterval: 5000,
+      taskTimeout: 60000,
+    });
+  });
+
+  it("does not pass control-plane secrets to the local daemon process", async () => {
+    for (const key of [
+      "AK_API_KEY",
+      "AMA_TOKEN",
+      "AMA_RUNNER_CONFIG",
+      "AMA_RUNNER_CREDENTIALS",
+      "AMA_OIDC_CLIENT_SECRET",
+      "OIDC_CLIENT_SECRET",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_API_KEY",
+      "CF_API_TOKEN",
+      "CF_API_KEY",
+    ]) {
+      vi.stubEnv(key, `secret-${key}`);
+    }
+    vi.stubEnv("ANTHROPIC_API_KEY", "provider-secret");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const program = new Command();
+    registerStartCommandSource(program);
+    await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    const childEnv = spawnMock.mock.calls[0]?.[2]?.env as Record<string, string>;
+    expect(childEnv.ANTHROPIC_API_KEY).toBe("provider-secret");
+    for (const key of [
+      "AK_API_KEY",
+      "AMA_TOKEN",
+      "AMA_RUNNER_CONFIG",
+      "AMA_RUNNER_CREDENTIALS",
+      "AMA_OIDC_CLIENT_SECRET",
+      "OIDC_CLIENT_SECRET",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_API_KEY",
+      "CF_API_TOKEN",
+      "CF_API_KEY",
+    ]) {
+      expect(childEnv).not.toHaveProperty(key);
+    }
+  });
+
+  it.each([
+    ["--max-concurrent", "0"],
+    ["--max-concurrent", "65"],
+    ["--poll-interval", "-1"],
+    ["--poll-interval", "1.5"],
+    ["--task-timeout", "nope"],
+    ["--task-timeout", "604800001"],
+  ])("rejects invalid local numeric option %s=%s", async (option, value) => {
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    await expect(
+      program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key", option, value], { from: "user" }),
+    ).rejects.toThrow(/must be/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["error", "exit"] as const)("does not persist PID/state when the local child reports %s before readiness", async (behavior) => {
+    localSpawnBehavior = behavior;
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    await expect(program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" })).rejects.toThrow(
+      behavior === "error" ? "local spawn failed" : "exited before readiness",
+    );
+    expect(existsSync(join(testSessionsDir, "daemon.pid"))).toBe(false);
+    expect(existsSync(join(testSessionsDir, "daemon-state.json"))).toBe(false);
+  });
+
+  it("persists PID/state and reports success only after the local child sends IPC readiness", async () => {
+    localSpawnBehavior = "manual";
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    const started = program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(existsSync(join(testSessionsDir, "daemon.pid"))).toBe(false);
+    expect(existsSync(join(testSessionsDir, "daemon-state.json"))).toBe(false);
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("Local machine runner started"));
+
+    lastSpawnChild?.emit("message", { type: "ready", machineId: "machine_after_ready" });
+    await started;
+
+    expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe("12345");
+    expect(JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf8"))).toMatchObject({
+      machineId: "machine_after_ready",
+      runtime: "local-daemon",
+    });
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Local machine runner started"));
+  });
+
+  it("escalates an unready local child from SIGTERM to SIGKILL and waits for confirmed exit", async () => {
+    vi.useFakeTimers();
+    localSpawnBehavior = "manual";
+    let killed = false;
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === "SIGKILL") {
+        killed = true;
+        return true;
+      }
+      if (signal === 0 && killed) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+      return true;
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    const started = program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+    const rejected = expect(started).rejects.toThrow("did not become ready within 30s");
+    await vi.advanceTimersByTimeAsync(45_000);
+
+    await rejected;
+    expect(killSpy).toHaveBeenCalledWith(12345, "SIGTERM");
+    expect(killSpy).toHaveBeenCalledWith(12345, "SIGKILL");
+    expect(existsSync(join(testSessionsDir, "daemon.pid"))).toBe(false);
+    expect(existsSync(join(testSessionsDir, "daemon-state.json"))).toBe(false);
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("Local machine runner started"));
+  });
+
+  it("preserves AMA onboarding when --mode ama is explicit", async () => {
+    const program = new Command();
+    registerStartCommandSource(program);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    mockMachineRunnerFetch();
+
+    await program.parseAsync(["start", "--mode", "ama", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(spawnSyncMock).toHaveBeenCalledWith(
+      testRunnerBin,
+      ["auth", "login", "--api-server", "https://runner-control.test"],
+      expect.objectContaining({ stdio: "inherit" }),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(testRunnerBin, expect.arrayContaining(["--project-id", "project_1"]), expect.any(Object));
+  });
+
+  it("sanitizes inherited control-plane secrets from AMA login and spawn environments", async () => {
+    const controlPlaneKeys = [
+      "AK_API_KEY",
+      "AMA_TOKEN",
+      "AMA_RUNNER_CONFIG",
+      "AMA_OIDC_CLIENT_SECRET",
+      "OIDC_CLIENT_SECRET",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_API_KEY",
+      "CF_API_TOKEN",
+      "CF_API_KEY",
+    ];
+    for (const key of controlPlaneKeys) vi.stubEnv(key, `inherited-${key}`);
+    vi.stubEnv("AMA_RUNNER_CREDENTIALS", "inherited-credential-store");
+    vi.stubEnv("ANTHROPIC_API_KEY", "provider-credential");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    mockMachineRunnerFetch();
+
+    const program = new Command();
+    registerStartCommandSource(program);
+    await program.parseAsync(["start", "--mode", "ama", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    const loginEnv = spawnSyncMock.mock.calls[0]?.[2]?.env as Record<string, string>;
+    const runnerEnv = spawnMock.mock.calls[0]?.[2]?.env as Record<string, string>;
+    for (const env of [loginEnv, runnerEnv]) {
+      expect(env.ANTHROPIC_API_KEY).toBe("provider-credential");
+      expect(env.AMA_RUNNER_CREDENTIALS).toBe(credentialsFilePath);
+      expect(env.AMA_RUNNER_CREDENTIALS).not.toBe("inherited-credential-store");
+      for (const key of controlPlaneKeys) expect(env).not.toHaveProperty(key);
+    }
+  });
+
   it("starts the Machine runner, pointing it at the AMA origin and project/environment to join (runner self-authenticates)", async () => {
     const program = new Command();
     registerStartCommand(program);
@@ -505,6 +751,80 @@ describe("start runtime command", () => {
 });
 
 describe("restart runtime command", () => {
+  it.each([
+    ["--mode", "invalid"],
+    ["--max-concurrent", "0"],
+    ["--poll-interval", "1.5"],
+    ["--task-timeout", "604800001"],
+  ])("validates %s=%s before signaling an existing runner", async (option, value) => {
+    writeFileSync(join(testSessionsDir, "daemon.pid"), String(process.pid));
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const program = new Command();
+    registerRestartCommandSource(program);
+
+    await expect(
+      program.parseAsync(["restart", "--api-url", "https://ak.test", "--api-key", "ak_test_key", option, value], { from: "user" }),
+    ).rejects.toThrow();
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["--max-concurrent", "-1"],
+    ["--max-concurrent", "1.5"],
+    ["--poll-interval", "0"],
+    ["--poll-interval", "300001"],
+    ["--task-timeout", "oops"],
+    ["--task-timeout", "9007199254740992"],
+  ])("rejects invalid local numeric option %s=%s", async (option, value) => {
+    const program = new Command();
+    registerRestartCommandSource(program);
+
+    await expect(
+      program.parseAsync(["restart", "--api-url", "https://ak.test", "--api-key", "ak_test_key", option, value], { from: "user" }),
+    ).rejects.toThrow(/must be/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves local mode and poll/timeout settings, while allowing overrides", async () => {
+    mkdirSync(testSessionsDir, { recursive: true });
+    writeFileSync(
+      join(testSessionsDir, "daemon-state.json"),
+      JSON.stringify({
+        runtime: "local-daemon",
+        apiUrl: "https://ak.test",
+        maxConcurrent: 3,
+        pollInterval: 6000,
+        taskTimeout: 90000,
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    mockMachineRunnerFetch();
+
+    const preservedProgram = new Command();
+    registerRestartCommandSource(preservedProgram);
+    await preservedProgram.parseAsync(["restart", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.execPath,
+      [process.argv[1], "__daemon", "--max-concurrent", "3", "--poll-interval", "6000", "--task-timeout", "90000"],
+      expect.any(Object),
+    );
+
+    rmSync(join(testSessionsDir, "daemon.pid"), { force: true });
+    spawnMock.mockClear();
+    const overrideProgram = new Command();
+    registerRestartCommandSource(overrideProgram);
+    await overrideProgram.parseAsync(
+      ["restart", "--api-url", "https://ak.test", "--api-key", "ak_test_key", "--poll-interval", "5000", "--task-timeout", "0"],
+      { from: "user" },
+    );
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.execPath,
+      [process.argv[1], "__daemon", "--max-concurrent", "3", "--poll-interval", "5000", "--task-timeout", "0"],
+      expect.any(Object),
+    );
+  });
+
   it("stops a running process before restarting (with poll loop sleep)", async () => {
     // Write PID file pointing at current process so readDaemonPid returns it
     mkdirSync(testSessionsDir, { recursive: true });
@@ -877,8 +1197,13 @@ describe("stop command", () => {
       startedAt: new Date(Date.now() - 5000).toISOString(),
     });
 
-    // All kill calls succeed (process stays alive through the poll loop and the alive check)
-    const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid: number, _sig?: any) => true);
+    // Process ignores SIGTERM, then exits after SIGKILL so termination can be confirmed.
+    let forceKilled = false;
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid: number, sig?: any) => {
+      if (sig === "SIGKILL") forceKilled = true;
+      if (sig === 0 && forceKilled) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+      return true;
+    });
 
     // Make Date.now() advance past the deadline immediately after the first check
     let nowCallCount = 0;

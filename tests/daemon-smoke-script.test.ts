@@ -1,9 +1,10 @@
 // @vitest-environment node
 
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 const scriptPath = join(__dirname, "../scripts/daemon-smoke-test.sh");
 
@@ -17,7 +18,64 @@ function functionBlock(script: string, name: string) {
   return match?.[0] ?? "";
 }
 
+const tempDirs: string[] = [];
+
+function tempCodexHome(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ak-smoke-model-test-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function modelHarness(extra = "runtime_default_model codex") {
+  const script = readScript();
+  return [
+    functionBlock(script, "json_query"),
+    functionBlock(script, "runtime_default_model"),
+    functionBlock(script, "create_agent"),
+    'ak() { printf "%s\\n" "$AK_TEST_SERVER_JSON"; }',
+    "TIMESTAMP=123",
+    extra,
+  ].join("\n");
+}
+
+function runModelHarness(env: Record<string, string>, extra?: string) {
+  return spawnSync("bash", ["-c", modelHarness(extra)], {
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+}
+
+function runEvidenceHarness(env: Record<string, string>, timeout = 4) {
+  const script = readScript();
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      [
+        "set -euo pipefail",
+        functionBlock(script, "wait_subagent_evidence"),
+        'SUBAGENT_TOKEN="$AK_TOKEN"',
+        "ak() {",
+        '  printf "%s\\n" "$*" >> "$AK_CALL_LOG"',
+        '  if [ "$1 $2" = "describe task" ]; then',
+        '    if [ "$AK_DESCRIBE_MODE" = "big-hit" ]; then node -e \'process.stdout.write("x".repeat(1048576) + process.env.AK_TOKEN.toLowerCase())\'; else printf "%s\\n" "$AK_DESCRIBE_OUTPUT"; fi',
+        '  elif [ "$1 $2" = "get task" ]; then',
+        '    printf "%s\\n" "$AK_SESSION_OUTPUT"',
+        "  fi",
+        "}",
+        'sleep() { printf "sleep %s\\n" "$1" >> "$AK_CALL_LOG"; }',
+        `wait_subagent_evidence task-test ${timeout}`,
+      ].join("\n"),
+    ],
+    { encoding: "utf8", env: { ...process.env, ...env } },
+  );
+}
+
 describe("daemon smoke script", () => {
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
   it("has valid bash syntax", () => {
     execFileSync("bash", ["-n", scriptPath], { stdio: "pipe" });
   });
@@ -46,14 +104,68 @@ describe("daemon smoke script", () => {
 
     // runtime_default_model() maps each runtime to a model
     expect(script).toContain("runtime_default_model()");
-    // codex queries the server for declared models and picks the first one
-    expect(script).toContain('codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
-    // ama queries the server dynamically (no hardcoded model id)
-    expect(script).toContain('ama) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
-    expect(script).toContain("opus");
+    expect(script).toContain('ak get model --runtime "$runtime" -o json');
+    expect(script).toContain('local cache="$' + '{CODEX_HOME:-$HOME/.codex}/models_cache.json"');
 
     // create_agent() passes --model
     expect(script).toContain("--model");
+  });
+
+  it("prefers the first server model when the catalog has values", () => {
+    const codexHome = tempCodexHome();
+    writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({ models: [{ slug: "cache-model", priority: 99 }] }));
+
+    const result = runModelHarness({
+      AK_TEST_SERVER_JSON: JSON.stringify([{ id: "server-model" }, { id: "server-second" }]),
+      CODEX_HOME: codexHome,
+      AK_SMOKE_MODEL: "",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("server-model");
+  });
+
+  it("prefers AK_SMOKE_MODEL over both server catalog and local cache", () => {
+    const codexHome = tempCodexHome();
+    writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({ models: [{ slug: "cache-model", priority: 99 }] }));
+
+    const result = runModelHarness({
+      AK_TEST_SERVER_JSON: JSON.stringify([{ id: "server-model" }]),
+      CODEX_HOME: codexHome,
+      AK_SMOKE_MODEL: "explicit-model",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("explicit-model");
+  });
+
+  it("falls back to the lowest-priority visible model in the local Codex cache", () => {
+    const codexHome = tempCodexHome();
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      join(codexHome, "models_cache.json"),
+      JSON.stringify({
+        models: [
+          { slug: "high-priority", priority: 1, visibility: "list" },
+          { slug: "hidden-low", priority: 1000, visibility: "hide" },
+          { slug: "lowest-visible-priority", priority: 200, visibility: "list" },
+        ],
+      }),
+    );
+
+    const result = runModelHarness({ AK_TEST_SERVER_JSON: JSON.stringify([]), CODEX_HOME: codexHome, AK_SMOKE_MODEL: "" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("lowest-visible-priority");
+  });
+
+  it("fails clearly before agent creation when neither catalog nor Codex cache provides a model", () => {
+    const codexHome = tempCodexHome();
+
+    const result = runModelHarness({ AK_TEST_SERVER_JSON: JSON.stringify([]), CODEX_HOME: codexHome, AK_SMOKE_MODEL: "" }, "create_agent codex");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("FATAL: no model available for runtime codex");
   });
 
   it("uses deterministic SMOKE-SUBAGENT-OK token instead of fuzzy phrase matching", () => {
@@ -70,6 +182,62 @@ describe("daemon smoke script", () => {
     // Old fuzzy helpers must not exist
     expect(script).not.toContain("task_has_subagent_evidence");
     expect(script).not.toContain("wait_subagent_file");
+  });
+
+  it("matches a token in large describe output immediately under pipefail", () => {
+    const workDir = tempCodexHome();
+    const callLog = join(workDir, "calls.log");
+    const result = runEvidenceHarness({
+      AK_CALL_LOG: callLog,
+      AK_TOKEN: "SMOKE-SUBAGENT-OK-BIG",
+      AK_DESCRIBE_MODE: "big-hit",
+      AK_SESSION_OUTPUT: "session miss",
+    });
+
+    expect(result.status).toBe(0);
+    const calls = readFileSync(callLog, "utf8");
+    expect(calls).toContain("describe task task-test -o json");
+    expect(calls).not.toContain("get task");
+    expect(calls).not.toContain("sleep");
+  });
+
+  it("falls back to session output when describe output has no token", () => {
+    const workDir = tempCodexHome();
+    const callLog = join(workDir, "calls.log");
+    const result = runEvidenceHarness({
+      AK_CALL_LOG: callLog,
+      AK_TOKEN: "SMOKE-SUBAGENT-OK-SESSION",
+      AK_DESCRIBE_MODE: "",
+      AK_DESCRIBE_OUTPUT: "describe miss",
+      AK_SESSION_OUTPUT: "prefix smoke-subagent-ok-session suffix",
+    });
+
+    expect(result.status).toBe(0);
+    const calls = readFileSync(callLog, "utf8");
+    expect(calls).toContain("describe task task-test -o json");
+    expect(calls).toContain("get task task-test --session -o json");
+    expect(calls).not.toContain("sleep");
+  });
+
+  it("times out after checking both describe and session when neither contains the token", () => {
+    const workDir = tempCodexHome();
+    const callLog = join(workDir, "calls.log");
+    const result = runEvidenceHarness(
+      {
+        AK_CALL_LOG: callLog,
+        AK_TOKEN: "SMOKE-SUBAGENT-OK-MISSING",
+        AK_DESCRIBE_MODE: "",
+        AK_DESCRIBE_OUTPUT: "describe miss",
+        AK_SESSION_OUTPUT: "session miss",
+      },
+      4,
+    );
+
+    expect(result.status).toBe(1);
+    const calls = readFileSync(callLog, "utf8").trim().split("\n");
+    expect(calls.filter((line) => line.startsWith("describe task"))).toHaveLength(2);
+    expect(calls.filter((line) => line.startsWith("get task"))).toHaveLength(2);
+    expect(calls.filter((line) => line === "sleep 2")).toHaveLength(2);
   });
 
   it("checks runtime-specific subagent definition paths via subagent_definition_path()", () => {

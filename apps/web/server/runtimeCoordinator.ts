@@ -35,7 +35,7 @@ export async function resolveAssignableWorkerRuntimeSource(
   const source = selectRuntimeSource(await resolveRuntimeSourceAvailability(db, env, ownerId, runtime, agent.model));
   if (!source) {
     throw new HTTPException(409, {
-      message: `Runtime "${runtime}" is not available on any AMA runner or online legacy machine.`,
+      message: `Runtime "${runtime}" is not available on any AMA runner or online local machine.`,
     });
   }
   return source;

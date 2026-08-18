@@ -8,6 +8,7 @@
 
 import { cleanupPromptFile } from "../agent/systemPrompt.js";
 import type { AgentClient, ApiClient } from "../client/index.js";
+import { withoutControlPlaneSecrets } from "../controlPlaneEnv.js";
 import { createLogger } from "../logger.js";
 import type { AgentEvent, AgentHandle, AgentProvider } from "../providers/types.js";
 import { getSessionManager } from "../session/manager.js";
@@ -135,7 +136,7 @@ export class RuntimePool {
         sessionId,
         resumeToken: req.resumeToken,
         cwd: req.cwd,
-        env: { ...(process.env as Record<string, string>), ...req.agentEnv },
+        env: withoutControlPlaneSecrets({ ...(process.env as Record<string, string>), ...req.agentEnv }),
         taskContext: req.taskContext,
         systemPromptFile: req.systemPromptFile,
         model: req.model,

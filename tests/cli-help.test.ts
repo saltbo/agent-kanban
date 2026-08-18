@@ -6,10 +6,15 @@ import { Command } from "../packages/cli/node_modules/commander/index.js";
 const state = vi.hoisted(() => ({
   program: null as Command | null,
   createClient: vi.fn(),
+  startDaemon: vi.fn(),
 }));
 
 vi.mock("../packages/cli/src/agent/leader.js", () => ({
   createClient: state.createClient,
+}));
+
+vi.mock("../packages/cli/src/daemon/index.js", () => ({
+  startDaemon: state.startDaemon,
 }));
 
 vi.mock("../packages/cli/src/updateCheck.js", () => ({
@@ -78,14 +83,44 @@ describe("CLI help and output options", () => {
       "restart",
       "status",
       "logs",
+      "__daemon",
       "upgrade",
     ];
 
     expect(help).toContain("Usage: ak [options] [command]");
     expect(program.commands.map((candidate) => candidate.name())).toEqual(expectedCommands);
-    for (const name of expectedCommands) {
+    for (const name of expectedCommands.filter((candidate) => candidate !== "__daemon")) {
       expect(help).toMatch(new RegExp(`^  ${name}(?: |$)`, "m"));
     }
+  });
+
+  it("keeps __daemon hidden and wires its runtime options into startDaemon", async () => {
+    const daemonCommand = command(program, "__daemon");
+    expect(daemonCommand._hidden).toBe(true);
+    expect(program.helpInformation()).not.toContain("__daemon");
+
+    await program.parseAsync(["__daemon", "--max-concurrent", "7", "--poll-interval", "5000", "--task-timeout", "0"], { from: "user" });
+
+    expect(state.startDaemon).toHaveBeenCalledWith({
+      maxConcurrent: 7,
+      pollInterval: 5000,
+      taskTimeout: 0,
+      onReady: expect.any(Function),
+    });
+  });
+
+  it.each([
+    ["--max-concurrent", "0"],
+    ["--max-concurrent", "65"],
+    ["--poll-interval", "-1"],
+    ["--poll-interval", "1.5"],
+    ["--task-timeout", "bad"],
+    ["--task-timeout", "604800001"],
+  ])("rejects invalid hidden daemon numeric option %s=%s", async (option, value) => {
+    state.startDaemon.mockClear();
+
+    await expect(program.parseAsync(["__daemon", option, value], { from: "user" })).rejects.toThrow(/must be/);
+    expect(state.startDaemon).not.toHaveBeenCalled();
   });
 
   it("groups top-level help commands by workflow and leaves implicit help in Commands", () => {

@@ -38,6 +38,7 @@ export interface DaemonOptions {
   maxConcurrent: number;
   pollInterval?: number;
   taskTimeout?: number;
+  onReady?: (machineId: string) => void;
 }
 
 export async function startDaemon(opts: DaemonOptions): Promise<void> {
@@ -174,6 +175,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   prMonitor.start();
   loop.start();
+  opts.onReady?.(machineId);
 }
 
 function removePidFile(): void {

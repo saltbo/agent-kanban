@@ -77,6 +77,7 @@ export function createAuth(env: Env) {
       fallback: `https://${env.ALLOWED_HOSTS.split(",")[0]}`,
       protocol: "auto",
     },
+    trustedOrigins: authTrustedOrigins(env),
     secret: env.AUTH_SECRET,
     // The AK user links their AMA account (a separate FlareAuth identity) whose
     // email need not match their AK login email, so account linking must allow
@@ -174,6 +175,20 @@ function authAllowedHosts(env: Env): string[] {
   const hosts = env.ALLOWED_HOSTS.split(",");
   const localHosts = ["localhost:*", "127.0.0.1:*"];
   return [...hosts, ...localHosts.filter((host) => !hosts.includes(host))];
+}
+
+// better-auth derives trusted origins from baseURL.allowedHosts but only adds
+// the http:// variant for localhost/127.0.0.1 — any LAN/remote host reached
+// over plain http (e.g. http://10.0.0.5:6265) is rejected as an invalid origin
+// even when it is allowlisted. Trust every explicitly allowlisted host over
+// both schemes so remote sign-in/sign-up over http works.
+export function authTrustedOrigins(env: Env): string[] {
+  const origins = new Set<string>();
+  for (const host of env.ALLOWED_HOSTS.split(",")) {
+    origins.add(`https://${host}`);
+    origins.add(`http://${host}`);
+  }
+  return [...origins];
 }
 
 function verificationUrlForRequest(env: Env, url: string, request?: Request): string {

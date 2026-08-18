@@ -7,7 +7,14 @@ import { registerCreateCommand } from "./commands/create.js";
 import { registerDeleteCommand } from "./commands/delete.js";
 import { registerDescribeCommand } from "./commands/describe.js";
 import { registerGetCommand } from "./commands/get.js";
-import { registerLogsCommand, registerRestartCommand, registerStartCommand, registerStatusCommand, registerStopCommand } from "./commands/start.js";
+import {
+  parseLocalDaemonOptions,
+  registerLogsCommand,
+  registerRestartCommand,
+  registerStartCommand,
+  registerStatusCommand,
+  registerStopCommand,
+} from "./commands/start.js";
 import { registerUpdateCommand } from "./commands/update.js";
 import { registerUpgradeCommand } from "./commands/upgrade.js";
 import { registerWaitCommand } from "./commands/wait.js";
@@ -183,6 +190,20 @@ registerStopCommand(program);
 registerRestartCommand(program);
 registerStatusCommand(program);
 registerLogsCommand(program);
+
+program
+  .command("__daemon", { hidden: true })
+  .option("--max-concurrent <n>", "", String(5))
+  .option("--poll-interval <ms>", "", String(10_000))
+  .option("--task-timeout <ms>", "", String(7_200_000))
+  .action(async (opts) => {
+    const daemonOpts = parseLocalDaemonOptions(opts);
+    const { startDaemon } = await import("./daemon/index.js");
+    await startDaemon({
+      ...daemonOpts,
+      onReady: (machineId) => process.send?.({ type: "ready", machineId }),
+    });
+  });
 
 program.commandsGroup("Maintenance:");
 registerUpgradeCommand(program);

@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   getHistory: vi.fn(),
   sendHistory: vi.fn(),
   warn: vi.fn(),
+  prMonitorStart: vi.fn(),
+  loopStart: vi.fn(),
   session: null as null | { runtime: string; providerResumeToken?: string },
   historyHandler: null as null | ((sessionId: string, requestId: string) => void),
   capturedRateLimitSink: null as null | {
@@ -82,7 +84,7 @@ vi.mock("../src/daemon/cleanup.js", () => ({
 
 vi.mock("../src/daemon/loop.js", () => ({
   DaemonLoop: vi.fn().mockImplementation(() => ({
-    start: vi.fn(),
+    start: mocks.loopStart,
     stop: vi.fn(),
     onSlotFreed: vi.fn(),
     resumeRateLimitedSessions: vi.fn().mockResolvedValue(undefined),
@@ -90,7 +92,7 @@ vi.mock("../src/daemon/loop.js", () => ({
 }));
 
 vi.mock("../src/daemon/prMonitor.js", () => ({
-  PrMonitor: vi.fn().mockImplementation(() => ({ start: vi.fn(), stop: vi.fn(), track: vi.fn() })),
+  PrMonitor: vi.fn().mockImplementation(() => ({ start: mocks.prMonitorStart, stop: vi.fn(), track: vi.fn() })),
 }));
 
 vi.mock("../src/daemon/runtimePool.js", () => ({
@@ -142,6 +144,8 @@ describe("daemon heartbeat runtime states", () => {
     mocks.getProvider.mockReturnValue({ getHistory: mocks.getHistory });
     mocks.sendHistory.mockReset();
     mocks.warn.mockReset();
+    mocks.prMonitorStart.mockReset();
+    mocks.loopStart.mockReset();
     mocks.session = null;
     mocks.historyHandler = null;
     mocks.capturedRateLimitSink = null;
@@ -155,6 +159,43 @@ describe("daemon heartbeat runtime states", () => {
       process.removeAllListeners(event);
       for (const listener of listeners[event] ?? []) process.on(event, listener as any);
     }
+  });
+
+  it("reports IPC readiness only after registration and the initial heartbeat", async () => {
+    const onReady = vi.fn();
+
+    await startDaemon({ maxConcurrent: 1, pollInterval: 5000, onReady });
+
+    expect(onReady).toHaveBeenCalledWith("machine-1");
+    expect(mocks.registerMachine.mock.invocationCallOrder[0]).toBeLessThan(mocks.heartbeat.mock.invocationCallOrder[0]);
+    expect(mocks.heartbeat.mock.invocationCallOrder[0]).toBeLessThan(mocks.prMonitorStart.mock.invocationCallOrder[0]);
+    expect(mocks.prMonitorStart.mock.invocationCallOrder[0]).toBeLessThan(mocks.loopStart.mock.invocationCallOrder[0]);
+    expect(mocks.loopStart.mock.invocationCallOrder[0]).toBeLessThan(onReady.mock.invocationCallOrder[0]);
+  });
+
+  it.each([
+    ["registration", () => mocks.registerMachine.mockRejectedValueOnce(new Error("registration failed"))],
+    ["initial heartbeat", () => mocks.heartbeat.mockRejectedValueOnce(new Error("heartbeat failed"))],
+    [
+      "PR monitor",
+      () =>
+        mocks.prMonitorStart.mockImplementationOnce(() => {
+          throw new Error("PR monitor failed");
+        }),
+    ],
+    [
+      "polling loop",
+      () =>
+        mocks.loopStart.mockImplementationOnce(() => {
+          throw new Error("polling failed");
+        }),
+    ],
+  ])("does not report readiness when %s initialization fails", async (_phase, arrangeFailure) => {
+    const onReady = vi.fn();
+    arrangeFailure();
+
+    await expect(startDaemon({ maxConcurrent: 1, pollInterval: 5000, onReady })).rejects.toThrow(/failed/);
+    expect(onReady).not.toHaveBeenCalled();
   });
 
   it("reports ready runtimes, then reports a rate-limited runtime with reset_at", async () => {

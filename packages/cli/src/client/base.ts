@@ -2,6 +2,13 @@ import type { BoardWithTasks, MachineRuntime, UsageInfo } from "@agent-kanban/sh
 import { getVersion } from "../version.js";
 
 const API_REQUEST_TIMEOUT_MS = 60_000;
+const RETRYABLE_FETCH_CODES = new Set(["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"]);
+
+function isRetryableFetchError(error: unknown): boolean {
+  const candidate = error as { code?: unknown; cause?: { code?: unknown } } | null;
+  const code = candidate?.cause?.code ?? candidate?.code;
+  return typeof code === "string" && RETRYABLE_FETCH_CODES.has(code);
+}
 
 export class ApiError extends Error {
   public code: string;
@@ -43,7 +50,10 @@ export abstract class ApiClient {
     try {
       res = await doFetch();
     } catch (err: any) {
-      if (err?.cause?.code === "ECONNRESET") {
+      // Undici reports a stale keep-alive socket as UND_ERR_SOCKET. This is
+      // common after the daemon spends several seconds in a synchronous git
+      // or skill-install subprocess. Replaying once gets a fresh connection.
+      if ((method === "GET" || method === "HEAD") && isRetryableFetchError(err)) {
         res = await doFetch();
       } else {
         throw err;

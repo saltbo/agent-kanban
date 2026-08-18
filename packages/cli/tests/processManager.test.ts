@@ -173,7 +173,46 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(join(tmpRoot, "sessions"), { recursive: true, force: true });
+});
+
+describe("RuntimePool provider environment", () => {
+  it("removes control-plane secrets while retaining agent and provider credentials", async () => {
+    const controlPlaneKeys = [
+      "AK_API_KEY",
+      "AMA_TOKEN",
+      "AMA_RUNNER_CONFIG",
+      "AMA_RUNNER_CREDENTIALS",
+      "AMA_OIDC_CLIENT_SECRET",
+      "OIDC_CLIENT_SECRET",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_API_KEY",
+      "CF_API_TOKEN",
+      "CF_API_KEY",
+    ];
+    for (const key of controlPlaneKeys) vi.stubEnv(key, `machine-${key}`);
+    vi.stubEnv("ANTHROPIC_API_KEY", "provider-credential");
+
+    const handle = makeHandle();
+    const provider = makeProvider(handle);
+    const pool = makePool(makeApiClient());
+    await pool.spawnAgent(
+      makeSpawnRequest({
+        provider,
+        agentEnv: {
+          AK_AGENT_KEY: "agent-specific-key",
+          AK_API_KEY: "attempted-agent-override",
+        },
+      }),
+    );
+
+    expect(provider.execute).toHaveBeenCalledOnce();
+    const providerEnv = (provider.execute as Mock).mock.calls[0]?.[0]?.env as Record<string, string>;
+    expect(providerEnv.AK_AGENT_KEY).toBe("agent-specific-key");
+    expect(providerEnv.ANTHROPIC_API_KEY).toBe("provider-credential");
+    for (const key of controlPlaneKeys) expect(providerEnv).not.toHaveProperty(key);
+  });
 });
 
 // ── sendToSession() ────────────────────────────────────────────────────────────
