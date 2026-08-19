@@ -1,4 +1,4 @@
-import type { AgentRuntime, CreateSubagentInput, GithubAppConfig, InstallableRepo, Repository } from "@agent-kanban/shared";
+import type { AgentRuntime, CreateSubagentInput, GithubAppConfig, InstallableRepo, Repository, SchedulingSettings } from "@agent-kanban/shared";
 import { getAuthToken, refreshAuthToken } from "./auth-client";
 
 const API_BASE = "/api";
@@ -176,6 +176,10 @@ export const api = {
   githubApp: {
     config: () => request<GithubAppConfig>("GET", "/github-app/config"),
     installableRepos: () => request<{ installed: boolean; repositories: InstallableRepo[] }>("GET", "/github-app/repositories"),
+  },
+  settings: {
+    getScheduling: () => request<SchedulingSettings>("GET", "/settings/scheduling"),
+    putScheduling: (settings: SchedulingSettings) => request<SchedulingSettings>("PUT", "/settings/scheduling", settings),
   },
   admin: {
     getStats: () => request<any>("GET", "/admin/stats"),

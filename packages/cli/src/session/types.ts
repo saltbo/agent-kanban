@@ -53,6 +53,14 @@ export interface SessionFile {
   resumeAfter?: number;
 
   /**
+   * Consecutive relay-quota suspensions (mid-run 403/429 on a quota-managed
+   * relay endpoint). Capped — a permanent 403 (plan/region/model block) must
+   * not loop forever burning relay quota. Reset when the session produces a
+   * result (reaches in_review).
+   */
+  quotaSuspensions?: number;
+
+  /**
    * Set to true if workspace/cleanup fs operations failed during terminal
    * cleanup. OrphanReaper retries on next pass. Presence of this flag on an
    * otherwise-terminal session means it's waiting on a retriable cleanup.

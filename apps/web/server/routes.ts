@@ -19,12 +19,14 @@ import {
   MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS,
   MAINTAINER_TAINT_KEY,
   type MachineRuntime,
+  normalizeSchedulingSettings,
   parseScheduledAt,
   RESERVED_ROLES,
   type Task,
   type IdentityType as TaskIdentityType,
   type UsageInfo,
   type UsageWindow,
+  validateSchedulingSettings,
   validateTransition,
 } from "@agent-kanban/shared";
 import { Hono } from "hono";
@@ -149,6 +151,7 @@ import { createMessage, listMessages } from "./messageRepo";
 import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
 import { listRuntimeModels } from "./modelCatalog";
+import { getSchedulingSettings, putSchedulingSettings } from "./ownerSettingsRepo";
 import { createRepository, deleteRepository, getRepository, listRepositories, normalizeGitUrl } from "./repositoryRepo";
 import { metadataWithRuntimeSource, taskRuntimeSource } from "./runtimeBinding";
 import { dispatchAssignedTask, releaseAssignedTaskRuntime, resolveAssignableWorkerRuntimeSource } from "./runtimeCoordinator";
@@ -1095,7 +1098,26 @@ api.post("/api/machines/:id/heartbeat", async (c) => {
     });
   }
 
-  return c.json(publicMachine(updated));
+  // Piggyback scheduling settings so daemons pick up peak-window changes on
+  // their next heartbeat without a separate authenticated settings fetch.
+  const scheduling = await getSchedulingSettings(c.env.DB, c.get("ownerId"));
+  return c.json({ ...publicMachine(updated), scheduling });
+});
+
+api.get("/api/settings/scheduling", async (c) => {
+  if (c.get("identityType") !== "user") throw new HTTPException(403, { message: "User identity required" });
+  return c.json(await getSchedulingSettings(c.env.DB, c.get("ownerId")));
+});
+
+api.put("/api/settings/scheduling", async (c) => {
+  if (c.get("identityType") !== "user") throw new HTTPException(403, { message: "User identity required" });
+  const body = await c.req.json<unknown>();
+  const validationError = validateSchedulingSettings(body);
+  if (validationError) throw new HTTPException(400, { message: validationError });
+  // Store the normalized form — strips unknown keys so daemons only ever see
+  // the two fields they understand.
+  await putSchedulingSettings(c.env.DB, c.get("ownerId"), normalizeSchedulingSettings(body));
+  return c.json(await getSchedulingSettings(c.env.DB, c.get("ownerId")));
 });
 
 api.get("/api/machines", async (c) => {

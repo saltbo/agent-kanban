@@ -140,6 +140,17 @@ export async function boundary<T>(context: string, fn: () => Promise<T>): Promis
   }
 }
 
+/**
+ * HTTP status carried by an SDK-thrown error (plain object with a numeric
+ * `.status`), or undefined for our own ApiError (the AK control plane's
+ * statuses classify separately) and non-HTTP shapes.
+ */
+export function sdkErrorStatus(err: unknown): number | undefined {
+  if (err instanceof ApiError) return undefined;
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : undefined;
+}
+
 /** Synchronous variant. */
 export function boundarySync<T>(context: string, fn: () => T): T {
   try {

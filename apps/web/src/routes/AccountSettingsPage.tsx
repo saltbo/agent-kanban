@@ -12,6 +12,7 @@ import { Label } from "../components/ui/label";
 import { authClient, useSession } from "../lib/auth-client";
 import { cn } from "../lib/utils";
 import { AccountPage } from "./AccountPage";
+import { SchedulingSettingsPage } from "./SchedulingSettingsPage";
 
 type SettingsUser = {
   name?: string | null;
@@ -23,6 +24,7 @@ type SettingsUser = {
 const settingsLinks = [
   { to: "/settings/profile", label: "Profile" },
   { to: "/settings/account", label: "Account" },
+  { to: "/settings/scheduling", label: "Scheduling" },
 ];
 
 function ProfileSettingsPage() {
@@ -185,6 +187,7 @@ export function AccountSettingsPage() {
           <Route index element={<Navigate to="profile" replace />} />
           <Route path="profile" element={<ProfileSettingsPage />} />
           <Route path="account" element={<AccountPage />} />
+          <Route path="scheduling" element={<SchedulingSettingsPage />} />
           <Route path="*" element={<Navigate to="profile" replace />} />
         </Routes>
       </div>

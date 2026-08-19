@@ -9,6 +9,7 @@ import { createLogger } from "../logger.js";
 import { resolveMachineName } from "../machineName.js";
 import { PID_FILE, STATE_DIR } from "../paths.js";
 import { getAvailableProviders, getProvider } from "../providers/registry.js";
+import { setSchedulingSettings } from "../providers/schedulingState.js";
 import type { AgentProvider, HistoryEvent } from "../providers/types.js";
 import { getSessionManager } from "../session/manager.js";
 import { migrateLegacySessions } from "../session/store.js";
@@ -87,11 +88,16 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   const usageCollector = new UsageCollector({ providers: availableProviders });
   usageCollector.start();
   sendHeartbeat = async () => {
-    await client.heartbeat(machineId, {
+    const response = await client.heartbeat(machineId, {
       version: machineInfo.version,
       runtimes: await buildRuntimeStates(availableProviders, rateLimiter, circuitBreaker),
       usage_info: usageCollector.getSnapshot(),
     });
+    // The server piggybacks the owner's scheduling settings (peak windows);
+    // normalizeSchedulingSettings falls back to defaults on a bad payload.
+    if (response && typeof response === "object" && "scheduling" in response) {
+      setSchedulingSettings(response.scheduling);
+    }
   };
 
   const prMonitor = new PrMonitor(client);
@@ -117,6 +123,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     opts.taskTimeout,
     tunnel,
     circuitBreaker,
+    // Earliest exhausted-window reset from the usage snapshot — schedules
+    // relay quota suspensions (mid-run 403/429) for context-preserving resume.
+    (runtime) =>
+      usageCollector
+        .getSnapshot()
+        ?.windows.filter((w) => (w.runtime === runtime || w.runtime === null) && w.utilization >= 100)
+        .map((w) => w.resets_at)
+        .sort()[0],
   );
 
   tunnel.onHistoryRequest((sessionId, requestId) => {

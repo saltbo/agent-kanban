@@ -1542,3 +1542,182 @@ describe("errMessage — non-Error branch via finalizeCancelled error handlers",
     resolveEvents();
   });
 });
+
+// ============================================================================
+// sdkErrorStatus — HTTP status extraction from SDK-shaped errors
+// ============================================================================
+
+describe("sdkErrorStatus", () => {
+  it("returns undefined for our own ApiError (control-plane statuses classify separately)", async () => {
+    const { sdkErrorStatus } = await import("../packages/cli/src/daemon/errors.js");
+    const { ApiError } = await import("../packages/cli/src/client/base.js");
+    expect(sdkErrorStatus(new ApiError(429, "rate limited"))).toBeUndefined();
+  });
+
+  it("extracts a numeric status from plain SDK-shaped errors", async () => {
+    const { sdkErrorStatus } = await import("../packages/cli/src/daemon/errors.js");
+    expect(sdkErrorStatus(Object.assign(new Error("forbidden"), { status: 403 }))).toBe(403);
+    expect(sdkErrorStatus(Object.assign(new Error("quota"), { status: 429 }))).toBe(429);
+    expect(sdkErrorStatus({ status: 500 })).toBe(500);
+  });
+
+  it("returns undefined for non-numeric or missing status", async () => {
+    const { sdkErrorStatus } = await import("../packages/cli/src/daemon/errors.js");
+    expect(sdkErrorStatus(new Error("boom"))).toBeUndefined();
+    expect(sdkErrorStatus({ status: "403" })).toBeUndefined();
+    expect(sdkErrorStatus(null)).toBeUndefined();
+    expect(sdkErrorStatus(undefined)).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// finalize — relay quota suspension (claude pointed at a quota-managed relay)
+// ============================================================================
+
+describe("finalize — relay quota suspension (relay active + iterator throws {status})", () => {
+  beforeEach(() => {
+    // activeRelayKind() reads the env at call time; this points the claude
+    // runtime at a known relay for the duration of each test.
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "relay-token");
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.kimi.com");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function makeStatusError(status: number, headers?: Headers): Error {
+    return Object.assign(new Error(`relay responded ${status}`), { status, ...(headers ? { headers } : {}) });
+  }
+
+  async function spawnCrashWithHint(error: Error, quotaResetHint?: () => string | undefined, seedQuotaSuspensions?: number) {
+    const taskId = randomUUID();
+    const sessionId = randomUUID();
+    await seedActiveSession(sessions, sessionId, taskId);
+    if (seedQuotaSuspensions !== undefined) {
+      await sessions.patch(sessionId, { quotaSuspensions: seedQuotaSuspensions });
+    }
+
+    const agentClient = makeAgentClient(null);
+    const handle = makeCrashHandle([], error);
+
+    await new Promise<void>((resolve) => {
+      const pool = new RuntimePool(
+        apiClient,
+        { onSlotFreed: resolve },
+        { onRateLimited: vi.fn(), onRateLimitResumed: vi.fn() },
+        0,
+        null,
+        undefined,
+        quotaResetHint,
+      );
+      pool.spawnAgent({ provider: makeProvider(handle), taskId, sessionId, cwd: "/tmp", taskContext: "test", agentClient, agentEnv: {} });
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    return sessions.list().find((s) => s.sessionId === sessionId);
+  }
+
+  it("suspends to rate_limited with resumeAfter from quotaResetHint on 429", async () => {
+    const hint = "2026-08-20T00:00:00.000Z";
+    const session = await spawnCrashWithHint(makeStatusError(429), () => hint);
+
+    expect(session?.status).toBe("rate_limited");
+    expect(session?.resumeAfter).toBe(Date.parse(hint));
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("suspends to rate_limited on 403 (quota exhausted) with resumeAfter from quotaResetHint", async () => {
+    const hint = "2026-08-21T00:00:00.000Z";
+    const session = await spawnCrashWithHint(makeStatusError(403), () => hint);
+
+    expect(session?.status).toBe("rate_limited");
+    expect(session?.resumeAfter).toBe(Date.parse(hint));
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("prefers the 429 Retry-After header over quotaResetHint", async () => {
+    const before = Date.now();
+    const session = await spawnCrashWithHint(makeStatusError(429, new Headers({ "retry-after": "120" })), () => "2026-08-20T00:00:00.000Z");
+    const after = Date.now();
+
+    expect(session?.status).toBe("rate_limited");
+    expect(session?.resumeAfter).toBeGreaterThanOrEqual(before + 120_000);
+    expect(session?.resumeAfter).toBeLessThanOrEqual(after + 120_000);
+  });
+
+  it("falls back to a 30-minute resume horizon when neither hint nor Retry-After exists", async () => {
+    const before = Date.now();
+    const session = await spawnCrashWithHint(makeStatusError(429));
+    const after = Date.now();
+
+    expect(session?.status).toBe("rate_limited");
+    expect(session?.resumeAfter).toBeGreaterThanOrEqual(before + 30 * 60_000);
+    expect(session?.resumeAfter).toBeLessThanOrEqual(after + 30 * 60_000);
+  });
+
+  it("does NOT suspend on 401 — a revoked key is terminal, not a window problem", async () => {
+    const session = await spawnCrashWithHint(makeStatusError(401), () => "2026-08-20T00:00:00.000Z");
+
+    expect(session?.status).not.toBe("rate_limited");
+    expect(session?.resumeAfter).toBeUndefined();
+    // Terminal crash on an in_progress task → released back to the board.
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+  });
+
+  it("does NOT suspend a 429 when no relay is active", async () => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"); // unknown relay host
+    const session = await spawnCrashWithHint(makeStatusError(429), () => "2026-08-20T00:00:00.000Z");
+
+    expect(session?.status).not.toBe("rate_limited");
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+  });
+
+  it("treats a 403 crash as terminal when quotaSuspensions has hit the cap (5)", async () => {
+    // A permanent 403 (plan/region/model block) looks identical to quota
+    // exhaustion — after MAX_QUOTA_SUSPENSIONS consecutive suspensions the
+    // crash is terminal: task released, no resumeAfter/suspension patch.
+    const patchSpy = vi.spyOn(sessions, "patch");
+    const hint = "2026-08-20T00:00:00.000Z";
+    const session = await spawnCrashWithHint(makeStatusError(403), () => hint, 5);
+
+    expect(session?.status).not.toBe("rate_limited");
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    // No quota-suspension patch: the streak must not grow past the cap.
+    const suspensionPatch = patchSpy.mock.calls.find(([, patch]) => (patch as { quotaSuspensions?: number }).quotaSuspensions === 6);
+    expect(suspensionPatch).toBeUndefined();
+    const resumeAfterPatch = patchSpy.mock.calls.find(([, patch]) => "resumeAfter" in (patch as object));
+    expect(resumeAfterPatch).toBeUndefined();
+  });
+
+  it("increments quotaSuspensions on each quota suspension below the cap", async () => {
+    const hint = "2026-08-20T00:00:00.000Z";
+    const session = await spawnCrashWithHint(makeStatusError(403), () => hint, 2);
+
+    expect(session?.status).toBe("rate_limited");
+    expect(session?.resumeAfter).toBe(Date.parse(hint));
+    expect(session?.quotaSuspensions).toBe(3);
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// finalize — quotaSuspensions reset when the session reaches in_review
+// ============================================================================
+
+describe("finalize — quotaSuspensions reset on in_review", () => {
+  it("patches quotaSuspensions back to 0 when the session produces a result", async () => {
+    const taskId = randomUUID();
+    const sessionId = randomUUID();
+    await seedActiveSession(sessions, sessionId, taskId);
+    await sessions.patch(sessionId, { quotaSuspensions: 2 });
+
+    const patchSpy = vi.spyOn(sessions, "patch");
+    const agentClient = makeAgentClient({ status: "in_review" });
+
+    await spawnAndWait(apiClient, { events: [makeTurnEndEvent(0.001)], taskId, sessionId, agentClient });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(patchSpy).toHaveBeenCalledWith(sessionId, { quotaSuspensions: 0 });
+    expect(sessions.read(sessionId)?.quotaSuspensions).toBe(0);
+  });
+});

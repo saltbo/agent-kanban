@@ -1715,12 +1715,14 @@ describe("claudeProvider — custom endpoint (local/relay API)", () => {
 
   it("env-based with ANTHROPIC_BASE_URL: the detail names the relay host", async () => {
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "sk-custom-env");
-    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.kimi.com/anthropic");
+    // An unmapped relay host: no quota probing (known relays like api.kimi.com
+    // would fetch their usage API here — covered by relay-usage.test.ts).
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://relay.internal.example.com/anthropic");
 
     const availability = await claudeProvider.checkAvailability!();
     expect(availability.status).toBe("ready");
     expect(availability.detail).toContain("authenticated via environment");
-    expect(availability.detail).toContain("api.kimi.com");
+    expect(availability.detail).toContain("relay.internal.example.com");
   });
 
   it("settings.json-based: env-block credentials authenticate via settings.json", async () => {

@@ -6,6 +6,7 @@ import type { SubtaskStatus } from "@agent-kanban/shared";
 import { ToolName } from "@agent-kanban/shared";
 import type { SDKAssistantMessage, SDKMessage, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createLogger } from "../logger.js";
+import { detectRelay, fetchRelayUsage, type RelayKind } from "./relayUsage.js";
 import type {
   AgentEvent,
   AgentHandle,
@@ -73,6 +74,10 @@ function readOAuthToken(): string | null {
 interface ClaudeCustomEndpoint {
   baseUrl?: string;
   via: "environment" | "settings.json";
+  /** Relay credential — NEVER log, heartbeat, or embed in detail strings. */
+  token?: string;
+  /** Model the relay is configured to serve (ANTHROPIC_MODEL), if set. */
+  model?: string;
 }
 
 // Claude Code authenticates non-OAuth deployments (relays, gateways, enterprise
@@ -84,7 +89,12 @@ interface ClaudeCustomEndpoint {
 // must treat the runtime as authenticated even without an OAuth token.
 function readCustomEndpoint(): ClaudeCustomEndpoint | null {
   if (process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY) {
-    return { baseUrl: process.env.ANTHROPIC_BASE_URL || undefined, via: "environment" };
+    return {
+      baseUrl: process.env.ANTHROPIC_BASE_URL || undefined,
+      via: "environment",
+      token: process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY,
+      model: process.env.ANTHROPIC_MODEL || undefined,
+    };
   }
   try {
     const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, "utf-8")) as { env?: Record<string, unknown>; apiKeyHelper?: unknown };
@@ -92,7 +102,12 @@ function readCustomEndpoint(): ClaudeCustomEndpoint | null {
     if (settingsEnv.ANTHROPIC_AUTH_TOKEN || settingsEnv.ANTHROPIC_API_KEY || settings.apiKeyHelper) {
       const baseUrl =
         typeof settingsEnv.ANTHROPIC_BASE_URL === "string" && settingsEnv.ANTHROPIC_BASE_URL ? settingsEnv.ANTHROPIC_BASE_URL : undefined;
-      return { baseUrl, via: "settings.json" };
+      const token =
+        (typeof settingsEnv.ANTHROPIC_AUTH_TOKEN === "string" && settingsEnv.ANTHROPIC_AUTH_TOKEN) ||
+        (typeof settingsEnv.ANTHROPIC_API_KEY === "string" && settingsEnv.ANTHROPIC_API_KEY) ||
+        undefined;
+      const model = typeof settingsEnv.ANTHROPIC_MODEL === "string" && settingsEnv.ANTHROPIC_MODEL ? settingsEnv.ANTHROPIC_MODEL : undefined;
+      return { baseUrl, via: "settings.json", token, model };
     }
   } catch {
     // No settings file or invalid JSON — fall through to OAuth detection.
@@ -106,6 +121,17 @@ function endpointHost(baseUrl: string): string {
   } catch {
     return baseUrl;
   }
+}
+
+/**
+ * The known relay the claude runtime is currently pointed at, if any. Used by
+ * the daemon to treat mid-run relay 403/429 as quota suspension instead of a
+ * terminal crash.
+ */
+export function activeRelayKind(): RelayKind | null {
+  const custom = readCustomEndpoint();
+  if (!custom?.token) return null;
+  return detectRelay(custom.baseUrl);
 }
 
 /** Stamp `parent_id` onto a block only when set, to keep wire format clean. */
@@ -437,9 +463,22 @@ export const claudeProvider: AgentProvider = {
   async checkAvailability() {
     const custom = readCustomEndpoint();
     if (custom) {
-      // Quota windows are an OAuth-plan concept; relays/proxies don't expose
-      // the usage API, so credential presence is all we can assert. Runtime
-      // rate limits are still handled via turn.rate_limit events mid-execution.
+      const relay = detectRelay(custom.baseUrl);
+      if (relay && custom.token) {
+        // Known relay with credentials: gate on its quota windows (Kimi 5h/7d,
+        // DeepSeek balance/peak-pricing) the same way OAuth plans gate on the
+        // Anthropic usage API.
+        const label = `${custom.model ?? "relay"} @ ${endpointHost(custom.baseUrl!)}`;
+        try {
+          const availability = availabilityFromUsage(await this.fetchUsage!());
+          return { ...availability, detail: availability.detail ? `${label} — ${availability.detail}` : label };
+        } catch (err) {
+          return availabilityFromUsageError(err, label);
+        }
+      }
+      // Unknown relays/proxies don't expose a usage API, so credential
+      // presence is all we can assert. Runtime rate limits are still handled
+      // via turn.rate_limit events mid-execution.
       const host = custom.baseUrl ? ` (${endpointHost(custom.baseUrl)})` : "";
       return { status: "ready" as const, detail: `authenticated via ${custom.via}${host}` };
     }
@@ -540,9 +579,14 @@ export const claudeProvider: AgentProvider = {
   },
 
   async fetchUsage(): Promise<UsageInfo | null> {
-    // Custom-endpoint credentials can't call the OAuth usage API; report no
-    // windows (the collector treats null as a quiet success).
-    if (readCustomEndpoint()) return null;
+    const custom = readCustomEndpoint();
+    if (custom) {
+      // Known relays expose their own quota APIs; unknown relays report no
+      // windows (the collector treats null as a quiet success).
+      const relay = detectRelay(custom.baseUrl);
+      if (!relay || !custom.token) return null;
+      return fetchRelayUsage({ kind: relay, baseUrl: custom.baseUrl!, token: custom.token });
+    }
     const token = readOAuthToken();
     if (!token) return null;
 

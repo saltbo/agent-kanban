@@ -53,10 +53,18 @@ async function applyMigrations(db: D1Database) {
     "0030_agent_taints.sql",
     "0031_drop_board_maintainer_name.sql",
     "0032_board_maintainer_api_key.sql",
+    "0039_repository_source_type.sql",
+    "0040_owner_settings.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
-    for (const stmt of sql
+    // Strip `--` line comments first: comment text may contain semicolons,
+    // which would split into comment-only chunks D1 rejects as empty statements.
+    const stripped = sql
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n");
+    for (const stmt of stripped
       .split(";")
       .map((s) => s.trim())
       .filter(Boolean)) {

@@ -20,7 +20,7 @@ test.describe("Settings Page", () => {
     await page.goto("/settings/profile");
 
     const settingsNav = page.getByRole("navigation", { name: "Settings" });
-    await expect(settingsNav.getByRole("link")).toHaveText(["Profile", "Account"]);
+    await expect(settingsNav.getByRole("link")).toHaveText(["Profile", "Account", "Scheduling"]);
     await expect(settingsNav.getByRole("link", { name: "Profile" })).toHaveAttribute("class", /bg-accent-soft/);
     await expect(settingsNav.getByRole("link", { name: "Account" })).not.toHaveAttribute("class", /bg-accent-soft/);
 

@@ -10,14 +10,24 @@ import { cleanupPromptFile } from "../agent/systemPrompt.js";
 import type { AgentClient, ApiClient } from "../client/index.js";
 import { withoutControlPlaneSecrets } from "../controlPlaneEnv.js";
 import { createLogger } from "../logger.js";
+import { activeRelayKind } from "../providers/claude.js";
 import type { AgentEvent, AgentHandle, AgentProvider } from "../providers/types.js";
+import { parseRetryAfterMs } from "../providers/types.js";
 import { getSessionManager } from "../session/manager.js";
 import { classifyIteratorEnd, type SessionEvent } from "../session/stateMachine.js";
 import { apiCallOptional, apiFireAndForget, providerExecute } from "./boundaries.js";
-import { classify } from "./errors.js";
+import { classify, sdkErrorStatus } from "./errors.js";
 import { RuntimeCircuitBreaker } from "./runtimeCircuitBreaker.js";
 
 const logger = createLogger("runtime-pool");
+
+/**
+ * Cap on consecutive relay-quota suspensions per session. A transient quota
+ * window (429 / exhausted 5h window) resolves; a permanent 403 (plan, region,
+ * or model block) never will — after this many suspensions we classify the
+ * crash as terminal instead of suspending forever.
+ */
+const MAX_QUOTA_SUSPENSIONS = 5;
 
 // ---- Types ----
 
@@ -42,6 +52,11 @@ export interface RuntimeContext {
   circuitBreaker: RuntimeCircuitBreaker;
   tunnel: TunnelSink | null;
   isAlive: (taskId: string) => boolean;
+  /**
+   * Earliest resets_at among the runtime's exhausted usage windows, from the
+   * UsageCollector snapshot. Used to schedule quota-suspended resumes.
+   */
+  quotaResetHint?: (runtime: string) => string | undefined;
 }
 
 export interface SpawnRequest {
@@ -91,6 +106,7 @@ export class RuntimePool {
   private rateLimitSink: RateLimitSink;
   private circuitBreaker: RuntimeCircuitBreaker;
   private tunnel: (TunnelSink & { sendStatus?(sid: string, s: string): void }) | null;
+  private quotaResetHint?: (runtime: string) => string | undefined;
 
   constructor(
     client: ApiClient,
@@ -99,6 +115,7 @@ export class RuntimePool {
     taskTimeoutMs = 2 * 60 * 60 * 1000,
     tunnel?: TunnelSink | null,
     circuitBreaker: RuntimeCircuitBreaker = new RuntimeCircuitBreaker(),
+    quotaResetHint?: (runtime: string) => string | undefined,
   ) {
     this.client = client;
     this.callbacks = callbacks;
@@ -106,6 +123,7 @@ export class RuntimePool {
     this.circuitBreaker = circuitBreaker;
     this.taskTimeoutMs = taskTimeoutMs;
     this.tunnel = tunnel ?? null;
+    this.quotaResetHint = quotaResetHint;
   }
 
   get activeCount(): number {
@@ -237,6 +255,7 @@ export class RuntimePool {
       circuitBreaker: this.circuitBreaker,
       tunnel: this.tunnel,
       isAlive: (taskId) => this.agents.has(taskId),
+      quotaResetHint: this.quotaResetHint,
     };
   }
 }
@@ -424,12 +443,28 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
   );
 
   let transient = false;
+  let relayQuotaResetAt: string | null = null;
+  let priorQuotaSuspensions = 0;
   if (opts.crashed) {
     const err = opts.error as { exitCode?: number; stderr?: string; message?: string } | undefined;
     transient = classify(opts.error, "iterator").kind === "transient";
-    if (transient) {
+    relayQuotaResetAt = relayQuotaResumeAt(opts.error, agent, ctx);
+    if (relayQuotaResetAt) {
+      // Cap consecutive quota suspensions: a permanent relay 403 (plan,
+      // region, or model block) looks identical to quota exhaustion — without
+      // a cap the session would resume-and-403 every 30 minutes forever,
+      // burning relay quota each cycle.
+      priorQuotaSuspensions = sessions.read(sessionId)?.quotaSuspensions ?? 0;
+      if (priorQuotaSuspensions >= MAX_QUOTA_SUSPENSIONS) {
+        logger.error(`Task ${taskId} hit relay quota suspension cap (${MAX_QUOTA_SUSPENSIONS}) — treating as terminal; check the relay plan/key`);
+        relayQuotaResetAt = null;
+      } else {
+        logger.warn(`Relay quota exhausted on task ${taskId} (${agent.providerName}), suspending until ${relayQuotaResetAt}`);
+      }
+    }
+    if (!relayQuotaResetAt && transient) {
       logger.warn(`Agent hit transient error on task ${taskId} (${agent.providerName}): ${err?.message ?? ""}`);
-    } else {
+    } else if (!relayQuotaResetAt && !transient) {
       logger.warn(`Agent crashed on task ${taskId} (${agent.providerName}, exit ${err?.exitCode ?? "?"}): ${err?.message ?? ""}`);
     }
     if (err?.stderr) logger.warn(`stderr: ${err.stderr}`);
@@ -465,7 +500,7 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
 
   const event: SessionEvent = classifyIteratorEnd({
     resultReceived: agent.resultReceived,
-    rateLimited: agent.rateLimited,
+    rateLimited: agent.rateLimited || relayQuotaResetAt !== null,
     taskInReview,
     crashed: opts.crashed,
     transient,
@@ -486,10 +521,17 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
     });
   } else if (nextStatus === "in_review") {
     ctx.circuitBreaker.recordWorkflowEntered(agent.providerName);
+    // Produced a result — quota is flowing again, reset the suspension streak.
+    await sessions.patch(sessionId, { quotaSuspensions: 0 }).catch(() => {});
     (ctx.tunnel as TunnelSink & { sendStatus?: (sid: string, s: string) => void })?.sendStatus?.(sessionId, "done");
     logger.info(`Task ${taskId} in review, preserving worktree`);
   } else if (nextStatus === "rate_limited") {
-    if (transient) {
+    if (relayQuotaResetAt) {
+      // Quota suspension: hold until the exhausted window's reset (or the
+      // 429's Retry-After), then resumeBackoffSessions picks it up.
+      const resumeAfter = new Date(relayQuotaResetAt).getTime();
+      await sessions.patch(sessionId, { resumeAfter, quotaSuspensions: priorQuotaSuspensions + 1 }).catch(() => {});
+    } else if (transient) {
       const backoffMs = 30_000;
       await sessions.patch(sessionId, { resumeBackoffMs: backoffMs, resumeAfter: Date.now() + backoffMs }).catch(() => {});
       logger.warn(`Transient crash on task ${taskId}, suspending with ${backoffMs / 1000}s backoff`);
@@ -497,6 +539,32 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
       logger.warn(`Agent for task ${taskId} (${agent.providerName}) exited while rate-limited, suspending`);
     }
   }
+}
+
+/**
+ * Mid-run 403/429 from a quota-managed relay endpoint (Kimi 5h/7d, DeepSeek
+ * balance/peak) is a suspension, not a crash: the task stays in_progress and
+ * the session resumes with context when the window resets. 401 stays
+ * terminal — a revoked key is not a window problem.
+ */
+function relayQuotaResumeAt(err: unknown, agent: AgentProcess, ctx: RuntimeContext): string | null {
+  // activeRelayKind() is read at finalize time, not captured at spawn: the
+  // daemon process outlives sessions, and a relay env change mid-session
+  // should be reflected in how we classify the error we're seeing now.
+  if (agent.providerName !== "claude" || !activeRelayKind()) return null;
+  const status = sdkErrorStatus(err);
+  if (status !== 403 && status !== 429) return null;
+  if (status === 429) {
+    const retryAfterMs = parseRetryAfterMs(sdkErrorHeader(err, "retry-after"));
+    if (retryAfterMs !== undefined) return new Date(Date.now() + retryAfterMs).toISOString();
+  }
+  return ctx.quotaResetHint?.(agent.providerName) ?? new Date(Date.now() + 30 * 60_000).toISOString();
+}
+
+function sdkErrorHeader(err: unknown, name: string): string | null {
+  const headers = (err as { headers?: unknown } | null)?.headers;
+  if (headers && typeof (headers as Headers).get === "function") return (headers as Headers).get(name);
+  return null;
 }
 
 async function handleCompletingTask(agent: AgentProcess, opts: { crashed: boolean; error?: unknown }, ctx: RuntimeContext): Promise<void> {
