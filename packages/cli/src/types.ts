@@ -11,4 +11,9 @@ export interface UsageInfo {
   updated_at: string;
 }
 
-export type WorkspaceInfo = { type: "repo"; cwd: string; repoDir: string; branchName: string } | { type: "temp"; cwd: string };
+export type WorkspaceInfo =
+  | { type: "repo"; cwd: string; repoDir: string; branchName: string }
+  | { type: "temp"; cwd: string }
+  // Worktree disabled: the agent works directly in the repo checkout. No
+  // cleanup — nothing was created.
+  | { type: "direct"; cwd: string; repoDir: string };

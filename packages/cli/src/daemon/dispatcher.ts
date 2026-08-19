@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AgentRuntime, type BoardType, isBoardType } from "@agent-kanban/shared";
+import { type AgentRuntime, type BoardType, isBoardType, parseWorktreeConfig, type WorktreeConfig } from "@agent-kanban/shared";
 import { type AgentInfo, generateSystemPrompt, writePromptFile } from "../agent/systemPrompt.js";
 import { AgentClient, type ApiClient } from "../client/index.js";
 import { getCredentials } from "../config.js";
@@ -20,9 +20,15 @@ import { getAvailableProviders, getProvider, normalizeRuntime } from "../provide
 import { getSessionManager } from "../session/manager.js";
 import type { SessionFile } from "../session/types.js";
 import { ensureSubagents, type SubagentDefinition } from "../workspace/agents.js";
-import { ensureCloned, prepareRepo, repoDir } from "../workspace/repoOps.js";
+import { ensureCloned, isLocalRepoUrl, prepareDirectRepo, prepareRepo, repoDir } from "../workspace/repoOps.js";
 import { ensureSkills } from "../workspace/skills.js";
-import { createRepoWorkspace, createTempWorkspace } from "../workspace/workspace.js";
+import {
+  acquireDirectRepoDir,
+  createDirectRepoWorkspace,
+  createRepoWorkspace,
+  createTempWorkspace,
+  isDirectRepoDirInUse,
+} from "../workspace/workspace.js";
 import { apiCallIdempotent, apiCallOptional, cryptoBoundary, execBoundary, fsSync } from "./boundaries.js";
 import type { PrMonitor } from "./prMonitor.js";
 import type { RateLimiter } from "./rateLimiter.js";
@@ -147,7 +153,10 @@ export async function dispatchTasks(
       return true;
     }
     const repo = repoById.get(t.repository_id);
-    return repo && repoDir(repo.url) !== null;
+    if (!repo) return false;
+    // Worktree-disabled tasks work directly in the shared checkout — one at a time.
+    if (!parseWorktreeConfig(t.metadata).enabled && isDirectRepoDirInUse(repoDir(repo.url))) return false;
+    return true;
   });
 
   if (available.length === 0) return false;
@@ -192,12 +201,25 @@ export async function dispatchTasks(
 
   if (!task) return false;
 
+  const worktree = parseWorktreeConfig(task.metadata);
   let dir: string | null = null;
+  let repoIsLocal = false;
   if (task.repository_id) {
     const repo = repoById.get(task.repository_id)!;
     dir = repoDir(repo.url);
+    repoIsLocal = isLocalRepoUrl(repo.url);
 
-    if (!prepareRepo(dir)) {
+    if (worktree.enabled) {
+      // prepareRepo is a no-op for local repos — never stash or pull the
+      // user's own working tree; `git worktree add` branches from HEAD.
+      if (!prepareRepo(dir, { local: repoIsLocal })) {
+        logger.error(`Repo not ready at ${dir}, skipping task ${task.id}`);
+        return false;
+      }
+    } else if (!repoIsLocal && !prepareDirectRepo(dir)) {
+      // Worktree-disabled remote tasks work in the shared checkout; the mutex
+      // guarantees nothing is mid-run, so re-sync it to the default branch
+      // instead of stacking on whatever the previous direct task left behind.
       logger.error(`Repo not ready at ${dir}, skipping task ${task.id}`);
       return false;
     }
@@ -211,7 +233,7 @@ export async function dispatchTasks(
 
   if (circuitBreaker && taskRuntime && !circuitBreaker.tryAcquireDispatch(taskRuntime)) return false;
 
-  const dispatched = await dispatchOne(task, dir, boardType, client, pool);
+  const dispatched = await dispatchOne(task, dir, boardType, client, pool, worktree);
   if (!dispatched && circuitBreaker && taskRuntime) circuitBreaker.releaseDispatch(taskRuntime);
   if (dispatched) prMonitor.track(task.id);
   return dispatched;
@@ -220,7 +242,14 @@ export async function dispatchTasks(
 /**
  * Single task dispatch: session create -> keys -> workspace -> skills -> env -> spawn.
  */
-async function dispatchOne(task: any, repoDir: string | null, boardType: BoardType, client: ApiClient, pool: RuntimePool): Promise<boolean> {
+async function dispatchOne(
+  task: any,
+  repoDir: string | null,
+  boardType: BoardType,
+  client: ApiClient,
+  pool: RuntimePool,
+  worktree: WorktreeConfig,
+): Promise<boolean> {
   const agentId = task.assigned_to;
   const sessionId = randomUUID();
 
@@ -257,12 +286,21 @@ async function dispatchOne(task: any, repoDir: string | null, boardType: BoardTy
   let workspace: { cwd: string; info: import("../workspace/workspace.js").WorkspaceInfo; cleanup(): void };
   try {
     workspace = repoDir
-      ? fsSync("createRepoWorkspace", () => createRepoWorkspace(repoDir, sessionId))
+      ? worktree.enabled
+        ? fsSync("createRepoWorkspace", () => createRepoWorkspace(repoDir, sessionId, worktree.name))
+        : fsSync("createDirectRepoWorkspace", () => createDirectRepoWorkspace(repoDir))
       : fsSync("createTempWorkspace", () => createTempWorkspace(sessionId));
   } catch (err) {
     cleanupGnupgHome(gnupgHome);
     await abort();
     throw err;
+  }
+
+  // Serialize direct-mode tasks on the same checkout. The slot is held for
+  // the entire session lifecycle (including suspension) and released inside
+  // cleanupWorkspace — the choke point for every termination path.
+  if (workspace.info.type === "direct") {
+    acquireDirectRepoDir(workspace.info.repoDir);
   }
 
   const providerName = normalizeRuntime(agentDetails.runtime);
@@ -332,21 +370,30 @@ async function dispatchOne(task: any, repoDir: string | null, boardType: BoardTy
   };
   await sessions.create(sessionFile);
 
-  await pool.spawnAgent({
-    provider,
-    taskId: task.id,
-    sessionId,
-    cwd: workspace.cwd,
-    taskContext,
-    agentClient,
-    agentEnv,
-    systemPromptFile,
-    onCleanup: () => {
-      workspace.cleanup();
-      cleanupGnupgHome(gnupgHome);
-    },
-    model: agentDetails.model ?? undefined,
-  });
+  try {
+    await pool.spawnAgent({
+      provider,
+      taskId: task.id,
+      sessionId,
+      cwd: workspace.cwd,
+      taskContext,
+      agentClient,
+      agentEnv,
+      systemPromptFile,
+      onCleanup: () => {
+        workspace.cleanup();
+        cleanupGnupgHome(gnupgHome);
+      },
+      model: agentDetails.model ?? undefined,
+    });
+  } catch (err) {
+    // Spawn failed after the workspace (and direct-mode slot) were created —
+    // clean up synchronously; the orphaned session file is reaped next tick.
+    workspace.cleanup();
+    cleanupGnupgHome(gnupgHome);
+    await abort();
+    throw err;
+  }
 
   return true;
 }

@@ -16,7 +16,11 @@ const STATUS_BADGE: Record<RepoAppStatus, { label: string; className: string }> 
   app_not_installed: { label: "App not installed", className: "bg-surface-tertiary text-content-tertiary" },
 };
 
-function RepoStatusBadge({ status, installUrl }: { status?: RepoAppStatus; installUrl: string | null }) {
+function RepoStatusBadge({ status, installUrl, sourceType }: { status?: RepoAppStatus; installUrl: string | null; sourceType?: string }) {
+  // Local repositories are worktreed in place by the daemon — no GitHub App involved.
+  if (sourceType === "local") {
+    return <span className="text-[10px] font-mono uppercase tracking-[0.06em] px-1.5 py-0.5 rounded-sm bg-accent/10 text-accent">Local</span>;
+  }
   if (!status) return null;
   const badge = STATUS_BADGE[status];
   const span = <span className={`text-[10px] font-mono uppercase tracking-[0.06em] px-1.5 py-0.5 rounded-sm ${badge.className}`}>{badge.label}</span>;
@@ -120,7 +124,7 @@ export function RepositoriesPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3 min-w-0">
                     <span className="font-mono text-sm text-content-primary font-medium truncate">{repo.name}</span>
-                    <RepoStatusBadge status={repo.app_status} installUrl={installUrl} />
+                    <RepoStatusBadge status={repo.app_status} installUrl={installUrl} sourceType={repo.source_type} />
                     <span className="text-[11px] font-mono text-content-tertiary truncate hidden sm:inline">{repo.url}</span>
                   </div>
                   <button
@@ -227,11 +231,11 @@ export function RepositoriesPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs text-content-tertiary uppercase tracking-wide font-medium">Clone URL</label>
+                  <label className="text-xs text-content-tertiary uppercase tracking-wide font-medium">Clone URL or local path</label>
                   <input
                     value={newUrl}
                     onChange={(e) => setNewUrl(e.target.value)}
-                    placeholder="https://github.com/user/repo.git"
+                    placeholder="https://github.com/user/repo.git or /home/you/project"
                     className="w-full bg-surface-primary border border-border rounded-lg px-3 py-2 text-sm text-content-primary placeholder:text-content-tertiary outline-none focus:border-accent font-mono"
                   />
                 </div>
@@ -243,7 +247,8 @@ export function RepositoriesPage() {
                   {createRepo.isPending ? "Adding..." : "Add Repository"}
                 </button>
                 <p className="text-[11px] text-content-tertiary">
-                  If the GitHub App isn't installed on this repo, you'll be prompted to install it after adding.
+                  Remote repos need the GitHub App for PRs. An absolute local path (e.g. /home/you/project) registers a local repository — the daemon
+                  creates a worktree branch directly in it, no GitHub required.
                 </p>
               </div>
             </TabsContent>

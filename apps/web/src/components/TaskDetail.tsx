@@ -388,6 +388,7 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
           labels: task.labels ?? [],
           assigned_to: task.assigned_to,
           status: task.status,
+          metadata: task.metadata ?? null,
         }}
         onClose={() => setEditOpen(false)}
         onSaved={() => {

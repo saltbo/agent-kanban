@@ -59,11 +59,62 @@ describe("normalizeGitUrl", () => {
     expect((thrown as any).status).toBe(400);
   });
 
-  it("rejects bare local path with HTTPException 400", async () => {
+  it("accepts an absolute local path as-is", async () => {
+    const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
+    expect(normalizeGitUrl("/home/user/project")).toBe("/home/user/project");
+  });
+
+  it("strips trailing slashes from a local path", async () => {
+    const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
+    expect(normalizeGitUrl("/home/user/project/")).toBe("/home/user/project");
+    expect(normalizeGitUrl("/home/user/project///")).toBe("/home/user/project");
+  });
+
+  it("trims surrounding whitespace from a local path", async () => {
+    const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
+    expect(normalizeGitUrl("  /home/user/project  ")).toBe("/home/user/project");
+  });
+
+  it("rejects a local path containing .. segments with HTTPException 400", async () => {
     const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
     let thrown: unknown;
     try {
-      normalizeGitUrl("/Users/alice/proj");
+      normalizeGitUrl("/home/user/../secret");
+    } catch (err) {
+      thrown = err;
+    }
+    expect((thrown as any).status).toBe(400);
+  });
+
+  it("rejects a local path containing a NUL byte with HTTPException 400", async () => {
+    const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
+    let thrown: unknown;
+    try {
+      normalizeGitUrl("/home/user/\0proj");
+    } catch (err) {
+      thrown = err;
+    }
+    expect((thrown as any).status).toBe(400);
+  });
+
+  it("rejects ~-prefixed paths with HTTPException 400", async () => {
+    const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
+    for (const url of ["~/proj", "~user/proj"]) {
+      let thrown: unknown;
+      try {
+        normalizeGitUrl(url);
+      } catch (err) {
+        thrown = err;
+      }
+      expect((thrown as any).status).toBe(400);
+    }
+  });
+
+  it("rejects relative paths with HTTPException 400", async () => {
+    const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
+    let thrown: unknown;
+    try {
+      normalizeGitUrl("relative/path");
     } catch (err) {
       thrown = err;
     }
@@ -113,6 +164,22 @@ describe("normalizeGitUrl", () => {
   it("accepts nested group paths (gitlab.com/group/subgroup/project)", async () => {
     const { normalizeGitUrl } = await import("../apps/web/server/repositoryRepo");
     expect(normalizeGitUrl("https://gitlab.com/group/subgroup/project")).toBe("https://gitlab.com/group/subgroup/project");
+  });
+});
+
+describe("isLocalRepoPath / repoSourceType", () => {
+  it("isLocalRepoPath is true only for absolute paths", async () => {
+    const { isLocalRepoPath } = await import("../apps/web/server/repositoryRepo");
+    expect(isLocalRepoPath("/home/user/project")).toBe(true);
+    expect(isLocalRepoPath("https://github.com/org/repo")).toBe(false);
+    expect(isLocalRepoPath("git@github.com:org/repo")).toBe(false);
+    expect(isLocalRepoPath("relative/path")).toBe(false);
+  });
+
+  it("repoSourceType maps absolute paths to local and URLs to remote", async () => {
+    const { repoSourceType } = await import("../apps/web/server/repositoryRepo");
+    expect(repoSourceType("/home/user/project")).toBe("local");
+    expect(repoSourceType("https://github.com/org/repo")).toBe("remote");
   });
 });
 
@@ -240,6 +307,52 @@ describe("repositoryRepo", () => {
     const repo = await createRepository(env.DB, "repo-test-user", { name: "scoped-repo", url: "https://github.com/org/scoped-repo" });
     const result = await getRepository(env.DB, repo.id, "repo-test-user-2");
     expect(result).toBeNull();
+  });
+
+  it("createRepository registers a local path repo with source_type local", async () => {
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const repo = await createRepository(env.DB, "repo-test-user", { name: "local-repo", url: "/home/user/local-repo" });
+    expect(repo.url).toBe("/home/user/local-repo");
+    expect(repo.source_type).toBe("local");
+    // Local repos have no owner/repo form — the path itself is the identity.
+    expect(repo.full_name).toBe("/home/user/local-repo");
+  });
+
+  it("createRepository normalizes a local path before persisting", async () => {
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const repo = await createRepository(env.DB, "repo-test-user", { name: "local-repo-messy", url: "  /home/user/messy/  " });
+    expect(repo.url).toBe("/home/user/messy");
+  });
+
+  it("createRepository marks https repos as source_type remote", async () => {
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const repo = await createRepository(env.DB, "repo-test-user", { name: "remote-repo", url: "https://github.com/org/remote-repo" });
+    expect(repo.source_type).toBe("remote");
+    expect(repo.full_name).toBe("org/remote-repo");
+  });
+
+  it("getRepository returns the path as full_name for a local repo", async () => {
+    const { createRepository, getRepository } = await import("../apps/web/server/repositoryRepo");
+    const repo = await createRepository(env.DB, "repo-test-user", { name: "local-get", url: "/home/user/local-get" });
+    const result = await getRepository(env.DB, repo.id, "repo-test-user");
+    expect(result).not.toBeNull();
+    expect(result!.full_name).toBe("/home/user/local-get");
+    expect(result!.source_type).toBe("local");
+  });
+
+  it("listRepositories URL filter matches local paths after normalization", async () => {
+    const { listRepositories } = await import("../apps/web/server/repositoryRepo");
+    const repos = await listRepositories(env.DB, "repo-test-user", { url: "/home/user/local-get/" });
+    expect(repos.length).toBe(1);
+    expect(repos[0].url).toBe("/home/user/local-get");
+  });
+
+  it("findOrCreateRepository dedupes local paths after normalization", async () => {
+    const { findOrCreateRepository } = await import("../apps/web/server/repositoryRepo");
+    const first = await findOrCreateRepository(env.DB, "repo-test-user", { name: "local-dup", url: "/home/user/local-dup" });
+    const second = await findOrCreateRepository(env.DB, "repo-test-user", { name: "local-dup-2", url: "/home/user/local-dup/" });
+    expect(second.id).toBe(first.id);
+    expect(second.full_name).toBe("/home/user/local-dup");
   });
 
   it("listRepositories throws 500 when a stored URL bypassed normalizeGitUrl", async () => {

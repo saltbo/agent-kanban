@@ -1,11 +1,13 @@
+import { generateWorktreeName, isValidWorktreeName, parseWorktreeConfig } from "@agent-kanban/shared";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
 
 export type TaskFormMode = "create" | "edit";
@@ -18,6 +20,7 @@ export interface TaskFormInitial {
   labels?: string[];
   assigned_to?: string | null;
   status: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 interface TaskFormDialogProps {
@@ -48,8 +51,13 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
   const [repositoryId, setRepositoryId] = useState<string>(NONE);
   const [assignTo, setAssignTo] = useState<string>(NONE);
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+  const [useWorktree, setUseWorktree] = useState(true);
+  const [worktreeName, setWorktreeName] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A fresh random suggestion each time the dialog opens.
+  const nameSuggestion = useMemo(() => (open ? generateWorktreeName() : ""), [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -58,6 +66,9 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
     setRepositoryId(initialTask?.repository_id ?? NONE);
     setAssignTo(initialTask?.assigned_to ?? NONE);
     setSelectedLabels(initialTask?.labels ?? []);
+    const initialWorktree = parseWorktreeConfig(initialTask?.metadata);
+    setUseWorktree(initialWorktree.enabled);
+    setWorktreeName(initialWorktree.name ?? "");
     setError(null);
     setPending(false);
   }, [open, initialTask]);
@@ -81,9 +92,18 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
   const repoRequired = boardType === "dev";
   const repoForbidden = boardType === "ops";
   const repoMissing = repoRequired && repositoryId === NONE;
+  // Worktree only applies once a repo is involved, and renaming after dispatch
+  // doesn't rename a live worktree — lock it unless the task is still pre-dispatch.
+  const worktreeEditable = (mode === "create" || initialTask?.status === "todo") && !repoForbidden && repositoryId !== NONE;
+  const trimmedWorktreeName = worktreeName.trim();
+  // Only block submit on the name when the field is actually in play — the
+  // input is hidden/inert when the switch is off, no repo is selected, or the
+  // section is locked.
+  const worktreeNameInvalid = useWorktree && worktreeEditable && trimmedWorktreeName !== "" && !isValidWorktreeName(trimmedWorktreeName);
 
-  const repoNameById = new Map(repositories.map((r: any) => [r.id, r.name]));
-  const agentNameById = new Map(workers.map((a: any) => [a.id, a.name || a.username]));
+  const repoNameById = new Map(repositories.map((r: any) => [r.id, r.full_name ? `${r.name} — ${r.full_name}` : `${r.name} — ${r.url}`]));
+  // Agent names are not unique; the username is. Show `name (@username)` everywhere.
+  const agentNameById = new Map(workers.map((a: any) => [a.id, a.name && a.name !== a.username ? `${a.name} (@${a.username})` : `@${a.username}`]));
 
   function toggleLabel(name: string) {
     setSelectedLabels((prev) => (prev.includes(name) ? prev.filter((l) => l !== name) : [...prev, name]));
@@ -99,6 +119,11 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
         if (!repoForbidden && repositoryId !== NONE) body.repository_id = repositoryId;
         if (assignTo !== NONE) body.assigned_to = assignTo;
         if (selectedLabels.length > 0) body.labels = selectedLabels;
+        if (worktreeEditable && repositoryId !== NONE) {
+          // Only send non-default worktree config; the daemon defaults to enabled.
+          if (!useWorktree) body.metadata = { worktree: { enabled: false } };
+          else if (trimmedWorktreeName) body.metadata = { worktree: { enabled: true, name: trimmedWorktreeName } };
+        }
         await api.tasks.create(body);
       } else if (initialTask) {
         const body: Record<string, unknown> = {};
@@ -110,6 +135,18 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
         const initialLabels = initialTask.labels ?? [];
         if (selectedLabels.length !== initialLabels.length || selectedLabels.some((l) => !initialLabels.includes(l))) {
           body.labels = selectedLabels;
+        }
+        if (worktreeEditable) {
+          const initialWorktree = parseWorktreeConfig(initialTask.metadata);
+          const nextWorktree = !useWorktree
+            ? { enabled: false as const }
+            : trimmedWorktreeName
+              ? { enabled: true as const, name: trimmedWorktreeName }
+              : { enabled: true as const };
+          if (nextWorktree.enabled !== initialWorktree.enabled || nextWorktree.name !== initialWorktree.name) {
+            // Merge — metadata also carries annotations and other daemon keys.
+            body.metadata = { ...(initialTask.metadata ?? {}), worktree: nextWorktree };
+          }
         }
         if (Object.keys(body).length > 0) await api.tasks.update(initialTask.id, body);
         if (assignEditable && assignTo !== NONE && assignTo !== initialTask.assigned_to) {
@@ -161,8 +198,11 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
                   <SelectContent>
                     <SelectItem value={NONE}>None</SelectItem>
                     {repositories.map((r: any) => (
-                      <SelectItem key={r.id} value={r.id}>
-                        {r.name}
+                      <SelectItem key={r.id} value={r.id} className="items-start">
+                        <span className="flex flex-col items-start gap-0.5 whitespace-normal">
+                          <span>{r.name}</span>
+                          <span className="font-mono text-[11px] text-content-tertiary break-all">{r.full_name ?? r.url}</span>
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -182,7 +222,8 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
                     <SelectItem value={NONE}>Unassigned</SelectItem>
                     {workers.map((a: any) => (
                       <SelectItem key={a.id} value={a.id}>
-                        {a.name || a.username}
+                        <span>{a.name && a.name !== a.username ? a.name : `@${a.username}`}</span>
+                        {a.name && a.name !== a.username && <span className="ml-1.5 font-mono text-[11px] text-content-tertiary">@{a.username}</span>}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -194,6 +235,34 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
               )}
             </div>
           </div>
+
+          {!repoForbidden && repositoryId !== NONE && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="task-worktree">Isolated worktree</Label>
+                <Switch id="task-worktree" checked={useWorktree} onCheckedChange={setUseWorktree} disabled={!worktreeEditable} />
+              </div>
+              {useWorktree && (
+                <Input
+                  id="task-worktree-name"
+                  value={worktreeName}
+                  onChange={(e) => setWorktreeName(e.target.value)}
+                  placeholder={nameSuggestion}
+                  disabled={!worktreeEditable}
+                  className="font-mono text-xs"
+                />
+              )}
+              {worktreeNameInvalid && <p className="text-[11px] text-error">Letters, numbers, hyphens, underscores; max 41 chars.</p>}
+              <p className="text-[11px] text-content-tertiary">
+                {useWorktree
+                  ? trimmedWorktreeName
+                    ? `Agent works in an isolated git worktree on branch ak/${trimmedWorktreeName} — parallel tasks stay mergeable.`
+                    : "Agent works in an isolated git worktree on an auto-generated ak/* branch — parallel tasks stay mergeable."
+                  : "Agent works directly in the repo checkout — one task at a time per repo."}
+                {!worktreeEditable && mode === "edit" && " Locked: the task has already been dispatched."}
+              </p>
+            </div>
+          )}
 
           {labels.length > 0 && (
             <div className="space-y-1.5">
@@ -227,7 +296,7 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={pending || !title.trim() || repoMissing}>
+          <Button onClick={submit} disabled={pending || !title.trim() || repoMissing || worktreeNameInvalid}>
             {pending ? "Saving..." : mode === "create" ? "Create task" : "Save"}
           </Button>
         </DialogFooter>

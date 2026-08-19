@@ -9,6 +9,26 @@ const logger = createLogger("workspace");
 
 export type { WorkspaceInfo };
 
+// ---- Direct-mode serialization ----
+
+/**
+ * Repo checkouts currently hosting a worktree-disabled task. Direct-mode
+ * tasks share the repo's git dir, so only one may run per checkout at a time.
+ * The slot is held for the whole session lifecycle (including rate-limit /
+ * quota suspension — a suspended direct task's uncommitted work still sits in
+ * the checkout) and released in cleanupWorkspace, the choke point every
+ * termination path (finish, reap, cancel, resume-then-finish) flows through.
+ */
+const directRepoDirsInUse = new Set<string>();
+
+export function isDirectRepoDirInUse(repoDir: string): boolean {
+  return directRepoDirsInUse.has(repoDir);
+}
+
+export function acquireDirectRepoDir(repoDir: string): void {
+  directRepoDirsInUse.add(repoDir);
+}
+
 // ---- Runtime object ----
 
 export interface Workspace {
@@ -19,10 +39,17 @@ export interface Workspace {
 
 // ---- Create ----
 
-export function createRepoWorkspace(repoDir: string, sessionId: string): Workspace {
-  const { worktreeDir, branchName } = createWorktree(repoDir, sessionId);
+export function createRepoWorkspace(repoDir: string, sessionId: string, worktreeName?: string): Workspace {
+  const { worktreeDir, branchName } = createWorktree(repoDir, sessionId, worktreeName);
   const info: WorkspaceInfo = { type: "repo", cwd: worktreeDir, repoDir, branchName };
   return { cwd: worktreeDir, info, cleanup: () => cleanupWorkspace(info) };
+}
+
+/** Worktree disabled: run directly in the repo checkout (caller serializes access). */
+export function createDirectRepoWorkspace(repoDir: string): Workspace {
+  logger.warn(`Worktree disabled — working directly in ${repoDir}`);
+  const info: WorkspaceInfo = { type: "direct", cwd: repoDir, repoDir };
+  return { cwd: repoDir, info, cleanup: () => cleanupWorkspace(info) };
 }
 
 export function createTempWorkspace(sessionId: string): Workspace {
@@ -43,6 +70,10 @@ export function restoreWorkspace(info: WorkspaceInfo): Workspace {
 export function cleanupWorkspace(info: WorkspaceInfo): void {
   if (info.type === "repo") {
     removeWorktree(info.repoDir, info.cwd, info.branchName);
+  } else if (info.type === "direct") {
+    // Release the per-checkout dispatch slot. The repo checkout itself belongs
+    // to the user — nothing to delete.
+    directRepoDirsInUse.delete(info.repoDir);
   } else {
     rmSync(info.cwd, { recursive: true, force: true });
     logger.info(`Removed temp workspace ${info.cwd}`);

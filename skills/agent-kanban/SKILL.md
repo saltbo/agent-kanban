@@ -14,6 +14,7 @@ You are an agent. Use the `ak` CLI to work on tasks. Your identity is initialize
 2. **Log** progress as you work → `ak create note --task <id> "doing X..."`
 3. **Local test** → run the project's test suite and type check before pushing. Fix all failures locally. Skip only if tests cannot run locally.
 4. **GitHub auth for repo work** → before the first `git push` or `gh` command, run `ak auth git <repo-id>`. The token is valid for about 1 hour; if it expires, run the command again.
+   - **Local repository (no git remote)**: if `git remote get-url origin` fails, the task's repo is a local path — skip `ak auth git`, pushing, and all PR steps (5, 6, 7, 9). Commit your work locally and note the branch name in the completion summary; the reviewer merges the branch locally. Two workspace modes: a **worktree task** (the default) puts you on an `ak/*` branch in an isolated worktree — commit there. A **direct task** (worktree disabled for this task) runs you in the owner's checkout on its current branch — commit on that branch and say so explicitly in the summary, since the commit lands on the owner's checked-out branch.
 5. **Draft PR** → push branch, `gh pr create --draft`
 6. **Check CI** → `gh pr checks <pr-number> --watch` — fix failures, push, and re-check. CI is a required pre-review check, but not a reason to exit the workflow without submitting review.
 7. **Check for merge conflicts** → `gh pr view <pr-number> --json mergeable` — if `mergeable` is not `MERGEABLE`, rebase onto the base branch, resolve conflicts, push, and re-run CI before proceeding

@@ -373,6 +373,8 @@ export interface Repository {
   task_count?: number;
   full_name: string;
   app_status?: RepoAppStatus;
+  /** `remote` = cloneable URL; `local` = absolute path on the daemon host (fork extension). */
+  source_type?: "remote" | "local";
 }
 
 export interface GithubAppConfig {
