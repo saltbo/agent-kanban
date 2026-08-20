@@ -1,4 +1,14 @@
-import type { AgentRuntime, CreateSubagentInput, GithubAppConfig, InstallableRepo, Repository, SchedulingSettings } from "@agent-kanban/shared";
+import type {
+  AgentRuntime,
+  CreateSubagentInput,
+  GithubAppConfig,
+  InstallableRepo,
+  RelayEndpointConfig,
+  RelayEndpointInput,
+  RelayUsageResponse,
+  Repository,
+  SchedulingSettings,
+} from "@agent-kanban/shared";
 import { getAuthToken, refreshAuthToken } from "./auth-client";
 
 const API_BASE = "/api";
@@ -180,6 +190,13 @@ export const api = {
   settings: {
     getScheduling: () => request<SchedulingSettings>("GET", "/settings/scheduling"),
     putScheduling: (settings: SchedulingSettings) => request<SchedulingSettings>("PUT", "/settings/scheduling", settings),
+  },
+  relays: {
+    list: () => request<RelayEndpointConfig[]>("GET", "/relays"),
+    create: (input: RelayEndpointInput) => request<RelayEndpointConfig>("POST", "/relays", input),
+    update: (id: string, input: RelayEndpointInput) => request<RelayEndpointConfig>("PUT", `/relays/${id}`, input),
+    delete: (id: string) => request<void>("DELETE", `/relays/${id}`),
+    usage: (id: string) => request<RelayUsageResponse>("GET", `/relays/${id}/usage`),
   },
   admin: {
     getStats: () => request<any>("GET", "/admin/stats"),

@@ -60,6 +60,7 @@ export async function applyMigrations(db: D1Database) {
     "0038_board_maintainer_http_trigger_serial.sql",
     "0039_repository_source_type.sql",
     "0040_owner_settings.sql",
+    "0041_relay_endpoints.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");

@@ -3,6 +3,7 @@ import { Bot, Cloud, Code2, Github, type LucideIcon, Sparkles, Terminal } from "
 import { Link } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
+import { RelayQuotaPanel } from "../components/RelayQuotaPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { useAgents, useSubagents } from "../hooks/useAgents";
 import { agentColor, agentColorRgb, agentFingerprint } from "../lib/agentIdentity";
@@ -68,6 +69,9 @@ export function AgentsPage() {
               Sub-agents
               <span className="text-content-tertiary">{subagents.length}</span>
             </TabsTrigger>
+            <TabsTrigger value="quota" className="px-3 font-mono text-xs">
+              配额
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="agents">
@@ -96,6 +100,10 @@ export function AgentsPage() {
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="quota">
+            <RelayQuotaPanel />
           </TabsContent>
         </Tabs>
       </div>

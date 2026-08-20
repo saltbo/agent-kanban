@@ -7,6 +7,7 @@ import {
   type AnyAgentRuntime,
   type CreateAgentInput,
   type CreateSubagentInput,
+  detectRelay,
   findInvalidSkillRef,
   hasNoScheduleTaint,
   type InstallableRepo,
@@ -19,13 +20,19 @@ import {
   MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS,
   MAINTAINER_TAINT_KEY,
   type MachineRuntime,
+  normalizeRelayEndpointInput,
   normalizeSchedulingSettings,
   parseScheduledAt,
+  probeRelayQuota,
   RESERVED_ROLES,
+  type RelayEndpointInput,
+  type RelayUsageResponse,
   type Task,
   type IdentityType as TaskIdentityType,
+  UsageFetchError,
   type UsageInfo,
   type UsageWindow,
+  validateRelayEndpointInput,
   validateSchedulingSettings,
   validateTransition,
 } from "@agent-kanban/shared";
@@ -152,6 +159,14 @@ import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
 import { listRuntimeModels } from "./modelCatalog";
 import { getSchedulingSettings, putSchedulingSettings } from "./ownerSettingsRepo";
+import {
+  createRelayEndpoint,
+  deleteRelayEndpoint,
+  getRelayEndpoint,
+  listRelayEndpoints,
+  toPublicConfig,
+  updateRelayEndpoint,
+} from "./relayEndpointRepo";
 import { createRepository, deleteRepository, getRepository, listRepositories, normalizeGitUrl } from "./repositoryRepo";
 import { metadataWithRuntimeSource, taskRuntimeSource } from "./runtimeBinding";
 import { dispatchAssignedTask, releaseAssignedTaskRuntime, resolveAssignableWorkerRuntimeSource } from "./runtimeCoordinator";
@@ -1118,6 +1133,138 @@ api.put("/api/settings/scheduling", async (c) => {
   // the two fields they understand.
   await putSchedulingSettings(c.env.DB, c.get("ownerId"), normalizeSchedulingSettings(body));
   return c.json(await getSchedulingSettings(c.env.DB, c.get("ownerId")));
+});
+
+// ---- Relay endpoints (Agents → 配额 tab) ----
+// User-identity-only: relay tokens live in these rows, so machine/api-key
+// identities must not enumerate even the masked form. The raw token never
+// leaves the server — responses carry maskToken(token), and probe failures
+// are mapped to sanitized messages that never embed the token or the
+// upstream response body.
+
+function requireUserIdentity(c: { get: (key: "identityType") => string }): void {
+  if (c.get("identityType") !== "user") throw new HTTPException(403, { message: "User identity required" });
+}
+
+/** Map a probe failure to a sanitized 400 — never leaks the token or upstream body. */
+function probeFailureToHttpError(err: unknown): HTTPException {
+  if (err instanceof UsageFetchError) {
+    if (err.status === 401 || err.status === 403) return new HTTPException(400, { message: "Relay authentication failed — check the token" });
+    if (err.status === 429) return new HTTPException(400, { message: "Relay rate-limited the validation probe — try again shortly" });
+    return new HTTPException(400, { message: `Relay validation probe failed: ${err.message}` });
+  }
+  return new HTTPException(400, { message: `Relay validation probe failed: ${(err as Error).message}` });
+}
+
+/** Resolve "auto" kind from the base URL host; explicit kinds pass through. */
+function resolveRelayKind(input: RelayEndpointInput) {
+  if (input.kind !== "auto") return input.kind;
+  const detected = detectRelay(input.base_url);
+  if (!detected) throw new HTTPException(400, { message: "Cannot auto-detect relay kind from this base URL — pick Kimi or DeepSeek explicitly" });
+  return detected;
+}
+
+api.get("/api/relays", async (c) => {
+  requireUserIdentity(c);
+  const rows = await listRelayEndpoints(c.env.DB, c.get("ownerId"));
+  return c.json(rows.map(toPublicConfig));
+});
+
+api.post("/api/relays", async (c) => {
+  requireUserIdentity(c);
+  const body = await c.req.json<unknown>();
+  const validationError = validateRelayEndpointInput(body, { requireToken: true });
+  if (validationError) throw new HTTPException(400, { message: validationError });
+  const input = normalizeRelayEndpointInput(body);
+  const kind = resolveRelayKind(input);
+  // Probe before saving: a config that can't authenticate is never stored.
+  try {
+    await probeRelayQuota({ kind, baseUrl: input.base_url, token: input.token! });
+  } catch (err) {
+    throw probeFailureToHttpError(err);
+  }
+  const row = await createRelayEndpoint(c.env.DB, c.get("ownerId"), {
+    name: input.name,
+    kind,
+    baseUrl: input.base_url,
+    token: input.token!,
+    model: input.model,
+    modelMap: input.model_map ?? {},
+    extraEnv: input.extra_env ?? {},
+  });
+  return c.json(toPublicConfig(row), 201);
+});
+
+api.put("/api/relays/:id", async (c) => {
+  requireUserIdentity(c);
+  const ownerId = c.get("ownerId");
+  const id = c.req.param("id");
+  const existing = await getRelayEndpoint(c.env.DB, id, ownerId);
+  if (!existing) throw new HTTPException(404, { message: "Relay endpoint not found" });
+  const body = await c.req.json<unknown>();
+  const validationError = validateRelayEndpointInput(body, { requireToken: false });
+  if (validationError) throw new HTTPException(400, { message: validationError });
+  const input = normalizeRelayEndpointInput(body);
+  const kind = resolveRelayKind(input);
+  const token = input.token ?? existing.token;
+  // Re-probe only when the credentials or endpoint actually changed — cheap
+  // edits (rename, model remap) skip the network round-trip.
+  if (input.token !== undefined || input.base_url !== existing.base_url || kind !== existing.kind) {
+    try {
+      await probeRelayQuota({ kind, baseUrl: input.base_url, token });
+    } catch (err) {
+      throw probeFailureToHttpError(err);
+    }
+  }
+  const row = await updateRelayEndpoint(c.env.DB, id, ownerId, {
+    name: input.name,
+    kind,
+    baseUrl: input.base_url,
+    token: input.token,
+    // Full-replace: an omitted model clears the stored one (only the token
+    // has keep-on-empty semantics).
+    model: input.model ?? null,
+    modelMap: input.model_map ?? {},
+    extraEnv: input.extra_env ?? {},
+  });
+  if (!row) throw new HTTPException(404, { message: "Relay endpoint not found" });
+  return c.json(toPublicConfig(row));
+});
+
+api.delete("/api/relays/:id", async (c) => {
+  requireUserIdentity(c);
+  const deleted = await deleteRelayEndpoint(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!deleted) throw new HTTPException(404, { message: "Relay endpoint not found" });
+  return c.json({ ok: true });
+});
+
+api.get("/api/relays/:id/usage", async (c) => {
+  requireUserIdentity(c);
+  const ownerId = c.get("ownerId");
+  const row = await getRelayEndpoint(c.env.DB, c.req.param("id"), ownerId);
+  if (!row) throw new HTTPException(404, { message: "Relay endpoint not found" });
+  const scheduling = await getSchedulingSettings(c.env.DB, ownerId);
+  const base: RelayUsageResponse = { fetched_at: new Date().toISOString(), ok: true, windows: [], balance: null, peak: null };
+  try {
+    const probe = await probeRelayQuota({ kind: row.kind, baseUrl: row.base_url, token: row.token }, { scheduling });
+    return c.json({ ...base, windows: probe.usage.windows, balance: probe.balance ?? null, peak: probe.peak ?? null });
+  } catch (err) {
+    if (err instanceof UsageFetchError && (err.status === 401 || err.status === 403)) {
+      return c.json({ ...base, ok: false, error: { kind: "unauthorized" as const, message: "Relay authentication failed — update the token" } });
+    }
+    if (err instanceof UsageFetchError && err.status === 429) {
+      return c.json({
+        ...base,
+        ok: false,
+        error: {
+          kind: "rate_limited" as const,
+          message: "Relay rate-limited the probe",
+          ...(err.retryAfterMs !== undefined ? { retry_after_ms: err.retryAfterMs } : {}),
+        },
+      });
+    }
+    return c.json({ ...base, ok: false, error: { kind: "unreachable" as const, message: (err as Error).message } });
+  }
 });
 
 api.get("/api/machines", async (c) => {

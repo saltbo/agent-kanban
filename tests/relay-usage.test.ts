@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { probeRelayQuota } from "@agent-kanban/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { detectRelay, fetchRelayUsage, type RelayEndpoint } from "../packages/cli/src/providers/relayUsage.js";
 import { setSchedulingSettings } from "../packages/cli/src/providers/schedulingState.js";
@@ -239,5 +240,80 @@ describe("fetchRelayUsage — deepseek", () => {
     expect(err).toBeInstanceOf(UsageFetchError);
     expect(err.status).toBe(401);
     expect(err.message).not.toContain(TOKEN);
+  });
+});
+
+// The shared probe carries the rich per-kind details (balance, peak) that the
+// web quota cards need; the CLI shim above only surfaces usage windows.
+describe("probeRelayQuota (shared)", () => {
+  const OFF_PEAK = new Date(Date.UTC(2026, 7, 19, 6, 0)); // 14:00 Asia/Shanghai — outside 09:00–12:00
+
+  it("populates balance for a deepseek relay even when not exhausted", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "12.34" }] }));
+
+    const probe = await probeRelayQuota(endpoint("deepseek"), {
+      now: OFF_PEAK,
+      scheduling: { peak_windows: [], timezone: "Asia/Shanghai" },
+    });
+
+    expect(probe.balance).toEqual({ available: true, total: 12.34, currency: "CNY" });
+    expect(probe.usage.windows).toEqual([]);
+    expect(probe.peak).toEqual({ active: false });
+  });
+
+  it("reflects the injected scheduling in the deepseek peak info", async () => {
+    // Fresh Response per call — a Response body can only be read once.
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(jsonResponse({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "12.34" }] })),
+    );
+
+    // NOW = 10:30 Asia/Shanghai — inside the injected 09:00–12:00 window.
+    const probe = await probeRelayQuota(endpoint("deepseek"), {
+      now: NOW,
+      scheduling: { peak_windows: [{ start: "09:00", end: "12:00" }], timezone: "Asia/Shanghai" },
+    });
+
+    expect(probe.peak).toEqual({ active: true, ends_at: "2026-08-19T04:00:00.000Z" });
+    expect(probe.usage.windows).toContainEqual({ runtime: "claude", label: "Peak-Pricing", utilization: 100, resets_at: "2026-08-19T04:00:00.000Z" });
+
+    const offPeakProbe = await probeRelayQuota(endpoint("deepseek"), {
+      now: NOW,
+      scheduling: { peak_windows: [], timezone: "Asia/Shanghai" },
+    });
+    expect(offPeakProbe.peak).toEqual({ active: false });
+    expect(offPeakProbe.usage.windows).toEqual([]);
+  });
+
+  it("calls the injected warn on kimi shape drift instead of logging", async () => {
+    const warn = vi.fn();
+    fetchMock.mockResolvedValue(jsonResponse({ limits: [{}], usage: { limit: 200, remaining: 100, resetTime: "2026-08-25T00:00:00Z" } }));
+
+    const probe = await probeRelayQuota(endpoint("kimi"), { now: NOW, warn });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("limits[0].detail");
+    expect(probe.usage.windows).toEqual([{ runtime: "claude", label: "7-Day", utilization: 50, resets_at: "2026-08-25T00:00:00.000Z" }]);
+  });
+
+  it("calls the injected warn when the deepseek balance is exhausted", async () => {
+    const warn = vi.fn();
+    fetchMock.mockResolvedValue(jsonResponse({ is_available: false, balance_infos: [{ currency: "CNY", total_balance: "5.00" }] }));
+
+    const probe = await probeRelayQuota(endpoint("deepseek"), {
+      now: OFF_PEAK,
+      scheduling: { peak_windows: [], timezone: "Asia/Shanghai" },
+      warn,
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("deepseek balance exhausted");
+    expect(probe.usage.windows).toContainEqual({
+      runtime: "claude",
+      label: "Balance",
+      utilization: 100,
+      resets_at: new Date(OFF_PEAK.getTime() + 60 * 60_000).toISOString(),
+    });
+    // Balance detail is still populated from the parseable entries.
+    expect(probe.balance).toEqual({ available: false, total: 5, currency: "CNY" });
   });
 });
