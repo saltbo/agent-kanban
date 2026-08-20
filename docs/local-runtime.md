@@ -6,7 +6,7 @@ Cloudflare Sandbox, hosted D1, Durable Objects, or OIDC provider.
 
 ## Components
 
-- `scripts/service_runner.sh` runs the React UI, Hono API, local Miniflare D1,
+- `./service_runner.sh` runs the React UI, Hono API, local Miniflare D1,
   and local WebSocket relay on the machine.
 - `scripts/local_runtime_runner.sh` builds the CLI, registers the machine with
   the local API, sends heartbeats, polls assigned tasks, and starts installed
@@ -21,7 +21,7 @@ Cloudflare Sandbox, hosted D1, Durable Objects, or OIDC provider.
 Start the local web/API service in terminal one:
 
 ```bash
-./scripts/service_runner.sh
+./service_runner.sh
 ```
 
 Open `http://127.0.0.1:6265`, sign in with email/password, verify through the

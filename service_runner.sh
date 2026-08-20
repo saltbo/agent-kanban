@@ -158,10 +158,46 @@ step_install() {
   }
 }
 
+# Returns 0 when every migration file in apps/web/migrations is recorded in the
+# local D1 d1_migrations table (i.e. the DB is up to date), 1 otherwise.
+migrate_verified() {
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  local db name
+  db="$(find "$WEB_DIR/.wrangler/state/v3/d1" -name '*.sqlite' 2>/dev/null | head -1)"
+  [ -n "$db" ] || return 1
+  for sql in "$WEB_DIR"/migrations/*.sql; do
+    [ -e "$sql" ] || continue
+    name="$(basename "$sql")"
+    sqlite3 "$db" "SELECT 1 FROM d1_migrations WHERE name = '$name' LIMIT 1;" 2>/dev/null | grep -q 1 || return 1
+  done
+  return 0
+}
+
 step_migrate() {
   [ "$DO_MIGRATE" = "1" ] || return 0
   info "Applying D1 migrations to the local database…"
-  (cd "$ROOT" && pnpm --filter @agent-kanban/web db:migrate)
+  # Fast path: if the local D1 DB already has every migration, skip wrangler
+  # entirely — it can otherwise finish the migration and then hang forever on
+  # an idle update-check HTTPS socket (tunneled networks).
+  if migrate_verified; then
+    info "Local D1 database already up to date."
+    return 0
+  fi
+  # Bounded run + independent verification: never wait on wrangler indefinitely.
+  local rc=0
+  (cd "$ROOT" && CI=true WRANGLER_SEND_METRICS=false timeout 120 pnpm --filter @agent-kanban/web db:migrate) || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    warn "db:migrate timed out after 120s — checking whether migrations actually landed…"
+    if migrate_verified; then
+      warn "Migrations are recorded in the local D1 database — continuing."
+    elif command -v sqlite3 >/dev/null 2>&1; then
+      fatal "Migrations did not complete — rerun this script to retry."
+    else
+      warn "Can't verify (sqlite3 not installed) — continuing; the DB may need a manual migrate."
+    fi
+  elif [ "$rc" -ne 0 ]; then
+    fatal "db:migrate failed with exit code $rc."
+  fi
 }
 
 step_dev_vars() {

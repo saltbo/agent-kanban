@@ -23,7 +23,7 @@ Changes in this fork:
 
 - `ak start` once again starts the built-in local machine runner by default. It registers the machine, sends heartbeats, polls assigned tasks, creates isolated worktrees, and launches installed agent CLIs locally.
 - `ak start --mode ama` remains available only as an explicit compatibility mode. Local mode does not contact AMA.
-- `scripts/service_runner.sh` reproducibly installs, migrates, and runs the web UI, Hono API, local Miniflare D1, and local WebSocket relay on loopback or the LAN.
+- `./service_runner.sh` reproducibly installs, migrates, and runs the web UI, Hono API, local Miniflare D1, and local WebSocket relay on loopback or the LAN.
 - `scripts/local_runtime_runner.sh` reproducibly builds/installs the CLI and starts or restarts the local task runtime.
 - Local Better Auth accepts explicitly allowlisted LAN origins, so signup and login work when the board is opened from another machine.
 - Machine API keys can be provided through `AK_API_KEY` and are stored with directory mode `0700` and file mode `0600`. Inherited control-plane secrets are stripped before starting the daemon, AMA compatibility runner, or task agents; the daemon reads its machine credential from the protected local config, while workers receive their own scoped Ed25519 identity.
@@ -109,7 +109,7 @@ Clone this fork, then run the repeatable service script:
 ```bash
 git clone git@github.com:yuboliu/agent-kanban.git
 cd agent-kanban
-./scripts/service_runner.sh
+./service_runner.sh
 ```
 
 Open `http://127.0.0.1:6265` (or the LAN URL printed by the script), create a local account, and follow the verification link printed in the service terminal. Create a machine API key from account settings.
@@ -132,7 +132,7 @@ The script installs the current checkout's CLI and starts `ak` in local mode aga
 For a non-default port or LAN API address, use the same URL for the service and runtime:
 
 ```bash
-AK_PORT=8080 ./scripts/service_runner.sh
+AK_PORT=8080 ./service_runner.sh
 AK_API_KEY='ak_xxxxx' ./scripts/local_runtime_runner.sh --api-url http://192.168.1.10:8080
 ```
 
