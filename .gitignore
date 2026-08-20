@@ -3,6 +3,7 @@ dist/
 .wrangler/
 .pages-dev/
 *.local
+.run/
 
 # Build output
 packages/shared/dist/
