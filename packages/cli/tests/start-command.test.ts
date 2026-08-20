@@ -157,6 +157,11 @@ function writeCredentialStore(profile: { apiServer: string; accessToken?: string
 
 beforeEach(() => {
   mkdirSync(testSessionsDir, { recursive: true });
+  // Isolate from the host environment: useEnvironmentCredentials() falls back
+  // to AK_API_URL/AK_API_KEY, which are set on real AK worker machines and
+  // would otherwise leak into the no-credentials error-path tests.
+  vi.stubEnv("AK_API_URL", "");
+  vi.stubEnv("AK_API_KEY", "");
   localSpawnBehavior = "ready";
   lastSpawnChild = undefined;
   spawnMock.mockClear();

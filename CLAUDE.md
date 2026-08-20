@@ -77,6 +77,5 @@ After every significant code change, follow this sequence:
 - Run with coverage: `npx vitest run --coverage --coverage.include='<glob>'`
 - Coverage provider: `@vitest/coverage-v8` (install with `pnpm add -Dw @vitest/coverage-v8` if missing)
 - Tests in `tests/` directory
-- Unit/integration tests: `*.test.ts` — direct import of modules, real D1 via Miniflare (no mocks)
-- E2E tests: `*.spec.ts` — Playwright browser tests
-- Test data setup: Miniflare D1 with migrations from `apps/web/migrations/`, seed helpers in test files
+- Unit tests: `*.test.ts` — direct import of modules, pure Node/jsdom. Miniflare/D1-backed integration tests were removed (flaky under concurrency, slow git hooks); do not reintroduce Miniflare-based vitest cases.
+- E2E tests: `*.spec.ts` — Playwright browser tests against the dev server (which uses its own local D1)
