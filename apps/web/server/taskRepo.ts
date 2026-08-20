@@ -37,6 +37,24 @@ async function assertRepositoryBelongsToBoardOwner(db: D1, boardId: string, repo
   if (!row) throw new HTTPException(404, { message: "Repository not found" });
 }
 
+/**
+ * Every dependency must be an existing task of the same owner — bogus or
+ * foreign ids would otherwise create dangling rows that block the task
+ * forever (a dep that doesn't exist can never reach done).
+ */
+async function assertDependenciesExist(db: D1, ownerId: string, depIds: string[]): Promise<void> {
+  const unique = [...new Set(depIds)];
+  if (unique.length === 0) return;
+  const placeholders = unique.map(() => "?").join(",");
+  const result = await db
+    .prepare(`SELECT t.id FROM tasks t JOIN boards b ON t.board_id = b.id WHERE b.owner_id = ? AND t.id IN (${placeholders})`)
+    .bind(ownerId, ...unique)
+    .all<{ id: string }>();
+  const found = new Set(result.results.map((r) => r.id));
+  const missing = unique.filter((id) => !found.has(id));
+  if (missing.length > 0) throw new HTTPException(400, { message: `Dependency task not found: ${missing.join(", ")}` });
+}
+
 function enforceTransition(action: TaskActionType, currentStatus: TaskStatus, identity: IdentityType): void {
   const error = validateTransition(action as any, currentStatus, identity);
   if (error) {
@@ -107,6 +125,7 @@ export async function createTask(
   const position = (maxPos?.max_pos ?? -1) + 1;
 
   if (input.depends_on?.length) {
+    await assertDependenciesExist(db, ownerId, input.depends_on);
     const hasCycle = await detectCycle(db, taskId, input.depends_on);
     if (hasCycle) throw new HTTPException(400, { message: "Circular dependency detected" });
   }
@@ -323,6 +342,8 @@ export async function updateTask(
 
   if (updates.depends_on !== undefined) {
     if (updates.depends_on.length > 0) {
+      const owner = await db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(task.board_id).first<{ owner_id: string }>();
+      await assertDependenciesExist(db, owner?.owner_id ?? "", updates.depends_on);
       const hasCycle = await detectCycle(db, taskId, updates.depends_on);
       if (hasCycle) throw new HTTPException(400, { message: "Circular dependency detected" });
     }

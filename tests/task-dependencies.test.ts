@@ -167,4 +167,27 @@ describe("task dependencies", () => {
     expect(childAfter.depends_on).toContain(t1.id);
     expect(childAfter.depends_on).toContain(t2.id);
   });
+
+  it("createTask rejects a dependency id that does not exist", async () => {
+    await expect(createTask({ title: "bad-dep", depends_on: ["no-such-task"] })).rejects.toThrow(/Dependency task not found/);
+  });
+
+  it("updateTask rejects a dependency id that does not exist", async () => {
+    const { updateTask } = await import("../apps/web/server/taskRepo");
+    const t = await createTask({ title: "update-bad-dep" });
+    await expect(updateTask(env.DB, t.id, { depends_on: ["no-such-task"] })).rejects.toThrow(/Dependency task not found/);
+  });
+
+  it("createTask rejects a dependency owned by a different owner", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask: createTaskRepo } = await import("../apps/web/server/taskRepo");
+    const now = new Date().toISOString();
+    await env.DB.prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
+      .bind("test-user-deps-other", "Other User", "other-deps@example.com", now, now)
+      .run();
+    const otherBoard = await createBoard(env.DB, "test-user-deps-other", "other-board", "ops");
+    const foreign = await createTaskRepo(env.DB, "test-user-deps-other", { title: "foreign-task", board_id: otherBoard.id });
+
+    await expect(createTask({ title: "cross-owner-dep", depends_on: [foreign.id] })).rejects.toThrow(/Dependency task not found/);
+  });
 });

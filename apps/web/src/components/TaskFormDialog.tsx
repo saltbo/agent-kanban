@@ -1,5 +1,6 @@
 import { generateWorktreeName, isValidWorktreeName, parseWorktreeConfig } from "@agent-kanban/shared";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { FolderPlus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { Button } from "./ui/button";
@@ -21,6 +22,7 @@ export interface TaskFormInitial {
   assigned_to?: string | null;
   status: string;
   metadata?: Record<string, unknown> | null;
+  depends_on?: string[];
 }
 
 interface TaskFormDialogProps {
@@ -46,6 +48,7 @@ function labelToggleStyle(color: string, active: boolean) {
 }
 
 export function TaskFormDialog({ mode, open, boardId, boardType, labels, initialTask, onClose, onSaved }: TaskFormDialogProps) {
+  const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [repositoryId, setRepositoryId] = useState<string>(NONE);
@@ -53,6 +56,11 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const [useWorktree, setUseWorktree] = useState(true);
   const [worktreeName, setWorktreeName] = useState("");
+  const [dependsOn, setDependsOn] = useState<string[]>([]);
+  const [depPick, setDepPick] = useState("");
+  const [showLocalPath, setShowLocalPath] = useState(false);
+  const [localPath, setLocalPath] = useState("");
+  const [registeringLocal, setRegisteringLocal] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,6 +77,10 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
     const initialWorktree = parseWorktreeConfig(initialTask?.metadata);
     setUseWorktree(initialWorktree.enabled);
     setWorktreeName(initialWorktree.name ?? "");
+    setDependsOn(initialTask?.depends_on ?? []);
+    setDepPick("");
+    setShowLocalPath(false);
+    setLocalPath("");
     setError(null);
     setPending(false);
   }, [open, initialTask]);
@@ -86,6 +98,12 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
   });
   const workers = agents.filter((a: any) => a.kind !== "leader");
 
+  const { data: boardTasks = [] } = useQuery({
+    queryKey: ["tasks", "board", boardId],
+    queryFn: () => api.tasks.list({ board_id: boardId }),
+    staleTime: 15_000,
+  });
+
   // The assign route only accepts todo + unassigned tasks; anything else is
   // shown read-only so the dialog never offers an action the API will reject.
   const assignEditable = mode === "create" || (initialTask?.status === "todo" && !initialTask?.assigned_to);
@@ -102,11 +120,50 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
   const worktreeNameInvalid = useWorktree && worktreeEditable && trimmedWorktreeName !== "" && !isValidWorktreeName(trimmedWorktreeName);
 
   const repoNameById = new Map(repositories.map((r: any) => [r.id, r.full_name ? `${r.name} — ${r.full_name}` : `${r.name} — ${r.url}`]));
-  // Agent names are not unique; the username is. Show `name (@username)` everywhere.
-  const agentNameById = new Map(workers.map((a: any) => [a.id, a.name && a.name !== a.username ? `${a.name} (@${a.username})` : `@${a.username}`]));
+  // Agent names are not unique (many workers share a display name); the
+  // username is. Lead with @username everywhere so duplicates stay distinct.
+  const agentNameById = new Map(workers.map((a: any) => [a.id, a.name && a.name !== a.username ? `@${a.username} · ${a.name}` : `@${a.username}`]));
+  const taskById = new Map(boardTasks.map((t: any) => [t.id, t]));
+  const depLabel = (id: string) => {
+    const t: any = taskById.get(id);
+    return t ? `#${t.seq ?? "?"} ${t.title}` : id;
+  };
 
   function toggleLabel(name: string) {
     setSelectedLabels((prev) => (prev.includes(name) ? prev.filter((l) => l !== name) : [...prev, name]));
+  }
+
+  // Dependencies only matter at dispatch time — lock them once the task has
+  // left todo, same as the worktree settings. Cancelled tasks are excluded:
+  // they never reach done, so depending on one would block forever.
+  const depsEditable = mode === "create" || initialTask?.status === "todo";
+  const depCandidates = boardTasks.filter((t: any) => t.id !== initialTask?.id && t.status !== "cancelled" && !dependsOn.includes(t.id));
+
+  function addDependency(id: string) {
+    setDependsOn((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setDepPick("");
+  }
+
+  async function registerLocalPath() {
+    const path = localPath.trim().replace(/\/+$/, "");
+    if (!path.startsWith("/")) {
+      setError("Local path must be absolute, e.g. /home/you/project");
+      return;
+    }
+    setRegisteringLocal(true);
+    setError(null);
+    try {
+      const name = path.split("/").pop() || "local-repo";
+      const repo = await api.repositories.create({ name, url: path });
+      await queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      setRepositoryId(repo.id);
+      setLocalPath("");
+      setShowLocalPath(false);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to register local repository");
+    } finally {
+      setRegisteringLocal(false);
+    }
   }
 
   async function submit() {
@@ -119,6 +176,7 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
         if (!repoForbidden && repositoryId !== NONE) body.repository_id = repositoryId;
         if (assignTo !== NONE) body.assigned_to = assignTo;
         if (selectedLabels.length > 0) body.labels = selectedLabels;
+        if (dependsOn.length > 0) body.depends_on = dependsOn;
         if (worktreeEditable && repositoryId !== NONE) {
           // Only send non-default worktree config; the daemon defaults to enabled.
           if (!useWorktree) body.metadata = { worktree: { enabled: false } };
@@ -135,6 +193,12 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
         const initialLabels = initialTask.labels ?? [];
         if (selectedLabels.length !== initialLabels.length || selectedLabels.some((l) => !initialLabels.includes(l))) {
           body.labels = selectedLabels;
+        }
+        if (depsEditable) {
+          const initialDeps = initialTask.depends_on ?? [];
+          if (dependsOn.length !== initialDeps.length || dependsOn.some((d) => !initialDeps.includes(d))) {
+            body.depends_on = dependsOn;
+          }
         }
         if (worktreeEditable) {
           const initialWorktree = parseWorktreeConfig(initialTask.metadata);
@@ -189,11 +253,11 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
 
           <div className="grid grid-cols-2 gap-3">
             {!repoForbidden && (
-              <div className="space-y-1.5">
+              <div className="min-w-0 space-y-1.5">
                 <Label>Repository{repoRequired && <span className="text-error"> *</span>}</Label>
                 <Select value={repositoryId} onValueChange={(v) => v && setRepositoryId(v)}>
-                  <SelectTrigger className={repoMissing ? "border-error" : undefined}>
-                    <SelectValue>{(v: string) => (v === NONE ? "None" : (repoNameById.get(v) ?? v))}</SelectValue>
+                  <SelectTrigger className={repoMissing ? "w-full min-w-0 border-error" : "w-full min-w-0"}>
+                    <SelectValue>{(v: string) => <span className="truncate">{v === NONE ? "None" : (repoNameById.get(v) ?? v)}</span>}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={NONE}>None</SelectItem>
@@ -208,33 +272,120 @@ export function TaskFormDialog({ mode, open, boardId, boardType, labels, initial
                   </SelectContent>
                 </Select>
                 {repoMissing && <p className="text-[11px] text-content-tertiary">Dev board tasks require a repository</p>}
+                <button
+                  type="button"
+                  onClick={() => setShowLocalPath((v) => !v)}
+                  className="flex items-center gap-1 text-[11px] text-content-tertiary hover:text-content-secondary"
+                >
+                  <FolderPlus className="size-3" />
+                  Register a local path…
+                </button>
+                {showLocalPath && (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      value={localPath}
+                      onChange={(e) => setLocalPath(e.target.value)}
+                      placeholder="/home/you/Security-agent"
+                      aria-label="Local repository path"
+                      className="font-mono text-xs"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void registerLocalPath();
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void registerLocalPath()}
+                      disabled={registeringLocal || !localPath.trim()}
+                    >
+                      {registeringLocal ? "Adding..." : "Add"}
+                    </Button>
+                  </div>
+                )}
+                {showLocalPath && (
+                  <p className="text-[11px] text-content-tertiary">Absolute path to a git project on the machine running the daemon.</p>
+                )}
               </div>
             )}
 
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <Label>Assign to</Label>
               {assignEditable ? (
                 <Select value={assignTo} onValueChange={(v) => v && setAssignTo(v)}>
-                  <SelectTrigger>
-                    <SelectValue>{(v: string) => (v === NONE ? "Unassigned" : (agentNameById.get(v) ?? v))}</SelectValue>
+                  <SelectTrigger className="w-full min-w-0">
+                    <SelectValue>
+                      {(v: string) => <span className="truncate">{v === NONE ? "Unassigned" : (agentNameById.get(v) ?? v)}</span>}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={NONE}>Unassigned</SelectItem>
                     {workers.map((a: any) => (
                       <SelectItem key={a.id} value={a.id}>
-                        <span>{a.name && a.name !== a.username ? a.name : `@${a.username}`}</span>
-                        {a.name && a.name !== a.username && <span className="ml-1.5 font-mono text-[11px] text-content-tertiary">@{a.username}</span>}
+                        <span className="font-mono text-xs">@{a.username}</span>
+                        {a.name && a.name !== a.username && <span className="ml-1.5 text-[11px] text-content-tertiary">{a.name}</span>}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               ) : (
-                <p className="text-[13px] text-content-tertiary pt-1.5">
+                <p className="truncate text-[13px] text-content-tertiary pt-1.5">
                   {(initialTask?.assigned_to && (agentNameById.get(initialTask.assigned_to) ?? initialTask.assigned_to)) || "—"}
                 </p>
               )}
             </div>
           </div>
+
+          {(depsEditable || dependsOn.length > 0) && (
+            <div className="space-y-1.5">
+              <Label>Depends on</Label>
+              {dependsOn.length > 0 && (
+                <div className="flex gap-1.5 flex-wrap">
+                  {dependsOn.map((depId) => (
+                    <span
+                      key={depId}
+                      className="inline-flex h-5 items-center gap-1 rounded-[4px] border border-border bg-surface-secondary px-1.5 font-mono text-[10px] font-medium text-content-secondary"
+                    >
+                      <span className="max-w-48 truncate">{depLabel(depId)}</span>
+                      {depsEditable && (
+                        <button
+                          type="button"
+                          aria-label={`Remove dependency ${depLabel(depId)}`}
+                          onClick={() => setDependsOn((prev) => prev.filter((d) => d !== depId))}
+                          className="text-content-tertiary hover:text-content-primary"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {depsEditable && depCandidates.length > 0 && (
+                <Select value={depPick} onValueChange={(v) => v && addDependency(v)}>
+                  <SelectTrigger aria-label="Add a dependency" className="w-full min-w-0">
+                    <SelectValue placeholder="Add a dependency…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {depCandidates.map((t: any) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        <span className="font-mono text-[11px] text-content-tertiary">#{t.seq ?? "?"}</span>
+                        <span className="ml-1.5 truncate">{t.title}</span>
+                        <span className="ml-1.5 font-mono text-[10px] text-content-tertiary">{t.status}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <p className="text-[11px] text-content-tertiary">
+                Blocked until every dependency is done — e.g. fan out 3 worktree agents, then let a merge/review task depend on all three.
+                {!depsEditable && mode === "edit" && " Locked: the task has already been dispatched."}
+              </p>
+            </div>
+          )}
 
           {!repoForbidden && repositoryId !== NONE && (
             <div className="space-y-1.5">

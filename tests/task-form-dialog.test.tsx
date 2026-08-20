@@ -8,7 +8,9 @@ import { TaskFormDialog } from "../apps/web/src/components/TaskFormDialog";
 const tasksCreate = vi.fn();
 const tasksUpdate = vi.fn();
 const tasksAssign = vi.fn();
+const tasksList = vi.fn();
 const repositoriesList = vi.fn();
+const repositoriesCreate = vi.fn();
 const agentsList = vi.fn();
 
 vi.mock("../apps/web/src/lib/api", () => ({
@@ -17,8 +19,12 @@ vi.mock("../apps/web/src/lib/api", () => ({
       create: (...args: unknown[]) => tasksCreate(...args),
       update: (...args: unknown[]) => tasksUpdate(...args),
       assign: (...args: unknown[]) => tasksAssign(...args),
+      list: (...args: unknown[]) => tasksList(...args),
     },
-    repositories: { list: (...args: unknown[]) => repositoriesList(...args) },
+    repositories: {
+      list: (...args: unknown[]) => repositoriesList(...args),
+      create: (...args: unknown[]) => repositoriesCreate(...args),
+    },
     agents: { list: (...args: unknown[]) => agentsList(...args) },
   },
 }));
@@ -53,7 +59,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof TaskFormDialog>
 // The dialog renders two Base UI selects: [Repository, Assign to]. Base UI
 // commits an item on click only while it is highlighted; mousemove sets the
 // active index (same as a real pointer hover). Option accessible names
-// concatenate the item's text spans (e.g. "Worker One@worker-one"), so pass a
+// concatenate the item's text spans (e.g. "@worker-oneWorker One"), so pass a
 // regex to match loosely.
 async function chooseOption(triggerIndex: number, optionName: string | RegExp) {
   fireEvent.click(screen.getAllByRole("combobox")[triggerIndex]);
@@ -74,6 +80,13 @@ describe("TaskFormDialog", () => {
     tasksCreate.mockResolvedValue({});
     tasksUpdate.mockResolvedValue({});
     tasksAssign.mockResolvedValue({});
+    tasksList.mockResolvedValue([]);
+    repositoriesCreate.mockResolvedValue({
+      id: "repo-local-1",
+      name: "Security-agent",
+      url: "/home/you/Security-agent",
+      source_type: "local",
+    });
   });
 
   describe("create mode", () => {
@@ -82,7 +95,7 @@ describe("TaskFormDialog", () => {
 
       fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Fix the thing" } });
       await chooseOption(0, /^Repo One/);
-      await chooseOption(1, /^Worker One/);
+      await chooseOption(1, /@worker-one/);
       fireEvent.click(screen.getByRole("button", { name: "bug" }));
       fireEvent.click(screen.getByRole("button", { name: "Create task" }));
 
@@ -212,7 +225,7 @@ describe("TaskFormDialog", () => {
         },
       });
 
-      await chooseOption(1, /^Worker One/);
+      await chooseOption(1, /@worker-one/);
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
       await waitFor(() => expect(tasksAssign).toHaveBeenCalledTimes(1));
@@ -265,8 +278,8 @@ describe("TaskFormDialog", () => {
       // Only the repository select is rendered; the assign select is not.
       await screen.findByLabelText("Title");
       expect(screen.getAllByRole("combobox")).toHaveLength(1);
-      // The read-only assignee resolves to `name (@username)` once the agents query lands.
-      expect(await screen.findByText("Worker One (@worker-one)")).toBeInTheDocument();
+      // The read-only assignee resolves to `@username · name` once the agents query lands.
+      expect(await screen.findByText("@worker-one · Worker One")).toBeInTheDocument();
     });
   });
 
@@ -280,7 +293,7 @@ describe("TaskFormDialog", () => {
 
       fireEvent.click((await screen.findAllByRole("combobox"))[1]);
 
-      // Both options show the same display name; the @username span tells them apart.
+      // Both options share a display name; the leading @username tells them apart.
       const optionA = await screen.findByRole("option", { name: /@worker-a/ });
       const optionB = screen.getByRole("option", { name: /@worker-b/ });
       expect(optionA).toHaveTextContent("Worker");
@@ -311,6 +324,115 @@ describe("TaskFormDialog", () => {
       await chooseOption(0, /^Repo One/);
 
       expect(await screen.findByText("Repo One — acme/repo-one")).toBeInTheDocument();
+    });
+
+    it("leads with @username on the assign trigger once selected", async () => {
+      renderDialog();
+
+      await chooseOption(1, /@worker-one/);
+
+      expect(await screen.findByText("@worker-one · Worker One")).toBeInTheDocument();
+    });
+
+    it("truncates long trigger values instead of overflowing the grid columns", async () => {
+      renderDialog();
+
+      await chooseOption(0, /^Repo One/);
+      const repoValue = await screen.findByText("Repo One — acme/repo-one");
+      expect(repoValue).toHaveClass("truncate");
+      expect(repoValue.closest("[data-slot='select-trigger']")).toHaveClass("w-full", "min-w-0");
+
+      await chooseOption(1, /@worker-one/);
+      const agentValue = await screen.findByText("@worker-one · Worker One");
+      expect(agentValue).toHaveClass("truncate");
+      expect(agentValue.closest("[data-slot='select-trigger']")).toHaveClass("w-full", "min-w-0");
+    });
+  });
+
+  describe("local repository registration", () => {
+    it("registers an absolute local path and refetches the repository list", async () => {
+      renderDialog();
+
+      fireEvent.click(await screen.findByRole("button", { name: /Register a local path/ }));
+      fireEvent.change(screen.getByLabelText("Local repository path"), { target: { value: "/home/you/Security-agent" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+      await waitFor(() => expect(repositoriesCreate).toHaveBeenCalledWith({ name: "Security-agent", url: "/home/you/Security-agent" }));
+      // Initial list call + refetch after invalidation.
+      await waitFor(() => expect(repositoriesList.mock.calls.length).toBeGreaterThanOrEqual(2));
+    });
+
+    it("rejects a non-absolute path without calling the API", async () => {
+      renderDialog();
+
+      fireEvent.click(await screen.findByRole("button", { name: /Register a local path/ }));
+      fireEvent.change(screen.getByLabelText("Local repository path"), { target: { value: "~/Security-agent" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+      expect(await screen.findByText(/must be absolute/)).toBeInTheDocument();
+      expect(repositoriesCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("dependencies", () => {
+    const BOARD_TASKS = [
+      { id: "task-a", seq: 1, title: "First", status: "todo", board_id: "board-1" },
+      { id: "task-b", seq: 2, title: "Second", status: "todo", board_id: "board-1" },
+    ];
+
+    async function pickDependency(name: RegExp) {
+      // Combobox order in create mode: [Repository, Assign to, Depends on].
+      fireEvent.click(screen.getAllByRole("combobox")[2]);
+      const option = await screen.findByRole("option", { name });
+      fireEvent.mouseMove(option);
+      fireEvent.click(option);
+    }
+
+    it("sends depends_on on create", async () => {
+      tasksList.mockResolvedValue(BOARD_TASKS);
+      renderDialog();
+
+      fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Merge task" } });
+      await pickDependency(/First/);
+      await pickDependency(/Second/);
+
+      // Selected dependencies render as chips.
+      expect(await screen.findByText("#1 First")).toBeInTheDocument();
+      expect(screen.getByText("#2 Second")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+      await waitFor(() => expect(tasksCreate).toHaveBeenCalledWith(expect.objectContaining({ depends_on: ["task-a", "task-b"] })));
+    });
+
+    it("sends updated depends_on on edit", async () => {
+      tasksList.mockResolvedValue(BOARD_TASKS);
+      renderDialog({
+        mode: "edit",
+        initialTask: {
+          id: "task-z",
+          title: "Merge",
+          status: "todo",
+          depends_on: ["task-a"],
+          labels: [],
+          repository_id: null,
+          assigned_to: null,
+        },
+      });
+
+      // Existing dependency renders as a chip; the edited task itself is not a candidate.
+      expect(await screen.findByText("#1 First")).toBeInTheDocument();
+      // Combobox order: [Repository, Assign to, Depends on].
+      fireEvent.click(screen.getAllByRole("combobox")[2]);
+      expect(screen.queryByRole("option", { name: /Merge/ })).not.toBeInTheDocument();
+      const second = await screen.findByRole("option", { name: /Second/ });
+      fireEvent.mouseMove(second);
+      fireEvent.click(second);
+
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(tasksUpdate).toHaveBeenCalledTimes(1));
+      const [, body] = tasksUpdate.mock.calls[0] as [string, Record<string, unknown>];
+      expect(body).toEqual({ depends_on: ["task-a", "task-b"] });
     });
   });
 
