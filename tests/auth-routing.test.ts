@@ -38,7 +38,9 @@ describe("/api/auth/* routing through the api app", () => {
     } finally {
       await mf.dispose();
     }
-  });
+    // BetterAuth session bootstrap is slow under the single-worker pre-commit
+    // hook; give it headroom so it doesn't trip the 5s default timeout.
+  }, 15_000);
 
   it("POST /api/auth/sign-in/social reaches BetterAuth (returns the provider authorize URL)", async () => {
     const { mf, db } = await setupMiniflare();
@@ -57,5 +59,5 @@ describe("/api/auth/* routing through the api app", () => {
     } finally {
       await mf.dispose();
     }
-  });
+  }, 15_000);
 });
