@@ -9,4 +9,4 @@ pre-commit:
       run: pnpm -r --parallel run lint
 
     - name: test
-      run: npx vitest run --maxWorkers=1
+      run: npx vitest run --maxWorkers=4
