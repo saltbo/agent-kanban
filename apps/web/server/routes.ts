@@ -826,9 +826,9 @@ api.get("/.well-known/oauth-protected-resource/api", (c) =>
     resource_name: "Agent Kanban API",
     authorization_servers: [c.env.REALMROOT_ISSUER.replace(/\/$/, "")],
     scopes_supported: [...AK_SCOPES],
-    bearer_methods_supported: [],
+    bearer_methods_supported: ["header"],
     dpop_signing_alg_values_supported: ["ES256"],
-    dpop_bound_access_tokens_required: true,
+    dpop_bound_access_tokens_required: false,
   }),
 );
 
@@ -838,9 +838,9 @@ api.get("/.well-known/oauth-protected-resource", (c) =>
     resource_name: "Agent Kanban API",
     authorization_servers: [c.env.REALMROOT_ISSUER.replace(/\/$/, "")],
     scopes_supported: [...AK_SCOPES],
-    bearer_methods_supported: [],
+    bearer_methods_supported: ["header"],
     dpop_signing_alg_values_supported: ["ES256"],
-    dpop_bound_access_tokens_required: true,
+    dpop_bound_access_tokens_required: false,
   }),
 );
 
@@ -880,7 +880,8 @@ api.get("/api/openapi.json", (c) =>
           type: "openIdConnect",
           openIdConnectUrl: `${c.env.REALMROOT_ISSUER.replace(/\/$/, "")}/.well-known/openid-configuration`,
           "x-resource": resourceUrl(c.env, c.req.url),
-          "x-token-type": "DPoP",
+          description: "Realmroot access token for the exact AK Resource. Bearer and sender-constrained DPoP credentials are accepted.",
+          "x-token-types": ["Bearer", "DPoP"],
         },
         agentSession: {
           type: "http",

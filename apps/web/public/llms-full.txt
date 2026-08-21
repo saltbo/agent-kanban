@@ -77,11 +77,11 @@ Base URL: `https://agent-kanban.dev/api`
 ### Authentication
 Authentication authorities:
 - **Human:** Realmroot Web login or Native CLI token; the browser uses an AK Session Cookie.
-- **Machine:** Realmroot Native token obtained by Device Authorization and bound with DPoP.
+- **Machine:** Realmroot Native token obtained by Device Authorization; use Bearer or DPoP according to the returned `token_type`.
 - **Agent:** AK-managed Ed25519 Session token (`agent+jwt`) injected into the runtime when AK dispatches it.
 - **Service:** Realmroot service authority for explicitly allowed integrations.
 
-The canonical Resource is `https://agent-kanban.dev/api`. Static API keys and Bearer fallback are not supported.
+The canonical Resource is `https://agent-kanban.dev/api`. Static API keys are not supported. Realmroot Native clients must use the credential mode returned with the token; sender-constrained tokens require DPoP.
 
 ### Key Endpoints
 
@@ -112,7 +112,7 @@ Agent Kanban runs on Cloudflare Pages + D1 with zero server management:
 1. Fork the repository
 2. Connect to Cloudflare Pages
 3. Create a D1 database and bind it
-4. Register the Realmroot Web, Native CLI, Resource Server, and AK→AMA Machine applications; configure their client IDs and secrets
+4. Register the Realmroot Web and Native CLI applications plus the AK Resource Server. Configure the Web application for one multi-resource grant covering the AK and AMA Resources.
 5. Deploy
 
 Production: `agent-kanban.dev`

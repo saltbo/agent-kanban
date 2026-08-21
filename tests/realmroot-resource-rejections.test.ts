@@ -43,6 +43,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   await mf.dispose();
 });
@@ -60,9 +61,128 @@ function env(): Env {
 function protectedApp() {
   const app = new Hono<{ Bindings: Env }>();
   app.use("*", authMiddleware);
+  app.get("/api/boards", (c) =>
+    c.json({
+      tenantId: c.get("ownerId"),
+      subjectId: c.get("principal").subjectId,
+      identityType: c.get("identityType"),
+    }),
+  );
   app.post("/api/tasks/:id/claim", (c) => c.json({ accepted: true }));
   return app;
 }
+
+describe("Realmroot Bearer access tokens", () => {
+  it("accepts an unbound Native human token and establishes its exact tenant membership", async () => {
+    const accessToken = await createBearerAuthority();
+
+    const response = await protectedApp().fetch(new Request(`${resource}/boards`, { headers: { authorization: `Bearer ${accessToken}` } }), env());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ tenantId: "tenant-a", subjectId: "controller", identityType: "user" });
+    await expect(
+      db
+        .prepare("SELECT tenant_id, subject_id, role FROM realmroot_tenant_members WHERE tenant_id = ? AND subject_id = ?")
+        .bind("tenant-a", "controller")
+        .first(),
+    ).resolves.toEqual({ tenant_id: "tenant-a", subject_id: "controller", role: "member" });
+  });
+
+  it("rejects Bearer tokens with sender-constraint claims or DPoP proof headers", async () => {
+    const senderConstrained = await createBearerAuthority({ cnf: { jkt: "unexpected-binding" } });
+    const boundResponse = await protectedApp().fetch(
+      new Request(`${resource}/boards`, { headers: { authorization: `Bearer ${senderConstrained}` } }),
+      env(),
+    );
+    expect(boundResponse.status).toBe(401);
+
+    const unbound = await createBearerAuthority();
+    const proofResponse = await protectedApp().fetch(
+      new Request(`${resource}/boards`, { headers: { authorization: `Bearer ${unbound}`, dpop: "unexpected-proof" } }),
+      env(),
+    );
+    expect(proofResponse.status).toBe(401);
+  });
+
+  it("rejects an unregistered Native client and insufficient Bearer scope", async () => {
+    const invalidClient = await createBearerAuthority({ clientId: "unregistered-native-client" });
+    const clientResponse = await protectedApp().fetch(
+      new Request(`${resource}/boards`, { headers: { authorization: `Bearer ${invalidClient}` } }),
+      env(),
+    );
+    expect(clientResponse.status).toBe(401);
+
+    const insufficientScope = await createBearerAuthority({ scope: "ak:write" });
+    const scopeResponse = await protectedApp().fetch(
+      new Request(`${resource}/boards`, { headers: { authorization: `Bearer ${insufficientScope}` } }),
+      env(),
+    );
+    expect(scopeResponse.status).toBe(403);
+    await expect(scopeResponse.json()).resolves.toMatchObject({ error: { message: "Missing scope: ak:read" } });
+  });
+
+  it("does not merge the same Native subject across Realmroot organization tenants", async () => {
+    const tenantA = await createBearerAuthority({ organization: "tenant-a" });
+    const tenantB = await createBearerAuthority({ organization: "tenant-b" });
+
+    const responses = await Promise.all(
+      [tenantA, tenantB].map((accessToken) =>
+        protectedApp().fetch(new Request(`${resource}/boards`, { headers: { authorization: `Bearer ${accessToken}` } }), env()),
+      ),
+    );
+
+    await expect(Promise.all(responses.map((response) => response.json()))).resolves.toEqual([
+      { tenantId: "tenant-a", subjectId: "controller", identityType: "user" },
+      { tenantId: "tenant-b", subjectId: "controller", identityType: "user" },
+    ]);
+    const memberships = await db
+      .prepare("SELECT tenant_id, subject_id FROM realmroot_tenant_members WHERE subject_id = ? ORDER BY tenant_id")
+      .bind("controller")
+      .all();
+    expect(memberships.results).toEqual([
+      { tenant_id: "tenant-a", subject_id: "controller" },
+      { tenant_id: "tenant-b", subject_id: "controller" },
+    ]);
+  });
+});
+
+describe("Realmroot DPoP freshness and replay", () => {
+  it("accepts a fresh Native human proof once and rejects the identical proof as replayed", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.useFakeTimers();
+    vi.setSystemTime(now * 1000);
+    const authority = await createHumanDpopAuthority(now - 1);
+    const request = () =>
+      new Request(`${resource}/boards`, {
+        headers: { authorization: `DPoP ${authority.accessToken}`, dpop: authority.proof },
+      });
+
+    const accepted = await protectedApp().fetch(request(), env());
+    expect(accepted.status).toBe(200);
+
+    const replay = await protectedApp().fetch(request(), env());
+    expect(replay.status).toBe(401);
+    await expect(replay.json()).resolves.toMatchObject({ error: { message: "Replayed DPoP proof" } });
+  });
+
+  it("rejects a proof exactly at the 300-second lower freshness boundary", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.useFakeTimers();
+    vi.setSystemTime(now * 1000);
+    const authority = await createHumanDpopAuthority(now - 300);
+
+    const response = await protectedApp().fetch(
+      new Request(`${resource}/boards`, {
+        headers: { authorization: `DPoP ${authority.accessToken}`, dpop: authority.proof },
+      }),
+      env(),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({ error: { message: "Stale DPoP proof" } });
+    await expect(db.prepare("SELECT COUNT(*) AS count FROM realmroot_dpop_replays").first()).resolves.toEqual({ count: 0 });
+  });
+});
 
 describe("Realmroot access-token rejection matrix", () => {
   it.each([
@@ -109,7 +229,7 @@ describe("Realmroot access-token rejection matrix", () => {
     expect(response.status).toBe(401);
   });
 
-  it("requires the DPoP authorization scheme and proof header", async () => {
+  it("requires a proof for a DPoP access token and rejects it as Bearer", async () => {
     const authority = await createAuthority({});
     const missingProof = await protectedApp().fetch(
       new Request(target, { method: "POST", headers: { authorization: `DPoP ${authority.accessToken}` } }),
@@ -150,6 +270,61 @@ describe("Realmroot DPoP rejection matrix", () => {
     expect(response.status).toBe(401);
   });
 });
+
+type BearerOverrides = {
+  clientId?: string;
+  scope?: string;
+  organization?: string;
+  cnf?: { jkt: string };
+};
+
+async function createBearerAuthority(overrides: BearerOverrides = {}) {
+  const issuerKeys = await issuerKeysPromise;
+  return new SignJWT({
+    scope: overrides.scope ?? "ak:read",
+    client_id: overrides.clientId ?? "ak-native-test",
+    ...(overrides.organization === undefined
+      ? { "urn:realmroot:params:oauth:org": "tenant-a" }
+      : { "urn:realmroot:params:oauth:org": overrides.organization }),
+    ...(overrides.cnf ? { cnf: overrides.cnf } : {}),
+  })
+    .setProtectedHeader({ alg: "ES256", kid: issuerPublicJwk.kid, typ: "at+jwt" })
+    .setIssuer(issuer)
+    .setAudience(resource)
+    .setSubject("controller")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(issuerKeys.privateKey);
+}
+
+async function createHumanDpopAuthority(proofIat: number) {
+  const issuerKeys = await issuerKeysPromise;
+  const dpopKeys = await generateKeyPair("ES256", { extractable: true });
+  const dpopJwk = await exportJWK(dpopKeys.publicKey);
+  const accessToken = await new SignJWT({
+    scope: "ak:read",
+    client_id: "ak-native-test",
+    cnf: { jkt: await calculateJwkThumbprint(dpopJwk) },
+    "urn:realmroot:params:oauth:org": "tenant-a",
+  })
+    .setProtectedHeader({ alg: "ES256", kid: issuerPublicJwk.kid, typ: "at+jwt" })
+    .setIssuer(issuer)
+    .setAudience(resource)
+    .setSubject("controller")
+    .setIssuedAt(proofIat)
+    .setExpirationTime(proofIat + 600)
+    .sign(issuerKeys.privateKey);
+  const proof = await new SignJWT({
+    htu: `${resource}/boards`,
+    htm: "GET",
+    ath: createHash("sha256").update(accessToken).digest("base64url"),
+  })
+    .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopJwk })
+    .setJti("freshness-boundary-proof")
+    .setIssuedAt(proofIat)
+    .sign(dpopKeys.privateKey);
+  return { accessToken, proof };
+}
 
 type AuthorityOverrides = {
   tokenIssuer?: string;

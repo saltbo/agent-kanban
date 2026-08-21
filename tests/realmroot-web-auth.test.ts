@@ -301,8 +301,17 @@ describe("Realmroot Web application", () => {
       resource: "https://ak.example.test/api",
       authorization_servers: [issuer],
       dpop_signing_alg_values_supported: ["ES256"],
-      bearer_methods_supported: [],
+      bearer_methods_supported: ["header"],
+      dpop_bound_access_tokens_required: false,
       scopes_supported: expect.arrayContaining(["ak:read", "ak:write", "task:assign", "task:release"]),
+    });
+    const originMetadata = await api.fetch(new Request("https://ak.example.test/.well-known/oauth-protected-resource"), env);
+    expect(originMetadata.status).toBe(200);
+    await expect(originMetadata.json()).resolves.toMatchObject({
+      resource: "https://ak.example.test/api",
+      bearer_methods_supported: ["header"],
+      dpop_signing_alg_values_supported: ["ES256"],
+      dpop_bound_access_tokens_required: false,
     });
 
     const service = await api.fetch(new Request("https://ak.example.test/api"), env);
@@ -329,7 +338,11 @@ describe("Realmroot Web application", () => {
       servers: [{ url: "https://ak.example.test/api" }],
       components: {
         securitySchemes: {
-          realmroot: { type: "openIdConnect", "x-token-type": "DPoP" },
+          realmroot: {
+            type: "openIdConnect",
+            description: expect.stringContaining("Bearer and sender-constrained DPoP"),
+            "x-token-types": ["Bearer", "DPoP"],
+          },
           agentSession: { type: "http", scheme: "bearer", bearerFormat: "agent+jwt" },
         },
       },

@@ -140,6 +140,100 @@ describe("Realmroot native CLI authority", () => {
     expect(configMocks.saveEnvironment).not.toHaveBeenCalled();
   });
 
+  it("stores and uses a Device Flow Bearer authority without sending a DPoP proof", async () => {
+    const issuer = "https://id.realmroot.dev/api/auth";
+    const deviceEndpoint = `${issuer}/oauth2/device/authorize`;
+    const tokenEndpoint = `${issuer}/oauth2/token`;
+    const accessToken = await accessTokenExpiringIn(600);
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      queueMicrotask(callback);
+      return 1;
+    }) as typeof setTimeout);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://ak.example.test/.well-known/oauth-protected-resource/api") {
+          return Response.json({ resource: "https://ak.example.test/api", authorization_servers: [issuer] });
+        }
+        if (url === `${issuer}/.well-known/openid-configuration`) {
+          return Response.json({ issuer, token_endpoint: tokenEndpoint, device_authorization_endpoint: deviceEndpoint });
+        }
+        if (url === deviceEndpoint) {
+          return Response.json({
+            device_code: "device-code",
+            user_code: "USER-CODE",
+            verification_uri: "https://id.realmroot.dev/activate",
+            expires_in: 600,
+            interval: 1,
+          });
+        }
+        if (url === tokenEndpoint) {
+          return Response.json({ access_token: accessToken, refresh_token: "refresh-token", token_type: "Bearer", expires_in: 600 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    await loginWithRealmroot({ apiUrl: "https://ak.example.test", clientId: "ak-cli", issuer });
+
+    const stored = JSON.parse(keychain.get("agent-kanban.realmroot:ak.example.test")!) as Record<string, unknown>;
+    expect(stored).toMatchObject({ accessToken, refreshToken: "refresh-token", tokenType: "Bearer" });
+    await expect(realmrootRequestHeaders("GET", "https://ak.example.test/api/tasks")).resolves.toEqual({
+      authorization: `Bearer ${accessToken}`,
+    });
+  });
+
+  it.each([
+    ["DPoP", "Bearer"],
+    ["Bearer", "DPoP"],
+  ] as const)("honors a refresh token_type switch from %s to %s", async (initialType, refreshedType) => {
+    const issuer = "https://id.realmroot.dev/api/auth";
+    const tokenEndpoint = `${issuer}/oauth2/token`;
+    await seedExpiredAuthority(initialType);
+    const refreshedAccessToken = await accessTokenExpiringIn(600);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === `${issuer}/.well-known/openid-configuration`) return Response.json({ issuer, token_endpoint: tokenEndpoint });
+        if (url === tokenEndpoint) {
+          return Response.json({ access_token: refreshedAccessToken, refresh_token: "refresh-2", token_type: refreshedType });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    const headers = await realmrootRequestHeaders("GET", "https://ak.example.test/api/tasks");
+
+    expect(headers.authorization).toBe(`${refreshedType} ${refreshedAccessToken}`);
+    if (refreshedType === "Bearer") expect(headers).not.toHaveProperty("dpop");
+    else expect(headers.dpop).toEqual(expect.any(String));
+    const stored = JSON.parse(keychain.get("agent-kanban.realmroot:ak.example.test")!) as Record<string, unknown>;
+    expect(stored).toMatchObject({ accessToken: refreshedAccessToken, refreshToken: "refresh-2", tokenType: refreshedType });
+  });
+
+  it("rejects an invalid token_type returned during refresh without replacing the stored authority", async () => {
+    const issuer = "https://id.realmroot.dev/api/auth";
+    const tokenEndpoint = `${issuer}/oauth2/token`;
+    await seedExpiredAuthority("Bearer");
+    const original = keychain.get("agent-kanban.realmroot:ak.example.test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === `${issuer}/.well-known/openid-configuration`) return Response.json({ issuer, token_endpoint: tokenEndpoint });
+        if (url === tokenEndpoint) {
+          return Response.json({ access_token: await accessTokenExpiringIn(600), refresh_token: "must-not-store", token_type: "MAC" });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    await expect(realmrootRequestHeaders("GET", "https://ak.example.test/api/tasks")).rejects.toThrow("Realmroot returned an invalid token response");
+    expect(keychain.get("agent-kanban.realmroot:ak.example.test")).toBe(original);
+  });
+
   it("coalesces concurrent refresh while generating a distinct DPoP proof per request", async () => {
     const issuer = "https://id.realmroot.dev/api/auth";
     const tokenEndpoint = `${issuer}/oauth2/token`;
@@ -218,7 +312,7 @@ describe("Realmroot native CLI authority", () => {
   });
 });
 
-async function seedExpiredAuthority(): Promise<void> {
+async function seedExpiredAuthority(tokenType: "Bearer" | "DPoP" = "DPoP"): Promise<void> {
   const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
   keychain.set(
     "agent-kanban.realmroot:ak.example.test",
@@ -226,6 +320,7 @@ async function seedExpiredAuthority(): Promise<void> {
       accessToken: await accessTokenExpiringIn(-60),
       refreshToken: "refresh-1",
       expiresAt: Date.now() - 60_000,
+      tokenType,
       privateJwk: await exportJWK(privateKey),
       publicJwk: await exportJWK(publicKey),
     }),

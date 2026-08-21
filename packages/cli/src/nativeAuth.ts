@@ -11,6 +11,7 @@ type StoredAuthority = {
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
+  tokenType: "Bearer" | "DPoP";
   privateJwk: JWK;
   publicJwk: JWK;
 };
@@ -94,6 +95,9 @@ export async function realmrootRequestHeaders(method: string, url: string): Prom
   const host = new URL(environment.apiUrl).host;
   let authority = readAuthority(host);
   if (authority.expiresAt <= Date.now() + 30_000) authority = await refreshAuthorityOnce(environment, authority, host);
+  if (authority.tokenType === "Bearer") {
+    return { authorization: `Bearer ${authority.accessToken}` };
+  }
   const privateKey = (await importJWK(authority.privateJwk, "ES256")) as CryptoKey;
   return {
     authorization: `DPoP ${authority.accessToken}`,
@@ -155,13 +159,15 @@ async function refreshAuthorityOnce(
 }
 
 function tokenAuthority(body: Record<string, unknown> | null, privateJwk: JWK, publicJwk: JWK, previousRefresh?: string): StoredAuthority {
-  if (typeof body?.access_token !== "string" || String(body.token_type).toLowerCase() !== "dpop")
+  const tokenType = String(body?.token_type).toLowerCase();
+  if (typeof body?.access_token !== "string" || (tokenType !== "bearer" && tokenType !== "dpop"))
     throw new Error("Realmroot returned an invalid token response");
   const exp = decodeJwt(body.access_token).exp;
   return {
     accessToken: body.access_token,
     refreshToken: typeof body.refresh_token === "string" ? body.refresh_token : previousRefresh,
     expiresAt: typeof exp === "number" ? exp * 1000 : Date.now() + Number(body.expires_in ?? 300) * 1000,
+    tokenType: tokenType === "dpop" ? "DPoP" : "Bearer",
     privateJwk,
     publicJwk,
   };

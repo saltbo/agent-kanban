@@ -317,13 +317,18 @@ export async function authenticateWebSession(c: Context<{ Bindings: Env }>): Pro
 export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>): Promise<RealmrootPrincipal> {
   const authorization = c.req.header("authorization");
   const proof = c.req.header("dpop");
-  if (!authorization?.startsWith("DPoP ") || !proof) throw new AuthError("DPoP access token required");
-  const accessToken = authorization.slice(5);
+  const credentialMode = authorization?.startsWith("DPoP ") ? "dpop" : authorization?.startsWith("Bearer ") ? "bearer" : null;
+  if (!credentialMode) throw new AuthError("Realmroot access token required");
+  if (credentialMode === "dpop" && !proof) throw new AuthError("DPoP proof required");
+  if (credentialMode === "bearer" && proof) throw new AuthError("Bearer access token must not include a DPoP proof");
+  const accessToken = authorization!.slice(credentialMode === "dpop" ? 5 : 7);
   const metadata = await discover(c.env.REALMROOT_ISSUER);
   const claims = await verifyJwt(accessToken, metadata, resourceUrl(c.env, c.req.url), "at+jwt");
   const confirmation = claims.cnf as { jkt?: unknown } | undefined;
-  if (!confirmation || typeof confirmation.jkt !== "string") throw new AuthError("Access token is not DPoP-bound");
-  const thumbprint = await verifyDpopProof(c, proof, accessToken, confirmation.jkt);
+  if (credentialMode === "bearer" && confirmation !== undefined) throw new AuthError("Sender-constrained access token requires DPoP");
+  if (credentialMode === "dpop" && (!confirmation || typeof confirmation.jkt !== "string")) {
+    throw new AuthError("Access token is not DPoP-bound");
+  }
 
   const actor = objectClaim(claims.act);
   const actorProfile = typeof actor?.sub_profile === "string" ? actor.sub_profile : undefined;
@@ -339,6 +344,7 @@ export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>):
   const allowedClientIds = new Set([required(c.env.REALMROOT_CLI_CLIENT_ID, "REALMROOT_CLI_CLIENT_ID"), "realmroot-cli"]);
   if (!allowedClientIds.has(clientId)) throw new AuthError("Access token client is not allowed for AK");
   if (type === "agent" && clientId !== "realmroot-cli") throw new AuthError("Realmroot Agent token used an invalid client");
+  if (type === "agent" && credentialMode !== "dpop") throw new AuthError("Realmroot Agent token requires DPoP");
   const principal: RealmrootPrincipal = {
     source: "token",
     type,
@@ -348,7 +354,10 @@ export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>):
     scopes: stringList(claims.scope),
   };
 
-  await rememberDpopProof(c.env.DB, thumbprint, proof);
+  if (credentialMode === "dpop") {
+    const thumbprint = await verifyDpopProof(c, proof!, accessToken, confirmation!.jkt as string);
+    await rememberDpopProof(c.env.DB, thumbprint, proof!);
+  }
   return principal;
 }
 
@@ -362,7 +371,7 @@ async function verifyDpopProof(c: Context<{ Bindings: Env }>, proof: string, acc
   const now = Math.floor(Date.now() / 1000);
   if (
     typeof payload.iat !== "number" ||
-    Math.abs(now - payload.iat) > DPOP_MAX_AGE_SECONDS ||
+    Math.abs(now - payload.iat) >= DPOP_MAX_AGE_SECONDS ||
     typeof payload.jti !== "string" ||
     payload.jti.length === 0 ||
     payload.jti.length > 160
