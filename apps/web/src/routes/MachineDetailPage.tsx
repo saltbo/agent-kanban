@@ -175,7 +175,9 @@ export function MachineDetailPage() {
           <div className="flex items-center justify-between gap-4">
             <div>
               <div className="text-[11px] font-medium text-error uppercase tracking-wide">Danger Zone</div>
-              <p className="mt-1 text-xs text-content-tertiary">Revoke this machine's API key and remove it from the workspace.</p>
+              <p className="mt-1 text-xs text-content-tertiary">
+                Remove this machine from the workspace. Its Realmroot grant is managed in Realmroot.
+              </p>
             </div>
             <Button variant="outline" size="sm" className="border-error/30 text-error hover:bg-error/10" onClick={() => setShowDeleteDialog(true)}>
               Delete Machine
@@ -208,8 +210,8 @@ export function MachineDetailPage() {
           <DialogHeader>
             <DialogTitle>Delete Machine</DialogTitle>
             <DialogDescription>
-              This will revoke the API key for <span className="font-mono text-content-primary">{machine.name}</span>. The daemon will stop
-              authenticating and any running agents will lose access.
+              This will remove <span className="font-mono text-content-primary">{machine.name}</span> from AK. The runtime will stop authenticating
+              and any running agents will lose access.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

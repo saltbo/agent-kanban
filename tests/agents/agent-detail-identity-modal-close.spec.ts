@@ -2,17 +2,14 @@
 // section: 7.14 Agent detail — close identity modal
 
 import { expect, test } from "@playwright/test";
-import { signUpAndGetBoard } from "../helpers/auth";
+import { seedRealmrootAgent, signUpAndGetBoard } from "../helpers/auth";
 
 test.describe("Agents Page", () => {
   test("Agent detail — close identity modal", async ({ page }) => {
     // 1. Sign in, navigate to an agent detail page, open the identity modal
     await signUpAndGetBoard(page, `agent_fp_close_${Date.now()}@example.com`);
-    await page.goto("/agents");
-
-    await page.getByText("Quality Goalkeeper").first().waitFor({ state: "visible" });
-    await page.getByRole("link", { name: /Quality Goalkeeper/ }).click();
-    await expect(page).toHaveURL(/\/agents\/.+/);
+    const agentId = await seedRealmrootAgent(page);
+    await page.goto(`/agents/${agentId}`);
 
     await page.getByText("← Agents").first().waitFor({ state: "visible" });
 

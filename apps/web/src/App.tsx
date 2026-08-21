@@ -5,13 +5,10 @@ import { AgentDetailPage } from "./routes/AgentDetailPage";
 import { AgentEditPage } from "./routes/AgentEditPage";
 import { AgentNewPage } from "./routes/AgentNewPage";
 import { AgentsPage } from "./routes/AgentsPage";
-import { AuthCallbackPage } from "./routes/AuthCallbackPage";
 import { AuthPage } from "./routes/AuthPage";
-import { AuthVerifyPage } from "./routes/AuthVerifyPage";
 import { AdminDashboardPage } from "./routes/admin/AdminDashboardPage";
 import { AdminLayout } from "./routes/admin/AdminLayout";
 import { AdminMachinesPage } from "./routes/admin/AdminMachinesPage";
-import { AdminUsersPage } from "./routes/admin/AdminUsersPage";
 import { BoardLabelsPage } from "./routes/BoardLabelsPage";
 import { BoardPage } from "./routes/BoardPage";
 import { BoardRedirect } from "./routes/BoardRedirect";
@@ -56,8 +53,6 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/auth" element={<AuthPage />} />
-        <Route path="/auth/callback" element={<AuthCallbackPage />} />
-        <Route path="/auth/verify" element={<AuthVerifyPage />} />
         <Route path="/landing" element={<LandingPage />} />
         <Route path="/mock/chat" element={<MockChatPage />} />
         <Route path="/share/:slug" element={<SharePage />} />
@@ -191,7 +186,6 @@ export function App() {
           }
         >
           <Route index element={<AdminDashboardPage />} />
-          <Route path="users" element={<AdminUsersPage />} />
           <Route path="machines" element={<AdminMachinesPage />} />
         </Route>
       </Routes>

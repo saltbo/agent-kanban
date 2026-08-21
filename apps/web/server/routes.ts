@@ -27,7 +27,7 @@ import {
   type UsageWindow,
   validateTransition,
 } from "@agent-kanban/shared";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
   createAgentIdentity,
@@ -51,15 +51,9 @@ import {
   reopenSession,
   updateSessionUsage,
 } from "./agentSessionRepo";
+import { createAmaCloudSandboxEnvironment, ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
 import {
-  createAmaCloudSandboxEnvironment,
-  ensureAmaOwnerIntegration,
-  getAmaProjectId,
-  hasAmaAccount,
-  resolveAmaProjectId,
-} from "./amaOwnerIntegrationRepo";
-import {
-  AmaLinkedAccountAuthError,
+  AmaMachineAuthError,
   type AmaRunner,
   amaEnvironmentExists,
   archiveAmaAgent,
@@ -80,13 +74,13 @@ import {
   listAmaSessions,
   listAmaTriggerRuns,
   listAmaVaultCredentials,
+  proxyAmaSessionSocket,
   readAmaSession,
   updateAmaHttpAgentTrigger,
   updateAmaScheduledAgentTrigger,
   updateAmaVaultCredentialSecret,
 } from "./amaRuntime";
 import { authMiddleware } from "./auth";
-import { createAuth, hasAmaResources } from "./betterAuth";
 import {
   type BoardMaintainer,
   createBoardMaintainer,
@@ -97,7 +91,6 @@ import {
   isActiveMaintainerForRepository,
   listBoardMaintainers,
   markBoardMaintainerHttpTriggerSerialized,
-  setBoardMaintainerApiKeyId,
   setBoardMaintainerVaultId,
   updateBoardMaintainer,
 } from "./boardMaintainerRepo";
@@ -119,7 +112,6 @@ import { cliVersionMiddleware } from "./cliVersion";
 import { type D1, newLongId } from "./db";
 import { isGithubAppConfigured, listInstallationRepositories, mintGithubInstallationToken, recordInstallationFromSetup } from "./githubApp";
 import { getInstallationsForOwner, repoAppStatus, repoAppStatusBatch } from "./githubInstallations";
-import { addAgentEmail, getGithubToken, removeAgentEmail, syncGpgKey } from "./githubService";
 import {
   handleGithubInstallationEvent,
   handleGithubInstallationRepositoriesEvent,
@@ -127,7 +119,6 @@ import {
   handleGithubPullRequestEvent,
   verifyGithubSignature,
 } from "./githubWebhook";
-import { getArmoredPrivateKey, getRootKeyInfo, getRootPublicKey, getSubkeyIds } from "./gpgKeyRepo";
 import { legacyMachineHeartbeatFresh } from "./legacyRuntime";
 import { createLogger } from "./logger";
 import {
@@ -143,12 +134,14 @@ import {
   updateMachine,
   updateMachineAmaEnvironment,
   upsertMachine,
+  upsertNativeMachine,
 } from "./machineRepo";
 import { createMailbox, deleteMailbox, getEmail, getInbox } from "./mailsService";
 import { createMessage, listMessages } from "./messageRepo";
 import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
 import { listRuntimeModels } from "./modelCatalog";
+import { AK_SCOPES, beginRealmrootLogin, endRealmrootWebSession, finishRealmrootLogin, readRealmrootWebSession, resourceUrl } from "./realmrootAuth";
 import { createRepository, deleteRepository, getRepository, listRepositories, normalizeGitUrl } from "./repositoryRepo";
 import { metadataWithRuntimeSource, taskRuntimeSource } from "./runtimeBinding";
 import { dispatchAssignedTask, releaseAssignedTaskRuntime, resolveAssignableWorkerRuntimeSource } from "./runtimeCoordinator";
@@ -157,7 +150,6 @@ import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
 import {
-  AK_VARIABLES_CREDENTIAL_NAME,
   amaRuntimeName,
   amaRuntimeSecretEnvForCredentialNames,
   apiUrl,
@@ -418,7 +410,6 @@ function publicBoardMaintainer(
   | "ama_board_vault_id"
   | "last_ama_session_id"
   | "prompt"
-  | "api_key_id"
 > {
   const {
     ama_schedule_id: _scheduleId,
@@ -429,7 +420,6 @@ function publicBoardMaintainer(
     ama_board_vault_id: _boardVaultId,
     last_ama_session_id: _lastAmaSessionId,
     prompt: _prompt,
-    api_key_id: _apiKeyId,
     ...publicMaintainer
   } = maintainer;
   return publicMaintainer;
@@ -460,14 +450,11 @@ async function availableRuntimeNames(db: D1, env: Env, ownerId: string): Promise
   return new Set([...sources].filter(([, availability]) => availability.ama || availability.legacy).map(([runtime]) => runtime));
 }
 
-// Gates a user-initiated AMA dispatch on the owner having linked their own AMA
-// account. Standalone AK (no AMA env) never reaches here; an AMA-configured AK
-// where the user hasn't connected returns a clear 4xx. No-op otherwise.
+// Idempotently initializes the tenant's AMA resources through AK's global
+// Machine Application. No user token or account connection is involved.
 async function requireAmaConnected(db: D1, env: Env, ownerId: string): Promise<void> {
   if (!isAmaTaskDispatchConfigured(env)) return;
-  if (!(await hasAmaAccount(db, ownerId))) {
-    throw new HTTPException(403, { message: "Connect AMA to enable cloud scheduling" });
-  }
+  await ensureAmaOwnerIntegration(db, env, ownerId);
 }
 
 async function latestMaintainerRun(env: Env, ownerId: string, projectId: string, maintainer: BoardMaintainer) {
@@ -733,7 +720,7 @@ function resolveActor(c: { get: (key: string) => any }): { actorType: string; ac
   const identity: string = c.get("identityType") || "machine";
   let actorId: string;
   if (identity === "user") actorId = c.get("ownerId") || "unknown";
-  else if (identity === "machine") actorId = c.get("machineId") || c.get("apiKeyId") || "unknown";
+  else if (identity === "machine") actorId = c.get("machineId") || c.get("principal")?.subjectId || "unknown";
   else actorId = c.get("agentId") || "unknown";
   const sessionId: string | null = c.get("sessionId") || null;
   return { actorType: identity, actorId, sessionId };
@@ -816,43 +803,291 @@ api.use("*", async (c, next) => {
 
 // Error handler
 api.onError((err, c) => {
-  if (err instanceof AmaLinkedAccountAuthError) {
+  if (err instanceof AmaMachineAuthError) {
     return c.json({ error: { code: err.code, message: err.message } }, err.status);
   }
   if (err instanceof HTTPException) {
     return c.json({ error: { code: err.message, message: err.message } }, err.status);
   }
-  logger.error(`${c.req.method} ${c.req.path} 500 ${err.message} ${err.stack}`);
-  return c.json({ error: { code: "INTERNAL_ERROR", message: err.message || "Internal server error" } }, 500);
+  const cause = (err as Error & { cause?: unknown }).cause;
+  const causeDetail = cause instanceof Error ? ` cause=${cause.message}` : cause === undefined ? "" : ` cause=${String(cause)}`;
+  logger.error(`${c.req.method} ${c.req.path} 500 ${err.message}${causeDetail} ${err.stack}`);
+  return c.json({ error: { code: "INTERNAL_ERROR", message: "Internal server error" } }, 500);
 });
 
-// Better Auth handler — must be before auth middleware
-api.on(["GET", "POST"], "/api/auth/*", async (c) => {
-  try {
-    const auth = createAuth(c.env);
-    // Block disconnecting AMA while AMA-backed resources still exist (any
-    // non-builtin agent or machine), so we never leave dangling references. The
-    // user deletes their agents/machines first. Done here, not via a BetterAuth
-    // hook, to avoid a second better-auth instance under vite's dev-source.
-    if (c.req.method === "POST" && c.req.path === "/api/auth/unlink-account") {
-      const body = (await c.req.raw
-        .clone()
-        .json()
-        .catch(() => ({}))) as { providerId?: string };
-      if (body.providerId === "ama") {
-        const session = await auth.api.getSession({ headers: c.req.raw.headers });
-        const ownerId = session?.user?.id;
-        if (ownerId && (await hasAmaResources(c.env.DB, ownerId))) {
-          return c.json({ error: { code: "HAS_RESOURCES", message: "Remove your agents and machines before disconnecting AMA" } }, 400);
-        }
-      }
-    }
-    return await auth.handler(c.req.raw);
-  } catch (err: any) {
-    logger.error(`better-auth error: ${err.message} ${err.stack}`);
-    return c.json({ error: { code: "AUTH_ERROR", message: err.message } }, 500);
-  }
-});
+api.get("/api/auth/login", beginRealmrootLogin);
+api.get("/api/auth/callback", finishRealmrootLogin);
+api.get("/api/auth/session", readRealmrootWebSession);
+api.post("/api/auth/logout", endRealmrootWebSession);
+
+api.get("/.well-known/oauth-protected-resource/api", (c) =>
+  c.json({
+    resource: resourceUrl(c.env, c.req.url),
+    resource_name: "Agent Kanban API",
+    authorization_servers: [c.env.REALMROOT_ISSUER.replace(/\/$/, "")],
+    scopes_supported: [...AK_SCOPES],
+    bearer_methods_supported: [],
+    dpop_signing_alg_values_supported: ["ES256"],
+    dpop_bound_access_tokens_required: true,
+  }),
+);
+
+api.get("/.well-known/oauth-protected-resource", (c) =>
+  c.json({
+    resource: resourceUrl(c.env, c.req.url),
+    resource_name: "Agent Kanban API",
+    authorization_servers: [c.env.REALMROOT_ISSUER.replace(/\/$/, "")],
+    scopes_supported: [...AK_SCOPES],
+    bearer_methods_supported: [],
+    dpop_signing_alg_values_supported: ["ES256"],
+    dpop_bound_access_tokens_required: true,
+  }),
+);
+
+api.get("/api", (c) =>
+  c.json({ name: "Agent Kanban", resource: resourceUrl(c.env, c.req.url), openapi: new URL("/api/openapi.json", c.req.url).toString() }, 200, {
+    Link: `<${new URL("/api/openapi.json", c.req.url)}>; rel="service-desc"; type="application/vnd.oai.openapi+json;version=3.1"`,
+  }),
+);
+
+function taskActionOpenApi(operationId: string, scope: string) {
+  return {
+    parameters: [{ name: "taskId", in: "path", required: true, schema: { type: "string" } }],
+    post: openApiOperation(operationId, scope, "Task transition accepted"),
+  };
+}
+
+function openApiOperation(operationId: string, scope: string, description: string, status = "200") {
+  return { operationId, security: [{ realmroot: [scope] }], responses: { [status]: { description } } };
+}
+
+function openApiPathParameter(name: string) {
+  return { name, in: "path", required: true, schema: { type: "string" } };
+}
+
+api.get("/api/openapi.json", (c) =>
+  c.json({
+    openapi: "3.1.0",
+    info: { title: "Agent Kanban API", version: "1.0.0" },
+    servers: [{ url: resourceUrl(c.env, c.req.url) }],
+    components: {
+      securitySchemes: {
+        realmroot: {
+          type: "openIdConnect",
+          openIdConnectUrl: `${c.env.REALMROOT_ISSUER.replace(/\/$/, "")}/.well-known/openid-configuration`,
+          "x-resource": resourceUrl(c.env, c.req.url),
+          "x-token-type": "DPoP",
+        },
+      },
+      schemas: {
+        Error: {
+          type: "object",
+          required: ["error"],
+          properties: {
+            error: { type: "object", required: ["code", "message"], properties: { code: { type: "string" }, message: { type: "string" } } },
+          },
+        },
+      },
+      parameters: {
+        AkMachineContext: {
+          name: "X-AK-Machine-ID",
+          in: "header",
+          required: false,
+          description: "AK machine registered to a human Realmroot Native subject; required for local runtime operations made with a human token",
+          schema: { type: "string" },
+        },
+      },
+    },
+    security: [{ realmroot: [] }],
+    paths: {
+      "/tasks": {
+        get: openApiOperation("listTasks", "ak:read", "Tasks visible to the tenant"),
+        post: openApiOperation("createTask", "task:log", "Task created", "201"),
+      },
+      "/tasks/{taskId}": {
+        parameters: [openApiPathParameter("taskId")],
+        get: openApiOperation("getTask", "ak:read", "Task"),
+        patch: openApiOperation("updateTask", "task:log", "Task updated"),
+        delete: openApiOperation("deleteTask", "task:cancel", "Task deleted"),
+      },
+      "/tasks/{taskId}/claim": taskActionOpenApi("claimTask", "task:claim"),
+      "/tasks/{taskId}/assign": taskActionOpenApi("assignTask", "task:assign"),
+      "/tasks/{taskId}/release": taskActionOpenApi("releaseTask", "task:release"),
+      "/tasks/{taskId}/review": taskActionOpenApi("reviewTask", "task:review"),
+      "/tasks/{taskId}/complete": taskActionOpenApi("completeTask", "task:complete"),
+      "/tasks/{taskId}/reject": taskActionOpenApi("rejectTask", "task:reject"),
+      "/tasks/{taskId}/cancel": taskActionOpenApi("cancelTask", "task:cancel"),
+      "/tasks/{taskId}/notes": {
+        parameters: [openApiPathParameter("taskId")],
+        get: openApiOperation("listTaskNotes", "ak:read", "Task notes"),
+        post: openApiOperation("addTaskNote", "task:log", "Task note created", "201"),
+      },
+      "/tasks/{taskId}/messages": {
+        parameters: [openApiPathParameter("taskId")],
+        get: openApiOperation("listTaskMessages", "ak:read", "Task messages"),
+        post: openApiOperation("createTaskMessage", "task:message", "Task message created", "201"),
+      },
+      "/tasks/{taskId}/session": {
+        parameters: [openApiPathParameter("taskId")],
+        get: openApiOperation("getTaskSession", "ak:read", "Task runtime session"),
+      },
+      "/tasks/{taskId}/session/ws": {
+        parameters: [openApiPathParameter("taskId")],
+        get: openApiOperation("getTaskSessionSocket", "ak:read", "Task runtime socket descriptor"),
+      },
+      "/tasks/{taskId}/stream": {
+        parameters: [openApiPathParameter("taskId")],
+        get: openApiOperation("streamTask", "ak:read", "Task Server-Sent Events stream"),
+      },
+      "/sessions": { get: openApiOperation("listSessions", "ak:read", "Runtime sessions") },
+      "/sessions/{sessionId}": {
+        parameters: [openApiPathParameter("sessionId")],
+        get: openApiOperation("getSession", "ak:read", "Runtime session"),
+      },
+      "/sessions/{sessionId}/ws": {
+        parameters: [openApiPathParameter("sessionId")],
+        get: openApiOperation("getSessionSocket", "ak:read", "Runtime socket descriptor"),
+      },
+      "/agents": {
+        get: openApiOperation("listAgents", "ak:read", "Realmroot-bound Agents"),
+        post: openApiOperation("createAgent", "ak:write", "Realmroot-bound Agent created", "201"),
+      },
+      "/agents/{agentId}": {
+        parameters: [openApiPathParameter("agentId")],
+        get: openApiOperation("getAgent", "ak:read", "Realmroot-bound Agent"),
+        patch: openApiOperation("updateAgent", "ak:write", "Agent updated"),
+        delete: openApiOperation("deleteAgent", "ak:write", "Agent deleted"),
+      },
+      "/agents/{agentId}/sessions": {
+        parameters: [openApiPathParameter("agentId")],
+        get: openApiOperation("listAgentSessions", "ak:read", "Agent sessions"),
+        post: {
+          ...openApiOperation("createAgentSession", "ak:write", "Agent session created", "201"),
+          parameters: [{ $ref: "#/components/parameters/AkMachineContext" }],
+        },
+      },
+      "/agents/{agentId}/sessions/{sessionId}": {
+        parameters: [openApiPathParameter("agentId"), openApiPathParameter("sessionId")],
+        delete: openApiOperation("closeAgentSession", "ak:write", "Agent session closed"),
+      },
+      "/agents/{agentId}/sessions/{sessionId}/reopen": {
+        parameters: [openApiPathParameter("agentId"), openApiPathParameter("sessionId")],
+        post: openApiOperation("reopenAgentSession", "ak:write", "Agent session reopened"),
+      },
+      "/agents/{agentId}/sessions/{sessionId}/usage": {
+        parameters: [openApiPathParameter("agentId"), openApiPathParameter("sessionId")],
+        patch: openApiOperation("updateAgentSessionUsage", "agent:usage", "Agent usage updated"),
+      },
+      "/agents/{agentId}/inbox": {
+        parameters: [openApiPathParameter("agentId")],
+        get: openApiOperation("listAgentInbox", "ak:read", "Agent inbox"),
+      },
+      "/agents/{agentId}/inbox/{messageId}": {
+        parameters: [openApiPathParameter("agentId"), openApiPathParameter("messageId")],
+        get: openApiOperation("getAgentInboxMessage", "ak:read", "Agent inbox message"),
+      },
+      "/subagents": {
+        get: openApiOperation("listSubagents", "ak:read", "Subagents"),
+        post: openApiOperation("createSubagent", "ak:write", "Subagent created", "201"),
+      },
+      "/subagents/{subagentId}": {
+        parameters: [openApiPathParameter("subagentId")],
+        get: openApiOperation("getSubagent", "ak:read", "Subagent"),
+        patch: openApiOperation("updateSubagent", "ak:write", "Subagent updated"),
+        delete: openApiOperation("deleteSubagent", "ak:write", "Subagent deleted"),
+      },
+      "/machines": {
+        get: openApiOperation("listMachines", "ak:read", "Machines"),
+        post: openApiOperation("registerMachine", "ak:write", "Machine registered", "201"),
+      },
+      "/machines/{machineId}": {
+        parameters: [openApiPathParameter("machineId")],
+        get: openApiOperation("getMachine", "ak:read", "Machine"),
+        delete: openApiOperation("deleteMachine", "ak:write", "Machine deleted"),
+      },
+      "/machines/{machineId}/heartbeat": {
+        parameters: [openApiPathParameter("machineId"), { $ref: "#/components/parameters/AkMachineContext" }],
+        post: openApiOperation("heartbeatMachine", "ak:write", "Machine heartbeat accepted"),
+      },
+      "/machines/cloud": { post: openApiOperation("createCloudMachine", "ak:write", "Cloud machine created", "201") },
+      "/ama/provision": { post: openApiOperation("initializeAmaResources", "ak:write", "AMA resources initialized") },
+      "/ama/sessions/{sessionId}/socket": {
+        parameters: [openApiPathParameter("sessionId")],
+        get: openApiOperation("proxyAmaSessionSocket", "ak:read", "Authenticated AMA WebSocket proxy"),
+      },
+      "/models": { get: openApiOperation("listModels", "ak:read", "Runtime models") },
+      "/boards": {
+        get: openApiOperation("listBoards", "ak:read", "Boards"),
+        post: openApiOperation("createBoard", "ak:write", "Board created", "201"),
+      },
+      "/boards/{boardId}": {
+        parameters: [openApiPathParameter("boardId")],
+        get: openApiOperation("getBoard", "ak:read", "Board"),
+        patch: openApiOperation("updateBoard", "ak:write", "Board updated"),
+        delete: openApiOperation("deleteBoard", "ak:write", "Board deleted"),
+      },
+      "/boards/{boardId}/labels": {
+        parameters: [openApiPathParameter("boardId")],
+        post: openApiOperation("createBoardLabel", "ak:write", "Board label created", "201"),
+      },
+      "/boards/{boardId}/labels/{labelName}": {
+        parameters: [openApiPathParameter("boardId"), openApiPathParameter("labelName")],
+        patch: openApiOperation("updateBoardLabel", "ak:write", "Board label updated"),
+        delete: openApiOperation("deleteBoardLabel", "ak:write", "Board label deleted"),
+      },
+      "/boards/{boardId}/maintainers": {
+        parameters: [openApiPathParameter("boardId")],
+        get: openApiOperation("listBoardMaintainers", "ak:read", "Board maintainers"),
+        post: openApiOperation("createBoardMaintainer", "ak:write", "Board maintainer created", "201"),
+      },
+      "/boards/{boardId}/maintainers/{maintainerId}": {
+        parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
+        get: openApiOperation("getBoardMaintainer", "ak:read", "Board maintainer"),
+        patch: openApiOperation("updateBoardMaintainer", "ak:write", "Board maintainer updated"),
+        delete: openApiOperation("deleteBoardMaintainer", "ak:write", "Board maintainer deleted"),
+      },
+      "/boards/{boardId}/maintainers/{maintainerId}/runs": {
+        parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
+        get: openApiOperation("listBoardMaintainerRuns", "ak:read", "Board maintainer runs"),
+      },
+      "/boards/{boardId}/maintainers/{maintainerId}/variables": {
+        parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
+        get: openApiOperation("listMaintainerVariables", "ak:read", "Maintainer variables"),
+        put: openApiOperation("replaceMaintainerVariables", "ak:write", "Maintainer variables replaced"),
+      },
+      "/boards/{boardId}/maintainers/{maintainerId}/sessions": {
+        parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
+        post: openApiOperation("createMaintainerSession", "ak:write", "Maintainer session created", "201"),
+      },
+      "/boards/{boardId}/maintainers/{maintainerId}/memories": {
+        parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
+        get: openApiOperation("listMaintainerMemories", "ak:read", "Maintainer memories"),
+      },
+      "/boards/{boardId}/stream": {
+        parameters: [openApiPathParameter("boardId")],
+        get: openApiOperation("streamBoard", "ak:read", "Board Server-Sent Events stream"),
+      },
+      "/repositories": {
+        get: openApiOperation("listRepositories", "ak:read", "Repositories"),
+        post: openApiOperation("createRepository", "ak:write", "Repository created", "201"),
+      },
+      "/repositories/{repositoryId}": {
+        parameters: [openApiPathParameter("repositoryId")],
+        get: openApiOperation("getRepository", "ak:read", "Repository"),
+        delete: openApiOperation("deleteRepository", "ak:write", "Repository deleted"),
+      },
+      "/repositories/{repositoryId}/github-token": {
+        parameters: [openApiPathParameter("repositoryId")],
+        post: openApiOperation("createRepositoryGithubToken", "ak:write", "Short-lived GitHub App token created"),
+      },
+      "/github-app/config": { get: openApiOperation("getGithubAppConfig", "ak:read", "GitHub App configuration") },
+      "/github-app/setup": { get: openApiOperation("completeGithubAppSetup", "ak:read", "GitHub App installation setup") },
+      "/github-app/repositories": { get: openApiOperation("listGithubAppRepositories", "ak:read", "GitHub App repositories") },
+      "/admin/stats": { get: openApiOperation("getAdminStats", "ak:read", "AK business statistics") },
+      "/admin/machines": { get: openApiOperation("listAdminMachines", "ak:read", "AK machine statistics") },
+    },
+  }),
+);
 
 api.get("/api/ping", (c) => c.json({ pong: true }));
 
@@ -957,50 +1192,6 @@ api.get("/api/share/:slug/stream", async (c) => {
   return createPublicBoardSSEResponse(c.env, board.id);
 });
 
-// ─── Public GPG Key Endpoints (no auth required) ───
-
-api.get("/agents/:file{.+\\.gpg$}", async (c) => {
-  const username = c.req.param("file").replace(/\.gpg$/, "");
-  const agent = await c.env.DB.prepare(
-    "SELECT owner_id FROM agents WHERE username = ? ORDER BY CASE WHEN version = 'latest' THEN 0 ELSE 1 END LIMIT 1",
-  )
-    .bind(username)
-    .first<{ owner_id: string }>();
-  if (!agent) throw new HTTPException(404, { message: "Agent not found" });
-  const armoredPublicKey = await getRootPublicKey(c.env.DB, agent.owner_id);
-  if (!armoredPublicKey) throw new HTTPException(404, { message: "GPG key not found" });
-  const accept = c.req.header("Accept") || "";
-  const contentType = accept.includes("text/html") ? "text/plain" : "application/pgp-keys";
-  return new Response(armoredPublicKey, {
-    headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=3600" },
-  });
-});
-
-api.get("/.well-known/openpgpkey/hu/:hash", async (c) => {
-  const hash = c.req.param("hash");
-  const localPart = c.req.query("l");
-  if (!localPart) throw new HTTPException(400, { message: "Missing l= query parameter" });
-  const agent = await c.env.DB.prepare(
-    "SELECT owner_id FROM agents WHERE username = ? ORDER BY CASE WHEN version = 'latest' THEN 0 ELSE 1 END LIMIT 1",
-  )
-    .bind(localPart)
-    .first<{ owner_id: string }>();
-  if (!agent) throw new HTTPException(404, { message: "Agent not found" });
-  // Verify the hash matches the local part (WKD uses SHA-1 + z-base-32)
-  const expectedHash = await wkdHash(localPart);
-  if (hash !== expectedHash) throw new HTTPException(404, { message: "Hash mismatch" });
-  const armoredPublicKey = await getRootPublicKey(c.env.DB, agent.owner_id);
-  if (!armoredPublicKey) throw new HTTPException(404, { message: "GPG key not found" });
-  return new Response(armoredPublicKey, {
-    headers: { "Content-Type": "application/pgp-keys", "Cache-Control": "public, max-age=3600" },
-  });
-});
-
-// WKD policy file — required by the protocol
-api.get("/.well-known/openpgpkey/policy", (c) => {
-  return new Response("", { headers: { "Content-Type": "text/plain" } });
-});
-
 // ─── Share SSR (meta tag injection for social sharing) ───
 
 api.get("/share/*", async (c) => {
@@ -1056,7 +1247,7 @@ api.get("/share/*", async (c) => {
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 });
 
-// Auth middleware for all API routes (except Better Auth's own endpoints)
+// Auth middleware for all API routes except Realmroot discovery/session endpoints.
 api.use("/api/*", async (c, next) => {
   if (c.req.path.startsWith("/api/auth/")) return next();
   return authMiddleware(c, next);
@@ -1074,34 +1265,22 @@ api.use("/api/*", metricsMiddleware);
 // ─── Machines ───
 
 api.post("/api/machines/:id/heartbeat", async (c) => {
-  markLegacyRuntimeSurface(c);
   const body = await c.req.json<{ version?: string; runtimes?: MachineRuntime[]; usage_info?: any }>();
   if (body.runtimes !== undefined) assertValidMachineRuntimes(body.runtimes);
   const machineId = c.req.param("id");
   const boundMachineId = c.get("machineId");
   if (boundMachineId && boundMachineId !== machineId) {
-    throw new HTTPException(403, { message: "API key is bound to a different machine" });
+    throw new HTTPException(403, { message: "Realmroot machine authority is bound to a different machine" });
   }
+  if (!boundMachineId) await assertNativeMachineBinding(c, machineId);
 
   const updated = await updateMachine(c.env.DB, machineId, c.get("ownerId"), body);
   if (!updated) throw new HTTPException(404, { message: "Machine not found" });
-
-  // Bind API key to this machine if unbound.
-  if (!boundMachineId) {
-    const auth = createAuth(c.env);
-    const authCtx = await auth.$context;
-    await authCtx.adapter.update({
-      model: "apikey",
-      where: [{ field: "id", value: c.get("apiKeyId")! }],
-      update: { metadata: JSON.stringify({ machineId }) },
-    });
-  }
 
   return c.json(publicMachine(updated));
 });
 
 api.get("/api/machines", async (c) => {
-  markLegacyRuntimeSurface(c);
   if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machines = await listMachines(c.env.DB, c.get("ownerId"));
   const machinesWithStatus = await machinesWithRuntimeStatus(c.env.DB, c.env, c.get("ownerId"), machines);
@@ -1109,7 +1288,6 @@ api.get("/api/machines", async (c) => {
 });
 
 api.get("/api/machines/:id", async (c) => {
-  markLegacyRuntimeSurface(c);
   if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machine = await getMachine(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!machine) throw new HTTPException(404, { message: "Machine not found" });
@@ -1118,46 +1296,39 @@ api.get("/api/machines/:id", async (c) => {
 });
 
 api.post("/api/machines", async (c) => {
-  markLegacyRuntimeSurface(c);
   const ownerId = c.get("ownerId");
   const body = await c.req.json<{ name: string; os: string; version: string; runtimes: MachineRuntime[]; device_id: string }>();
   if (!body.name || !body.os || !body.version || !body.runtimes || !body.device_id) {
     throw new HTTPException(400, { message: "name, os, version, runtimes, and device_id are required" });
   }
   assertValidMachineRuntimes(body.runtimes);
-  let machine = await upsertMachine(c.env.DB, ownerId, body);
-  const amaConnected = isAmaTaskDispatchConfigured(c.env) && (await hasAmaAccount(c.env.DB, ownerId));
+  const principal = c.get("principal");
+  const existingMachine = await c.env.DB.prepare("SELECT id FROM machines WHERE owner_id = ? AND device_id = ?")
+    .bind(ownerId, body.device_id)
+    .first<{ id: string }>();
+  if (principal.type === "machine" && existingMachine?.id !== principal.subjectId) {
+    throw new HTTPException(403, { message: "Realmroot machine authority cannot register a different machine" });
+  }
+  if (existingMachine && principal.type === "human") {
+    const bindings = await c.env.DB.prepare(
+      `SELECT subject_id FROM realmroot_native_machine_bindings
+       WHERE tenant_id = ? AND machine_id = ?`,
+    )
+      .bind(ownerId, existingMachine.id)
+      .all<{ subject_id: string }>();
+    if (bindings.results.length > 0 && !bindings.results.some((binding) => binding.subject_id === principal.subjectId)) {
+      throw new HTTPException(403, { message: "Native machine is bound to a different Realmroot subject" });
+    }
+  }
+  let machine =
+    principal.type === "human"
+      ? await upsertNativeMachine(c.env.DB, ownerId, principal.subjectId, body)
+      : await upsertMachine(c.env.DB, ownerId, body);
+  if (!machine) throw new HTTPException(403, { message: "Native machine is bound to a different Realmroot subject" });
+  const amaConnected = isAmaTaskDispatchConfigured(c.env);
   if (amaConnected) {
     const environmentId = await ensureMachineAmaEnvironment(c.env.DB, c.env, ownerId, machine);
     machine = (await updateMachineAmaEnvironment(c.env.DB, machine.id, ownerId, environmentId)) ?? machine;
-  }
-
-  // Registration always binds the API key to the upserted machine
-  const auth = createAuth(c.env);
-  const authCtx = await auth.$context;
-  await authCtx.adapter.update({
-    model: "apikey",
-    where: [{ field: "id", value: c.get("apiKeyId")! }],
-    update: { metadata: JSON.stringify({ machineId: machine.id }) },
-  });
-
-  // Ensure BA agentHost exists (idempotent)
-  const existing = await authCtx.adapter.findOne({ model: "agentHost", where: [{ field: "id", value: machine.id }] });
-  if (!existing) {
-    const now = new Date();
-    await authCtx.adapter.create({
-      model: "agentHost",
-      data: {
-        id: machine.id,
-        name: machine.name,
-        userId: c.get("ownerId"),
-        status: "active",
-        activatedAt: now,
-        createdAt: now,
-        updatedAt: now,
-      },
-      forceAllowId: true,
-    });
   }
 
   const runner = amaConnected ? await createMachineRunnerOnboarding(c.env, machine, ownerId) : null;
@@ -1182,7 +1353,6 @@ api.post("/api/machines/cloud", async (c) => {
 });
 
 api.delete("/api/machines/:id", async (c) => {
-  markLegacyRuntimeSurface(c);
   const ownerId = c.get("ownerId");
   const machineId = c.req.param("id");
   // AMA has no hard delete; archive the machine's AMA environment (soft delete)
@@ -1197,20 +1367,12 @@ api.delete("/api/machines/:id", async (c) => {
   const deleted = await deleteMachine(c.env.DB, machineId, ownerId);
   if (!deleted) throw new HTTPException(404, { message: "Machine not found" });
 
-  // Clean up BA data: delete agentHost (cascades to agent + agentCapabilityGrant via FK)
-  const auth = createAuth(c.env);
-  const authCtx = await auth.$context;
-  await authCtx.adapter.delete({ model: "agentHost", where: [{ field: "id", value: machineId }] });
-
   return c.json({ ok: true });
 });
 
 // ─── AMA ───
 
-// Provisions the owner's AMA project + session-secret vault. The AccountPage
-// calls this right after the connect redirect so resources exist before the
-// user creates an agent or machine. Idempotent: ensureAmaOwnerIntegration
-// reuses a live project/vault. Requires the AMA account to be linked.
+// Idempotently initializes the tenant's AMA project and session-secret vault.
 api.post("/api/ama/provision", async (c) => {
   if (!isAmaTaskDispatchConfigured(c.env)) {
     throw new HTTPException(500, { message: "AMA is not configured" });
@@ -1220,7 +1382,7 @@ api.post("/api/ama/provision", async (c) => {
   const integration = await ensureAmaOwnerIntegration(c.env.DB, c.env, ownerId);
   // Backfill agents that predate AMA: give each a backing AMA agent so old
   // agents become dispatchable without being recreated. Runs on every
-  // connect/reconnect (the AccountPage fires provision then); idempotent
+  // Resource initialization and legacy Agent backfill are idempotent.
   // because it only touches rows still missing an ama_agent_id. Per-agent
   // failures are logged and skipped so one bad agent can't block the rest —
   // the next provision retries whatever is still missing.
@@ -1323,6 +1485,8 @@ api.post("/api/agents", async (c) => {
     skills?: string[];
     subagents?: string[];
     taints?: AgentTaint[];
+    realmroot_agent_id?: string;
+    realmroot_credential_ref?: string;
   }>();
   assertJsonObject(body, "agent");
   if (!body.username) throw new HTTPException(400, { message: "username is required" });
@@ -1341,6 +1505,12 @@ api.post("/api/agents", async (c) => {
   assertSubagentRuntime(body.runtime, body.subagents);
   const ownerId = c.get("ownerId");
   const isWorker = (body.kind ?? "worker") === "worker";
+  if (!body.realmroot_agent_id?.trim() || body.realmroot_agent_id.length > 160) {
+    throw new HTTPException(400, { message: "realmroot_agent_id is required and must be at most 160 characters" });
+  }
+  if (isWorker && isAmaTaskDispatchConfigured(c.env) && !/^ama:\/\/vaults\/[^/]+\/credentials\/[^/]+$/.test(body.realmroot_credential_ref ?? "")) {
+    throw new HTTPException(400, { message: "realmroot_credential_ref must reference an active AMA Vault credential" });
+  }
 
   const existingUsername = await c.env.DB.prepare("SELECT owner_id FROM agents WHERE username = ? LIMIT 1")
     .bind(body.username)
@@ -1350,16 +1520,31 @@ api.post("/api/agents", async (c) => {
   }
   const latestIdentity = existingUsername
     ? await c.env.DB.prepare(
-        "SELECT id, kind, public_key, private_key, fingerprint FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
+        "SELECT id, kind, public_key, private_key, fingerprint, realmroot_agent_id, realmroot_credential_ref FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
       )
         .bind(body.username, ownerId)
-        .first<{ id: string; kind: "worker" | "leader"; public_key: string; private_key: string; fingerprint: string }>()
+        .first<{
+          id: string;
+          kind: "worker" | "leader";
+          public_key: string;
+          private_key: string;
+          fingerprint: string;
+          realmroot_agent_id: string | null;
+          realmroot_credential_ref: string | null;
+        }>()
     : null;
   if (latestIdentity?.kind === "leader") {
     throw new HTTPException(409, { message: "Leader agents cannot be modified" });
   }
   if (latestIdentity && latestIdentity.kind !== (body.kind ?? "worker")) {
     throw new HTTPException(409, { message: "Agent kind cannot be changed" });
+  }
+  if (
+    latestIdentity &&
+    (latestIdentity.realmroot_agent_id !== body.realmroot_agent_id.trim() ||
+      latestIdentity.realmroot_credential_ref !== (body.realmroot_credential_ref ?? null))
+  ) {
+    throw new HTTPException(409, { message: "Realmroot Agent bindings are immutable; create a new Agent identity instead" });
   }
 
   // Worker agents are dispatch targets and need a backing AMA agent. Leaders
@@ -1386,7 +1571,7 @@ api.post("/api/agents", async (c) => {
         fingerprint: latestIdentity.fingerprint,
         privateKeyJwk: JSON.parse(latestIdentity.private_key) as JsonWebKey,
       }
-    : await createAgentIdentity(c.env.DB, ownerId, email);
+    : await createAgentIdentity();
 
   // AMA-first: create the AMA agent before persisting anything. If it throws,
   // the request fails and no AK agent row is written. Standalone AK (AMA not
@@ -1406,15 +1591,7 @@ api.post("/api/agents", async (c) => {
     // Single atomic insert with all fields
     const agent = await upsertLatestAgent(c.env.DB, prepared, {
       mailboxToken,
-      gpgSubkeyId: latestIdentity ? undefined : identity.id.toUpperCase(),
     });
-
-    // GitHub sync — best-effort, skip if not connected
-    try {
-      await syncToGithub(c.env, ownerId, email);
-    } catch (err: unknown) {
-      logger.warn(`github sync failed for agent ${agent.id}: ${err instanceof Error ? err.message : String(err)}`);
-    }
 
     return c.json(agent, 201);
   } catch (err) {
@@ -1437,6 +1614,9 @@ api.patch("/api/agents/:id", async (c) => {
   const body = await c.req.json();
   assertJsonObject(body, "agent update");
   const updates = body as Partial<CreateAgentInput>;
+  if (updates.realmroot_agent_id !== undefined || updates.realmroot_credential_ref !== undefined) {
+    throw new HTTPException(400, { message: "Realmroot Agent bindings are immutable; create a new Agent identity instead" });
+  }
   assertValidAgentRole(updates.role);
   assertValidHandoffRoles(updates.handoff_to);
   assertValidAgentRuntime(updates.runtime, existing.kind);
@@ -1491,14 +1671,6 @@ api.delete("/api/agents/:id", async (c) => {
     await deleteMailbox(c.env.MAILS_ADMIN_TOKEN, email);
   }
 
-  // Remove email from GitHub (best-effort)
-  const token = await getGithubToken(c.env.DB, c.get("ownerId"));
-  if (token && !remaining) {
-    await removeAgentEmail(token, email).catch((err: unknown) => {
-      logger.warn(`github email cleanup failed for ${email}: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }
-
   return c.json({ ok: true });
 });
 
@@ -1550,33 +1722,85 @@ api.delete("/api/subagents/:id", async (c) => {
 
 // ─── Agent Sessions ───
 
+async function assertOwnedAgent(c: { env: Env; get: (key: "ownerId") => string; req: { param: (name: string) => string } }): Promise<void> {
+  const agent = await c.env.DB.prepare("SELECT id FROM agents WHERE id = ? AND owner_id = ? AND version = 'latest'")
+    .bind(c.req.param("agentId"), c.get("ownerId"))
+    .first();
+  if (!agent) throw new HTTPException(404, { message: "Agent not found" });
+}
+
+async function assertOwnedAgentSession(c: Context<{ Bindings: Env }>): Promise<void> {
+  const session = await c.env.DB.prepare(
+    `SELECT s.id, s.machine_id
+     FROM agent_sessions s
+     JOIN agents a ON a.id = s.agent_id
+     WHERE s.id = ? AND s.agent_id = ? AND a.owner_id = ? AND a.version = 'latest'`,
+  )
+    .bind(c.req.param("sessionId"), c.req.param("agentId"), c.get("ownerId"))
+    .first<{ id: string; machine_id: string }>();
+  if (!session) throw new HTTPException(404, { message: "Agent session not found" });
+  const principal = c.get("principal");
+  if (principal.type === "machine" && c.get("machineId") !== session.machine_id) {
+    throw new HTTPException(403, { message: "Realmroot machine authority is bound to a different session machine" });
+  }
+  if (principal.type === "human") await assertNativeMachineBinding(c, session.machine_id);
+}
+
+async function assertNativeMachineBinding(c: Context<{ Bindings: Env }>, machineId: string): Promise<void> {
+  const principal = c.get("principal");
+  if (principal.type !== "human") throw new HTTPException(403, { message: "Machine binding required" });
+  const binding = await c.env.DB.prepare(
+    `SELECT 1 FROM realmroot_native_machine_bindings
+     WHERE tenant_id = ? AND subject_id = ? AND machine_id = ?`,
+  )
+    .bind(c.get("ownerId"), principal.subjectId, machineId)
+    .first();
+  if (!binding) throw new HTTPException(403, { message: "Native subject is not bound to this machine" });
+}
+
+function assertWebSocketOrigin(c: Context<{ Bindings: Env }>): void {
+  const expectedOrigin = new URL(resourceUrl(c.env, c.req.url)).origin;
+  if (c.req.header("origin") !== expectedOrigin) {
+    throw new HTTPException(403, { message: "Invalid WebSocket origin" });
+  }
+}
+
 api.post("/api/agents/:agentId/sessions", async (c) => {
   markLegacyRuntimeSurface(c);
-  const body = await c.req.json<{ session_id: string; session_public_key: string }>();
-  if (!body.session_id || !body.session_public_key) {
-    throw new HTTPException(400, { message: "session_id and session_public_key are required" });
+  await assertOwnedAgent(c);
+  const body = await c.req.json<{ session_id: string; session_public_key: string; machine_id: string }>();
+  if (!body.session_id || !body.session_public_key || !body.machine_id) {
+    throw new HTTPException(400, { message: "session_id, session_public_key, and machine_id are required" });
   }
-  const machineId = c.get("machineId");
-  if (!machineId) throw new HTTPException(400, { message: "Machine not registered" });
+  const authorityMachineId = c.get("machineId");
+  if (authorityMachineId && authorityMachineId !== body.machine_id) {
+    throw new HTTPException(403, { message: "Realmroot machine authority is bound to a different machine" });
+  }
+  if (!authorityMachineId) await assertNativeMachineBinding(c, body.machine_id);
+  const machine = await getMachine(c.env.DB, body.machine_id, c.get("ownerId"));
+  if (!machine) throw new HTTPException(404, { message: "Machine not found" });
 
-  const result = await createSession(c.env.DB, c.env, c.req.param("agentId"), machineId, body.session_id, body.session_public_key, c.get("ownerId"));
+  const result = await createSession(c.env.DB, c.env, c.req.param("agentId"), machine.id, body.session_id, body.session_public_key, c.get("ownerId"));
   return c.json(result, 201);
 });
 
 api.delete("/api/agents/:agentId/sessions/:sessionId", async (c) => {
   markLegacyRuntimeSurface(c);
+  await assertOwnedAgentSession(c);
   await closeSession(c.env.DB, c.req.param("sessionId"));
   return c.json({ ok: true });
 });
 
 api.post("/api/agents/:agentId/sessions/:sessionId/reopen", async (c) => {
   markLegacyRuntimeSurface(c);
+  await assertOwnedAgentSession(c);
   await reopenSession(c.env.DB, c.req.param("sessionId"));
   return c.json({ ok: true });
 });
 
 api.get("/api/agents/:agentId/sessions", async (c) => {
   markLegacyRuntimeSurface(c);
+  await assertOwnedAgent(c);
   const sessions = await listSessions(c.env.DB, c.req.param("agentId"));
   if (!isAmaTaskDispatchConfigured(c.env)) return c.json(sessions);
 
@@ -1599,6 +1823,11 @@ api.get("/api/agents/:agentId/sessions", async (c) => {
 });
 
 api.patch("/api/agents/:agentId/sessions/:sessionId/usage", async (c) => {
+  await assertOwnedAgentSession(c);
+  const boundAgentId = c.get("agentId");
+  if (boundAgentId && boundAgentId !== c.req.param("agentId")) {
+    throw new HTTPException(403, { message: "Realmroot Agent authority is bound to a different AK Agent" });
+  }
   const body = await c.req.json();
   await updateSessionUsage(c.env.DB, c.req.param("sessionId"), body);
   return c.json({ ok: true });
@@ -1657,7 +1886,7 @@ api.post("/api/tasks", async (c) => {
 
 api.get("/api/tasks", async (c) => {
   const { repository_id, status, label, board_id, parent, assigned_to } = c.req.query();
-  const runtime_source = c.get("identityType") === "machine" ? "legacy" : undefined;
+  const runtime_source = c.get("machineId") ? "legacy" : undefined;
   const tasks = await listTasks(c.env.DB, c.get("ownerId"), { repository_id, status, label, board_id, parent, assigned_to, runtime_source });
   return c.json(tasks);
 });
@@ -1736,8 +1965,17 @@ api.get("/api/sessions/:sessionId/ws", async (c) => {
   return c.json({ url });
 });
 
-// The token-bearing AMA browser-socket URL the chat and CLI connect to directly:
-// history backfill and live events always flow over this WebSocket.
+api.get("/api/ama/sessions/:sessionId/socket", async (c) => {
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") throw new HTTPException(426, { message: "WebSocket upgrade required" });
+  assertWebSocketOrigin(c);
+  const projectId = await ownerAmaProjectId(c);
+  const sessionId = c.req.param("sessionId");
+  const session = await readAmaSession(c.env, c.get("ownerId"), sessionId, projectId);
+  if (!session) throw new HTTPException(404, { message: "Session not found" });
+  return proxyAmaSessionSocket(c.env, c.get("ownerId"), sessionId, projectId);
+});
+
+// Chat and CLI receive an AK WebSocket URL; AMA authority never reaches them.
 api.get("/api/tasks/:id/session/ws", async (c) => {
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
@@ -1762,27 +2000,29 @@ api.patch("/api/tasks/:id", async (c) => {
     body.scheduled_at = normalized;
   }
 
+  const existingTask = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!existingTask) throw new HTTPException(404, { message: "Task not found" });
+
   // Workers can only update tasks they created
   if (c.get("identityType") === "agent:worker") {
-    const existing = await c.env.DB.prepare("SELECT created_by FROM tasks WHERE id = ?").bind(c.req.param("id")).first<{ created_by: string }>();
-    if (!existing) throw new HTTPException(404, { message: "Task not found" });
-    if (existing.created_by !== c.get("agentId")) throw new HTTPException(403, { message: "Workers can only update tasks they created" });
+    if (existingTask.created_by !== c.get("agentId")) throw new HTTPException(403, { message: "Workers can only update tasks they created" });
   }
 
-  const task = await updateTask(c.env.DB, c.req.param("id"), body);
+  const task = await updateTask(c.env.DB, c.req.param("id"), body, c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   return c.json(task);
 });
 
 api.delete("/api/tasks/:id", async (c) => {
+  const existingTask = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!existingTask) throw new HTTPException(404, { message: "Task not found" });
+
   // Workers can only delete tasks they created
   if (c.get("identityType") === "agent:worker") {
-    const existing = await c.env.DB.prepare("SELECT created_by FROM tasks WHERE id = ?").bind(c.req.param("id")).first<{ created_by: string }>();
-    if (!existing) throw new HTTPException(404, { message: "Task not found" });
-    if (existing.created_by !== c.get("agentId")) throw new HTTPException(403, { message: "Workers can only delete tasks they created" });
+    if (existingTask.created_by !== c.get("agentId")) throw new HTTPException(403, { message: "Workers can only delete tasks they created" });
   }
 
-  const deleted = await deleteTask(c.env.DB, c.req.param("id"));
+  const deleted = await deleteTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!deleted) throw new HTTPException(404, { message: "Task not found" });
   return c.json({ ok: true });
 });
@@ -1843,7 +2083,7 @@ api.post("/api/tasks/:id/assign", async (c) => {
     const source = existingSource ?? (await resolveAssignableWorkerRuntimeSource(c.env.DB, c.env, c.get("ownerId"), targetAgentId, 404));
     const routed = existingSource
       ? existing
-      : ((await updateTask(c.env.DB, existing.id, { metadata: metadataWithRuntimeSource(existing.metadata, source) })) ?? existing);
+      : ((await updateTask(c.env.DB, existing.id, { metadata: metadataWithRuntimeSource(existing.metadata, source) }, c.get("ownerId"))) ?? existing);
     const dispatched = await dispatchAssignedTask(c.env.DB, c.env, c.get("ownerId"), routed, {
       apiOrigin: new URL(c.req.url).origin,
       takeover: true,
@@ -1905,7 +2145,9 @@ api.post("/api/tasks/:id/review", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { pr_url?: string };
   const { actorType, actorId, sessionId } = resolveActor(c);
 
-  const task = await reviewTask(c.env.DB, c.req.param("id"), actorType, actorId, body.pr_url || null, taskIdentity(c), sessionId);
+  const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!existing) throw new HTTPException(404, { message: "Task not found" });
+  const task = await reviewTask(c.env.DB, existing.id, c.get("ownerId"), actorType, actorId, body.pr_url || null, taskIdentity(c), sessionId);
   return c.json(task);
 });
 
@@ -1921,10 +2163,7 @@ api.post("/api/tasks/:id/reject", async (c) => {
   } catch (error) {
     const status = (error as { status?: unknown }).status;
     if (status === 404 || status === 409) {
-      const responseText = (error as { responseText?: unknown }).responseText;
-      const message =
-        typeof responseText === "string" && responseText ? responseText : error instanceof Error ? error.message : "AMA reject delivery failed";
-      throw new HTTPException(status, { message });
+      throw new HTTPException(status, { message: "AMA reject delivery was not accepted" });
     }
     throw error;
   }
@@ -1952,7 +2191,7 @@ api.post("/api/tasks/:id/notes", async (c) => {
 });
 
 api.get("/api/tasks/:id/notes", async (c) => {
-  const task = await c.env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(c.req.param("id")).first();
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
 
   const since = c.req.query("since");
@@ -1985,7 +2224,7 @@ api.post("/api/tasks/:id/messages", async (c) => {
 });
 
 api.get("/api/tasks/:id/messages", async (c) => {
-  const task = await c.env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(c.req.param("id")).first();
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
 
   const since = c.req.query("since");
@@ -1997,6 +2236,33 @@ api.get("/api/tasks/:id/messages", async (c) => {
 
 api.get("/api/tunnel/ws", async (c) => {
   markLegacyRuntimeSurface(c);
+  const role = c.req.query("role");
+  if (role === "daemon") {
+    if (c.get("identityType") !== "machine" || !c.get("machineId")) {
+      throw new HTTPException(403, { message: "A bound Native machine context is required for the daemon tunnel" });
+    }
+  } else if (role === "browser") {
+    if (c.get("identityType") !== "user" || c.get("principal").source !== "session") {
+      throw new HTTPException(403, { message: "An AK Web Session is required for the browser tunnel" });
+    }
+    assertWebSocketOrigin(c);
+    const sessionId = c.req.query("sessionId");
+    if (!sessionId) throw new HTTPException(400, { message: "sessionId is required" });
+    const session = await c.env.DB.prepare(
+      `SELECT s.id FROM agent_sessions s
+       JOIN agents a ON a.id = s.agent_id
+       WHERE s.id = ? AND a.owner_id = ?
+       UNION ALL
+       SELECT s.id FROM ama_agent_sessions s
+       WHERE s.id = ? AND s.owner_id = ?
+       LIMIT 1`,
+    )
+      .bind(sessionId, c.get("ownerId"), sessionId, c.get("ownerId"))
+      .first();
+    if (!session) throw new HTTPException(404, { message: "Agent session not found" });
+  } else {
+    throw new HTTPException(400, { message: "Invalid tunnel role" });
+  }
   const ownerId = c.get("ownerId");
   const id = c.env.TUNNEL_RELAY.idFromName(ownerId);
   const stub = c.env.TUNNEL_RELAY.get(id);
@@ -2014,8 +2280,10 @@ api.get("/api/tunnel/ws", async (c) => {
 // ─── SSE Stream ───
 
 api.get("/api/tasks/:id/stream", async (c) => {
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
   const lastEventId = c.req.header("Last-Event-ID") || null;
-  return createSSEResponse(c.env, c.req.param("id"), lastEventId);
+  return createSSEResponse(c.env, task.id, lastEventId);
 });
 
 api.get("/api/boards/:id/stream", async (c) => {
@@ -2088,25 +2356,13 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const resourceName = boardMaintainerResourceName(board.id);
   const maintainerSessionMetadata = maintainerAmaSessionMetadata(maintainerId);
   const boardVault = await createBoardMaintainerVault(c.env, ownerId, amaProjectId, board);
-  const maintainerKey = await createMaintainerApiKeySecret({
-    env: c.env,
-    ownerId,
-    amaProjectId,
-    vaultId: boardVault.id,
-    boardId,
-    maintainerId,
-    agentId: maintainerAgentId,
-  });
   const runtimeEnv = maintainerRuntimeEnv({
     agentId: maintainerAgentId,
     boardId,
     maintainerId,
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(c.env, ownerId, amaProjectId, boardVault.id, [
-    AK_VARIABLES_CREDENTIAL_NAME,
-    USER_VARIABLES_CREDENTIAL_NAME,
-  ]);
+  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(c.env, ownerId, amaProjectId, boardVault.id, [USER_VARIABLES_CREDENTIAL_NAME]);
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
     projectId: amaProjectId,
     name: resourceName,
@@ -2153,7 +2409,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     heartbeatEnabled,
     status: maintainerStatus,
     amaBoardVaultId: boardVault.id,
-    apiKeyId: maintainerKey.apiKeyId,
   });
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer), 201);
 });
@@ -2239,10 +2494,6 @@ api.post("/api/boards/:id/maintainers/:maintainerId/sessions", async (c) => {
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const maintainerId = c.req.param("maintainerId");
-  const metadata = c.get("apiKeyMetadata") ?? {};
-  if (metadata.boardId !== boardId || metadata.maintainerId !== maintainerId) {
-    throw new HTTPException(403, { message: "API key is bound to a different maintainer" });
-  }
 
   const body = await c.req.json<{
     session_id?: string;
@@ -2260,8 +2511,8 @@ api.post("/api/boards/:id/maintainers/:maintainerId/sessions", async (c) => {
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, maintainerId);
   if (!maintainer || maintainer.status === "archived") throw new HTTPException(404, { message: "Board maintainer not found" });
   if (maintainer.status !== "active") throw new HTTPException(409, { message: "Board maintainer is not active" });
-  if (metadata.agentId !== maintainer.agent_id) {
-    throw new HTTPException(403, { message: "API key is bound to a different agent" });
+  if (c.get("identityType") === "agent:leader" && c.get("agentId") !== maintainer.agent_id) {
+    throw new HTTPException(403, { message: "Realmroot Agent is bound to a different maintainer" });
   }
 
   const result = await createAmaAgentSession(c.env.DB, c.env, {
@@ -2299,26 +2550,13 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     memoryEnabled: true,
   });
   const boardVaultId = await ensureBoardMaintainerVault(c.env.DB, c.env, ownerId, amaProjectId, board, maintainer);
-  await ensureMaintainerApiKeySecret({
-    db: c.env.DB,
-    env: c.env,
-    ownerId,
-    amaProjectId,
-    vaultId: boardVaultId,
-    boardId,
-    maintainerId: maintainer.id,
-    agentId: maintainer.agent_id,
-  });
   const runtimeEnv = maintainerRuntimeEnv({
     agentId: maintainer.agent_id,
     boardId,
     maintainerId: maintainer.id,
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(c.env, ownerId, amaProjectId, boardVaultId, [
-    AK_VARIABLES_CREDENTIAL_NAME,
-    USER_VARIABLES_CREDENTIAL_NAME,
-  ]);
+  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(c.env, ownerId, amaProjectId, boardVaultId, [USER_VARIABLES_CREDENTIAL_NAME]);
   const resourceRefs = maintainer.ama_memory_store_id ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, readOnly: false }] : [];
   const maintainerSessionMetadata = maintainerAmaSessionMetadata(maintainer.id);
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
@@ -2423,40 +2661,44 @@ api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
 });
 
 api.get("/api/boards/:id", async (c) => {
-  const board = await getBoard(c.env.DB, c.req.param("id"));
+  const board = await getBoard(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!board) throw new HTTPException(404, { message: "Board not found" });
   return c.json(board);
 });
 
 api.patch("/api/boards/:id", async (c) => {
   const body = await c.req.json<{ name?: string; description?: string; visibility?: "private" | "public"; labels?: any[] }>();
-  const board = await updateBoard(c.env.DB, c.req.param("id"), body);
+  const board = await updateBoard(c.env.DB, c.req.param("id"), c.get("ownerId"), body);
   if (!board) throw new HTTPException(404, { message: "Board not found" });
   return c.json(board);
 });
 
 api.post("/api/boards/:id/labels", async (c) => {
   const body = await c.req.json<{ name: string; color: string; description?: string }>();
-  const board = await createBoardLabel(c.env.DB, c.req.param("id"), { name: body.name, color: body.color, description: body.description || "" });
+  const board = await createBoardLabel(c.env.DB, c.req.param("id"), c.get("ownerId"), {
+    name: body.name,
+    color: body.color,
+    description: body.description || "",
+  });
   if (!board) throw new HTTPException(404, { message: "Board not found" });
   return c.json(board, 201);
 });
 
 api.patch("/api/boards/:id/labels/:name", async (c) => {
   const body = await c.req.json<{ name?: string; color?: string; description?: string }>();
-  const board = await updateBoardLabel(c.env.DB, c.req.param("id"), c.req.param("name"), body);
+  const board = await updateBoardLabel(c.env.DB, c.req.param("id"), c.get("ownerId"), c.req.param("name"), body);
   if (!board) throw new HTTPException(404, { message: "Board not found" });
   return c.json(board);
 });
 
 api.delete("/api/boards/:id/labels/:name", async (c) => {
-  const board = await deleteBoardLabel(c.env.DB, c.req.param("id"), c.req.param("name"));
+  const board = await deleteBoardLabel(c.env.DB, c.req.param("id"), c.get("ownerId"), c.req.param("name"));
   if (!board) throw new HTTPException(404, { message: "Board not found" });
   return c.json(board);
 });
 
 api.delete("/api/boards/:id", async (c) => {
-  const deleted = await deleteBoard(c.env.DB, c.req.param("id"));
+  const deleted = await deleteBoard(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!deleted) throw new HTTPException(404, { message: "Board not found" });
   return c.json({ ok: true });
 });
@@ -2580,8 +2822,6 @@ function boardMaintainerHttpPrompt(boardId: string) {
   ].join("\n");
 }
 
-const MAINTAINER_API_KEY_PERMISSIONS = { maintainerSession: ["create"] };
-const AK_API_KEY_DATA_KEY = "AK_API_KEY";
 const ENV_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_MAINTAINER_VARIABLES = 100;
 type MaintainerVaultCredential = Awaited<ReturnType<typeof listAmaVaultCredentials>>[number];
@@ -2658,10 +2898,7 @@ function publicMaintainerVariables(credentials: MaintainerVaultCredential[], vau
 }
 
 async function syncMaintainerSecretEnvRefs(env: Env, ownerId: string, amaProjectId: string, boardVaultId: string, maintainer: BoardMaintainer) {
-  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(env, ownerId, amaProjectId, boardVaultId, [
-    AK_VARIABLES_CREDENTIAL_NAME,
-    USER_VARIABLES_CREDENTIAL_NAME,
-  ]);
+  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(env, ownerId, amaProjectId, boardVaultId, [USER_VARIABLES_CREDENTIAL_NAME]);
   await updateAmaScheduledAgentTrigger(env, ownerId, amaProjectId, maintainer.ama_schedule_id, { runtimeSecretEnv });
   if (maintainer.ama_http_trigger_id) {
     await updateAmaHttpAgentTrigger(env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, { runtimeSecretEnv });
@@ -2689,59 +2926,6 @@ async function ensureBoardMaintainerVault(
   const vault = await createBoardMaintainerVault(env, ownerId, amaProjectId, board);
   await setBoardMaintainerVaultId(db, ownerId, board.id, maintainer.id, vault.id);
   return vault.id;
-}
-
-async function ensureMaintainerApiKeySecret(input: {
-  db: D1;
-  env: Env;
-  ownerId: string;
-  amaProjectId: string;
-  vaultId: string;
-  boardId: string;
-  maintainerId: string;
-  agentId: string;
-}) {
-  const credentials = await listAmaVaultCredentials(input.env, input.ownerId, input.amaProjectId, input.vaultId);
-  const matches = credentials.filter((credential) => credential.state === "active" && credential.name === AK_VARIABLES_CREDENTIAL_NAME);
-  if (matches.length > 1) {
-    throw new Error(`AMA vault ${input.vaultId} has multiple active credentials named ${AK_VARIABLES_CREDENTIAL_NAME}`);
-  }
-  if (matches.length === 1) return;
-  const maintainerKey = await createMaintainerApiKeySecret(input);
-  await setBoardMaintainerApiKeyId(input.db, input.ownerId, input.boardId, input.maintainerId, maintainerKey.apiKeyId);
-}
-
-async function createMaintainerApiKeySecret(input: {
-  env: Env;
-  ownerId: string;
-  amaProjectId: string;
-  vaultId: string;
-  boardId: string;
-  maintainerId: string;
-  agentId: string;
-}) {
-  const auth = createAuth(input.env);
-  const apiKey = await auth.api.createApiKey({
-    body: {
-      configId: "maintainer",
-      userId: input.ownerId,
-      name: boardMaintainerResourceName(input.boardId),
-      permissions: MAINTAINER_API_KEY_PERMISSIONS,
-      metadata: {
-        boardId: input.boardId,
-        maintainerId: input.maintainerId,
-        agentId: input.agentId,
-      },
-    },
-  });
-  await createAmaSessionSecret(input.env, input.ownerId, {
-    projectId: input.amaProjectId,
-    vaultId: input.vaultId,
-    name: AK_VARIABLES_CREDENTIAL_NAME,
-    secretData: { [AK_API_KEY_DATA_KEY]: apiKey.key },
-    metadata: { boardId: input.boardId, maintainerId: input.maintainerId, agentId: input.agentId },
-  });
-  return { apiKeyId: apiKey.id };
 }
 
 function maintainerRuntimeEnv(input: { agentId: string; boardId: string; maintainerId: string; apiUrl: string }): Record<string, string> {
@@ -2783,7 +2967,6 @@ api.get("/api/admin/stats", async (c) => {
 });
 
 api.get("/api/admin/machines", async (c) => {
-  markLegacyRuntimeSurface(c);
   requireAdmin(c);
   if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machines = await listAllMachines(c.env.DB);
@@ -2920,23 +3103,10 @@ api.post("/api/repositories/:id/github-token", async (c) => {
 // the installation may cover repos used elsewhere.
 api.delete("/api/repositories/:id", async (c) => {
   const ownerId = c.get("ownerId");
-  const repo = await c.env.DB.prepare("SELECT owner_id FROM repositories WHERE id = ?").bind(c.req.param("id")).first<{ owner_id: string }>();
+  const repo = await getRepository(c.env.DB, c.req.param("id"), ownerId);
   if (!repo) throw new HTTPException(404, { message: "Repository not found" });
-  if (repo.owner_id !== ownerId) throw new HTTPException(403, { message: "Forbidden" });
-  await deleteRepository(c.env.DB, c.req.param("id"));
+  await deleteRepository(c.env.DB, repo.id, ownerId);
   return c.json({ ok: true });
-});
-
-// ─── GPG Keys ───
-
-api.get("/api/agents/:id/gpg-key", async (c) => {
-  const agent = await c.env.DB.prepare("SELECT gpg_subkey_id FROM agents WHERE id = ? AND owner_id = ?")
-    .bind(c.req.param("id"), c.get("ownerId"))
-    .first<{ gpg_subkey_id: string | null }>();
-  if (!agent) throw new HTTPException(404, { message: "Agent not found" });
-  const armoredPrivateKey = await getArmoredPrivateKey(c.env.DB, c.get("ownerId"));
-  if (!armoredPrivateKey) throw new HTTPException(404, { message: "GPG key not found" });
-  return c.json({ armored_private_key: armoredPrivateKey, gpg_subkey_id: agent.gpg_subkey_id });
 });
 
 // ─── Agent Inbox ───
@@ -3052,37 +3222,4 @@ function escapeXml(s: string): string {
 
 function agentEmail(username: string): string {
   return `${username}@mails.agent-kanban.dev`;
-}
-
-const ZBASE32 = "ybndrfg8ejkmcpqxot1uwisza345h769";
-
-async function wkdHash(localPart: string): Promise<string> {
-  const data = new TextEncoder().encode(localPart.toLowerCase());
-  const hash = new Uint8Array(await crypto.subtle.digest("SHA-1", data));
-  // z-base-32 encode (RFC 6189)
-  let bits = 0;
-  let value = 0;
-  let out = "";
-  for (const byte of hash) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      out += ZBASE32[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) out += ZBASE32[(value << (5 - bits)) & 31];
-  return out;
-}
-
-async function syncToGithub(env: Env, ownerId: string, email: string): Promise<void> {
-  const token = await getGithubToken(env.DB, ownerId);
-  if (!token) return;
-
-  const rootKey = await getRootKeyInfo(env.DB, ownerId);
-  if (!rootKey) return;
-
-  const subkeyIds = await getSubkeyIds(rootKey.armoredPublicKey);
-  await syncGpgKey(token, rootKey.armoredPublicKey, rootKey.fingerprint, subkeyIds);
-  await addAgentEmail(token, email);
 }

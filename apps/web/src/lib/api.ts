@@ -1,34 +1,21 @@
 import type { AgentRuntime, CreateSubagentInput, GithubAppConfig, InstallableRepo, Repository } from "@agent-kanban/shared";
-import { getAuthToken, refreshAuthToken } from "./auth-client";
+import { getCsrfToken, getSession } from "./auth-client";
 
 const API_BASE = "/api";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const token = getAuthToken() ?? (await refreshAuthToken());
-  if (!token) throw new Error("NOT_AUTHENTICATED");
+  let csrf = getCsrfToken();
+  if (!csrf && method !== "GET") csrf = (await getSession())?.session.csrfToken ?? null;
 
-  let res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+      ...(csrf ? { "x-csrf-token": csrf } : {}),
     },
+    credentials: "include",
     body: body ? JSON.stringify(body) : undefined,
   });
-
-  if (res.status === 401) {
-    const freshToken = await refreshAuthToken();
-    if (freshToken) {
-      res = await fetch(`${API_BASE}${path}`, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${freshToken}`,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-    }
-  }
 
   const data = (await res.json()) as any;
 
@@ -105,6 +92,8 @@ export const api = {
       runtime: AgentRuntime;
       model?: string;
       skills?: string[];
+      realmroot_agent_id: string;
+      realmroot_credential_ref: string;
     }) => request<any>("POST", "/agents", input),
     update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/agents/${id}`, body),
     delete: (id: string) => request<void>("DELETE", `/agents/${id}`),

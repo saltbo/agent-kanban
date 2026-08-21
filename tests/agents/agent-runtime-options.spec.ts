@@ -18,17 +18,20 @@ test.describe("Agent runtime options", () => {
     await signUpAndGetBoard(page, `agent_runtimes_${Date.now()}@example.com`);
 
     const leaderId = await page.evaluate(async () => {
+      const session = await fetch("/api/auth/session", { credentials: "include" }).then((response) => response.json());
       const response = await fetch("/api/agents", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("auth-token")}`,
           "Content-Type": "application/json",
+          "x-csrf-token": session.session.csrfToken,
         },
         body: JSON.stringify({
           name: "OpenCode Leader",
           username: `opencode-leader-${Date.now()}`,
           kind: "leader",
           runtime: "opencode",
+          realmroot_agent_id: `rr-agent-leader-${Date.now()}`,
+          realmroot_credential_ref: `ama://vaults/e2e/credentials/leader-${Date.now()}`,
         }),
       });
       if (!response.ok) throw new Error(`Failed to create leader: ${response.status} ${await response.text()}`);
@@ -36,17 +39,20 @@ test.describe("Agent runtime options", () => {
     });
 
     const workerId = await page.evaluate(async () => {
+      const session = await fetch("/api/auth/session", { credentials: "include" }).then((response) => response.json());
       const response = await fetch("/api/agents", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("auth-token")}`,
           "Content-Type": "application/json",
+          "x-csrf-token": session.session.csrfToken,
         },
         body: JSON.stringify({
           name: "Claude Worker",
           username: `claude-worker-${Date.now()}`,
           kind: "leader",
           runtime: "pi",
+          realmroot_agent_id: `rr-agent-worker-${Date.now()}`,
+          realmroot_credential_ref: `ama://vaults/e2e/credentials/worker-${Date.now()}`,
         }),
       });
       if (!response.ok) throw new Error(`Failed to seed worker identity: ${response.status} ${await response.text()}`);

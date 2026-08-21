@@ -287,7 +287,6 @@ export interface Agent {
   owner_id: string;
   name: string;
   username: string;
-  gpg_subkey_id: string | null;
   bio: string | null;
   soul: string | null;
   role: string | null;
@@ -303,6 +302,8 @@ export interface Agent {
   fingerprint: string;
   builtin: number;
   ama_agent_id: string | null;
+  realmroot_agent_id: string | null;
+  realmroot_credential_ref: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -498,6 +499,8 @@ export interface CreateAgentInput {
   skills?: string[];
   subagents?: string[];
   taints?: AgentTaint[];
+  realmroot_agent_id?: string;
+  realmroot_credential_ref?: string;
 }
 
 export interface CreateSubagentInput {

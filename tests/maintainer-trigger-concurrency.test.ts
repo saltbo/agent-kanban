@@ -5,6 +5,11 @@ import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, createTestEnv, seedUser, setupMiniflare } from "./helpers/db";
 
+vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
+  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
+  invalidateAmaMachineToken: vi.fn(),
+}));
+
 let db: D1Database;
 let mf: Miniflare;
 
@@ -13,9 +18,10 @@ function env() {
     ...createTestEnv(),
     DB: db,
     AMA_ORIGIN: "https://ama.test",
-    AMA_OIDC_ISSUER: "https://auth.test",
-    AMA_OIDC_CLIENT_ID: "ak-app",
-    AMA_OIDC_CLIENT_SECRET: "ak-secret",
+    AMA_MACHINE_CLIENT_ID: "ak-app",
+    AMA_MACHINE_CLIENT_SECRET: "ak-secret",
+    AMA_MACHINE_SCOPES: "ama:read ama:write",
+    AMA_DPOP_PRIVATE_JWK: "{}",
   } as any;
 }
 
@@ -76,10 +82,10 @@ async function seedMaintainer(input: { serialized?: boolean; status?: "active" |
   await seedUser(db, ownerId, `${ownerId}@test.com`);
   await db
     .prepare(
-      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-       VALUES (?, ?, ?, 'vault_concurrency', '{}')`,
+      `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+       VALUES (?, ?, 'vault_concurrency', '{}')`,
     )
-    .bind(ownerId, projectId, ownerId)
+    .bind(ownerId, projectId)
     .run();
 
   const { createBoard } = await import("../apps/web/server/boardRepo");

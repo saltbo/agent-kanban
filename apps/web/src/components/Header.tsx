@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useBoardMaintainers, useBoards } from "../hooks/useBoard";
 import { api } from "../lib/api";
-import { clearAuthToken, signOut, useSession } from "../lib/auth-client";
+import { signOut, useSession } from "../lib/auth-client";
 import { getTheme, setTheme, type Theme } from "../lib/theme";
 import { AgentIdenticon } from "./AgentIdenticon";
 import { BoardMaintainerDialog } from "./BoardMaintainerDialog";
@@ -81,9 +81,8 @@ export function Header() {
   }
 
   async function handleSignOut() {
-    await signOut();
-    clearAuthToken();
-    navigate("/auth");
+    const redirectedToRealmroot = await signOut();
+    if (!redirectedToRealmroot) window.location.assign("/auth");
   }
 
   return (

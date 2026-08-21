@@ -20,7 +20,7 @@ import type { MachineRuntime } from "@agent-kanban/shared";
 import type { Command } from "commander";
 import { type AmaRunnerVersionInfo, resolveAmaRunnerBinary } from "../amaRunner.js";
 import { MachineClient } from "../client/machine.js";
-import { getCredentials, saveCredentials, setCurrent } from "../config.js";
+import { getCredentials, setCurrent } from "../config.js";
 import { generateDeviceId } from "../device.js";
 import { resolveMachineName } from "../machineName.js";
 import { DAEMON_STATE_FILE, LOGS_DIR, PID_FILE, SESSIONS_DIR, STATE_DIR } from "../paths.js";
@@ -349,31 +349,17 @@ async function startAmaRunner(opts: Record<string, unknown>) {
 }
 
 async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
-  if (typeof opts.apiUrl !== "string" || typeof opts.apiKey !== "string") {
-    throw new Error("API credentials are required to start the machine runner");
-  }
-  const creds = { apiUrl: opts.apiUrl, apiKey: opts.apiKey };
+  if (typeof opts.apiUrl !== "string") throw new Error("A Realmroot-authenticated AK environment is required");
 
   const runtimes = machineRuntimes();
   opts.providers = runtimes.map((runtime) => runtime.name);
-  const machineResponse = await fetch(`${creds.apiUrl.replace(/\/$/, "")}/api/machines`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${creds.apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      name: resolveMachineName(),
-      os: `${platform()} ${arch()} ${release()}`,
-      version: getVersion(),
-      runtimes,
-      device_id: generateDeviceId(),
-    }),
-  });
-  if (!machineResponse.ok) {
-    throw new Error(`Machine registration failed with HTTP ${machineResponse.status}: ${await machineResponse.text()}`);
-  }
-  const machine = (await machineResponse.json()) as RegisteredMachine;
+  const machine = (await new MachineClient().registerMachine({
+    name: resolveMachineName(),
+    os: `${platform()} ${arch()} ${release()}`,
+    version: getVersion(),
+    runtimes,
+    device_id: generateDeviceId(),
+  })) as RegisteredMachine;
   const onboarding = machine.runner;
   if (!onboarding) {
     throw new Error("Machine registration did not return runner onboarding details");
@@ -390,27 +376,23 @@ export function registerStartCommand(program: Command) {
     .command("start")
     .description("Start the Machine runner")
     .option("--api-url <url>", "API server URL")
-    .option("--api-key <key>", "AK API key")
     .option("--max-concurrent <n>", "Max concurrent agents", String(DEFAULT_MAX_CONCURRENT))
     .action(async (opts) => {
       // Save or resolve credentials
-      if (opts.apiUrl && opts.apiKey) {
-        saveCredentials(opts.apiUrl, opts.apiKey);
-      } else if (opts.apiUrl) {
-        // Switch to existing credentials for this host
+      if (opts.apiUrl) {
         try {
           setCurrent(opts.apiUrl);
         } catch {
-          console.error(`No saved credentials for ${opts.apiUrl}. Pass --api-key as well.`);
+          console.error(`No Realmroot login for ${opts.apiUrl}. Run ak auth login --api-url ${opts.apiUrl}.`);
           process.exit(1);
         }
       }
 
-      let creds: { apiUrl: string; apiKey: string };
+      let creds: { apiUrl: string };
       try {
         creds = getCredentials();
       } catch {
-        console.error("API URL and key required. Pass --api-url and --api-key.");
+        console.error("Realmroot login required. Run ak auth login --api-url <url>.");
         process.exit(1);
       }
 
@@ -421,7 +403,7 @@ export function registerStartCommand(program: Command) {
       if (prevState && prevState.apiUrl !== creds.apiUrl) {
         rmSync(SESSIONS_DIR, { recursive: true, force: true });
       }
-      await startAmaRunner({ ...opts, apiUrl: creds.apiUrl, apiKey: creds.apiKey });
+      await startAmaRunner({ ...opts, apiUrl: creds.apiUrl });
     });
 }
 
@@ -507,7 +489,6 @@ export function registerRestartCommand(program: Command) {
     .command("restart")
     .description("Restart the Machine runner")
     .option("--api-url <url>", "API server URL")
-    .option("--api-key <key>", "AK API key")
     .option("--max-concurrent <n>", "Max concurrent agents")
     .action(async (opts) => {
       const prevState = readDaemonState();
@@ -525,22 +506,20 @@ export function registerRestartCommand(program: Command) {
         console.log("○ Machine runner was not running");
       }
 
-      if (opts.apiUrl && opts.apiKey) {
-        saveCredentials(opts.apiUrl, opts.apiKey);
-      } else if (opts.apiUrl) {
+      if (opts.apiUrl) {
         try {
           setCurrent(opts.apiUrl);
         } catch {
-          console.error(`No saved credentials for ${opts.apiUrl}. Pass --api-key as well.`);
+          console.error(`No Realmroot login for ${opts.apiUrl}. Run ak auth login --api-url ${opts.apiUrl}.`);
           process.exit(1);
         }
       }
 
-      let creds: { apiUrl: string; apiKey: string };
+      let creds: { apiUrl: string };
       try {
         creds = getCredentials();
       } catch {
-        console.error("API URL and key required. Pass --api-url and --api-key, or run `ak start` first.");
+        console.error("Realmroot login required. Run ak auth login --api-url <url>.");
         process.exit(1);
       }
 
@@ -551,7 +530,6 @@ export function registerRestartCommand(program: Command) {
       await startAmaRunner({
         ...opts,
         apiUrl: creds.apiUrl,
-        apiKey: creds.apiKey,
         maxConcurrent: opts.maxConcurrent ?? String(prevState?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT),
       });
     });

@@ -1,6 +1,5 @@
 import type { BoardAction } from "@agent-kanban/shared";
 import { useEffect, useRef, useState } from "react";
-import { getAuthToken, refreshAuthToken } from "../lib/auth-client";
 
 const MAX_EVENTS = 50;
 
@@ -13,15 +12,10 @@ export function useBoardSSE(boardId: string | undefined) {
   useEffect(() => {
     if (!boardId) return;
 
-    async function connect() {
+    function connect() {
       esRef.current?.close();
 
-      // Read token on every reconnect so refreshed tokens are picked up
-      const token = (await refreshAuthToken()) ?? getAuthToken();
-      if (!token) return;
-
-      const url = `/api/boards/${boardId}/stream?token=${encodeURIComponent(token)}`;
-      const es = new EventSource(url);
+      const es = new EventSource(`/api/boards/${boardId}/stream`, { withCredentials: true });
       esRef.current = es;
 
       es.onopen = () => {

@@ -9,7 +9,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // E2E fixtures seed the single local Miniflare D1 database directly. Keep one
+  // worker so the app and sqlite fixture writes never contend for that file.
+  workers: 1,
   reporter: "html",
   use: {
     baseURL,

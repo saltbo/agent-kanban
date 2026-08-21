@@ -1,4 +1,6 @@
+import WebSocket from "ws";
 import { createLogger } from "../logger.js";
+import { realmrootRequestHeaders } from "../nativeAuth.js";
 import type { AgentEvent } from "../providers/types.js";
 
 const logger = createLogger("tunnel");
@@ -40,15 +42,18 @@ export class TunnelClient {
   private historyRequestHandler?: (sessionId: string, requestId: string) => void;
   private closed = false;
   private wsBaseUrl: string;
-  private apiKey: string;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectPromise: Promise<void> | null = null;
   private consecutiveFailures = 0;
 
-  constructor(apiUrl: string, apiKey: string) {
+  constructor(
+    apiUrl: string,
+    private readonly machineId: string,
+  ) {
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(machineId)) throw new Error("AK machine ID is invalid");
     this.wsBaseUrl = apiUrl.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
-    this.apiKey = apiKey;
   }
 
   async connect(): Promise<void> {
@@ -58,15 +63,36 @@ export class TunnelClient {
     // concurrent reconnect chains sharing mutable state — re-introducing
     // the storm bug through a different path.
     if (this.ws !== null || this.reconnectTimer !== null) return;
+    if (this.connectPromise) return this.connectPromise;
     this.closed = false;
     this.consecutiveFailures = 0;
-    await this.openSocket();
+    return this.beginConnectAttempt();
   }
 
-  private openSocket(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const url = `${this.wsBaseUrl}/api/tunnel/ws?role=daemon&token=${encodeURIComponent(this.apiKey)}`;
+  private beginConnectAttempt(): Promise<void> {
+    if (this.connectPromise) return this.connectPromise;
+    const attempt = this.openSocket();
+    const tracked = attempt.finally(() => {
+      if (this.connectPromise === tracked) this.connectPromise = null;
+    });
+    this.connectPromise = tracked;
+    return tracked;
+  }
 
+  private async openSocket(): Promise<void> {
+    const url = `${this.wsBaseUrl}/api/tunnel/ws?role=daemon`;
+    const authorityUrl = url.replace(/^ws/, "http");
+    let headers: Record<string, string>;
+    try {
+      headers = await realmrootRequestHeaders("GET", authorityUrl);
+    } catch (error) {
+      const message = `Tunnel authorization failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.onAttemptFailed(message);
+      throw new Error(message, { cause: error });
+    }
+    if (this.closed) throw new Error("Tunnel connect aborted");
+    headers["x-ak-machine-id"] = this.machineId;
+    return new Promise((resolve, reject) => {
       let settled = false;
       const settle = (err?: Error) => {
         if (settled) return;
@@ -77,7 +103,7 @@ export class TunnelClient {
 
       let ws: WebSocket;
       try {
-        ws = new WebSocket(url);
+        ws = new WebSocket(url, { headers });
       } catch (err) {
         const message = `Failed to create WebSocket: ${err instanceof Error ? err.message : String(err)}`;
         settle(new Error(message));
@@ -166,7 +192,7 @@ export class TunnelClient {
       this.reconnectTimer = null;
       // Errors are surfaced via the `close` handler's log + reschedule path,
       // so we swallow the rejection here to avoid unhandled-rejection warnings.
-      this.openSocket().catch(() => {});
+      this.beginConnectAttempt().catch(() => {});
     }, delayMs);
   }
 

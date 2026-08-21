@@ -38,6 +38,55 @@ export async function upsertMachine(db: D1, ownerId: string, info: CreateMachine
   return parseMachine(row!);
 }
 
+export async function upsertNativeMachine(db: D1, ownerId: string, subjectId: string, info: CreateMachineInfo): Promise<MachineRecord | null> {
+  const id = newId();
+  const now = new Date().toISOString();
+  const runtimes = JSON.stringify(normalizeMachineRuntimes(info.runtimes, now));
+  await db.batch([
+    db.prepare("INSERT OR IGNORE INTO realmroot_tenants (id) VALUES (?)").bind(ownerId),
+    db
+      .prepare(
+        `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', ?)
+         ON CONFLICT(owner_id, device_id) DO UPDATE SET
+           name = excluded.name,
+           os = excluded.os,
+           version = excluded.version,
+           runtimes = excluded.runtimes
+         WHERE NOT EXISTS (
+           SELECT 1 FROM realmroot_native_machine_bindings binding
+           WHERE binding.tenant_id = excluded.owner_id
+             AND binding.machine_id = machines.id
+             AND binding.subject_id <> ?
+         )`,
+      )
+      .bind(id, ownerId, info.device_id, info.name, info.os, info.version, runtimes, now, subjectId),
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO realmroot_native_machine_bindings (tenant_id, subject_id, machine_id)
+         SELECT ?, ?, id FROM machines
+         WHERE owner_id = ? AND device_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM realmroot_native_machine_bindings binding
+             WHERE binding.tenant_id = ?
+               AND binding.machine_id = machines.id
+               AND binding.subject_id <> ?
+           )`,
+      )
+      .bind(ownerId, subjectId, ownerId, info.device_id, ownerId, subjectId),
+  ]);
+  const binding = await db
+    .prepare(
+      `SELECT machines.* FROM machines
+       JOIN realmroot_native_machine_bindings binding ON binding.machine_id = machines.id
+       WHERE machines.owner_id = ? AND machines.device_id = ?
+         AND binding.tenant_id = ? AND binding.subject_id = ?`,
+    )
+    .bind(ownerId, info.device_id, ownerId, subjectId)
+    .first<MachineRecord>();
+  return binding ? parseMachine(binding) : null;
+}
+
 // A cloud-sandbox machine: no device, no daemon, no heartbeat. It declares the
 // cloud runtimes it can host and carries the cloud AMA environment dispatch
 // targets. status stays 'online' so the UI shows it as available.
@@ -203,11 +252,11 @@ export async function listAllMachines(db: D1): Promise<AdminMachine[]> {
   const result = await db
     .prepare(`
     SELECT m.*,
-      u.name AS owner_name, u.email AS owner_email,
+      (SELECT tm.name FROM realmroot_tenant_members tm WHERE tm.tenant_id = m.owner_id ORDER BY tm.created_at LIMIT 1) AS owner_name,
+      (SELECT tm.email FROM realmroot_tenant_members tm WHERE tm.tenant_id = m.owner_id ORDER BY tm.created_at LIMIT 1) AS owner_email,
       (SELECT COUNT(*) FROM agent_sessions s WHERE s.machine_id = m.id) AS session_count,
       (SELECT COUNT(*) FROM agent_sessions s WHERE s.machine_id = m.id AND s.status = 'active') AS active_session_count
     FROM machines m
-    LEFT JOIN user u ON u.id = m.owner_id
     ORDER BY m.last_heartbeat_at DESC
   `)
     .all<AdminMachine>();

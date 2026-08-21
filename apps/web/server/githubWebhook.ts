@@ -11,7 +11,6 @@ import { listActiveBoardMaintainersForRepository } from "./boardMaintainerRepo";
 import type { D1 } from "./db";
 import {
   addInstallationRepositories,
-  backfillInstallationOwner,
   deleteInstallation,
   removeInstallationRepositories,
   replaceInstallationRepositories,
@@ -449,7 +448,6 @@ export async function handleGithubInstallationEvent(
     repositorySelection: installation.repository_selection,
     suspendedAt: installation.suspended_at ?? null,
   });
-  await backfillInstallationOwner(db, installationId, account.id);
   if (installation.repository_selection === "selected") {
     await replaceInstallationRepositories(db, installationId, toRepoInputs(payload.repositories));
   } else {
@@ -486,7 +484,6 @@ export async function handleGithubInstallationRepositoriesEvent(
       repositorySelection: selection,
       suspendedAt: installation?.suspended_at ?? null,
     });
-    await backfillInstallationOwner(db, installationId, account.id);
   }
 
   // 'all' covers everything by account login; the selected-repo rows are moot.

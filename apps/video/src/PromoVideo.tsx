@@ -33,7 +33,7 @@ const C = {
 // ─── Scene: ak start (split screen terminal) ───
 
 const akStartEvents: TerminalEvent[] = [
-  { type: "type", text: "npx agent-kanban start --api-url https://agent-kanban.dev --api-key ak_live_xxxxxxxx", at: 5, duration: 40 },
+  { type: "type", text: "ak auth login --api-url https://agent-kanban.dev --client-id ak_cli", at: 5, duration: 40 },
   { type: "print", text: "Daemon started (PID 48291)", at: 55 },
   { type: "blank", at: 60 },
   { type: "print", text: "[info] Machine registered: m_macbook_pro", at: 70 },

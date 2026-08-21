@@ -69,6 +69,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   const deviceId = generateDeviceId();
   const machine = await client.registerMachine({ ...machineInfo, device_id: deviceId });
   const machineId = machine.id;
+  client.bindMachine(machineId);
   logger.info(`Machine ready: ${machineId} (device: ${deviceId})`);
 
   await client.heartbeat(machineId, {
@@ -95,8 +96,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   const prMonitor = new PrMonitor(client);
 
-  const { apiUrl, apiKey } = getCredentials();
-  const tunnel = new TunnelClient(apiUrl, apiKey);
+  const { apiUrl } = getCredentials();
+  const tunnel = new TunnelClient(apiUrl, machineId);
   try {
     await tunnel.connect();
   } catch (err) {
@@ -139,6 +140,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     {
       maxConcurrent: opts.maxConcurrent,
       pollInterval,
+      machineId,
     },
     circuitBreaker,
   );

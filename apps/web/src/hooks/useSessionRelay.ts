@@ -1,6 +1,5 @@
 import type { AgentEvent } from "@agent-kanban/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAuthToken, refreshAuthToken } from "../lib/auth-client";
 
 export type { AgentEvent };
 
@@ -51,9 +50,9 @@ export function useSessionRelay({ sessionId, enabled = true }: UseSessionRelayOp
 
     let ws: WebSocket | null = null;
 
-    function connect(token: string) {
+    function connect() {
       if (closed) return;
-      const wsUrl = `${location.origin.replace(/^http/, "ws")}/api/tunnel/ws?role=browser&sessionId=${sessionId}&token=${encodeURIComponent(token)}`;
+      const wsUrl = `${location.origin.replace(/^http/, "ws")}/api/tunnel/ws?role=browser&sessionId=${sessionId}`;
       ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -121,15 +120,7 @@ export function useSessionRelay({ sessionId, enabled = true }: UseSessionRelayOp
       };
     }
 
-    const token = getAuthToken();
-    if (token) {
-      connect(token);
-      void refreshAuthToken();
-    } else {
-      void refreshAuthToken().then((freshToken) => {
-        if (freshToken) connect(freshToken);
-      });
-    }
+    connect();
 
     return () => {
       closed = true;

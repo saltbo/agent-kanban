@@ -2,7 +2,6 @@ import type { AgentSession, AgentSessionWithMachine, SessionUsageInput } from "@
 import { signDelegation } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getAgentPrivateKey } from "./agentRepo";
-import { createAuth } from "./betterAuth";
 import type { D1 } from "./db";
 import type { Env } from "./types";
 
@@ -28,14 +27,6 @@ export async function createSession(
   `)
     .bind(sessionId, agentId, machineId, sessionPublicKey, delegationProof, now)
     .run();
-
-  await registerBetterAuthAgentSession(env, db, {
-    ownerId,
-    agentId,
-    hostId: machineId,
-    sessionId,
-    sessionPublicKey,
-  });
 
   return { delegation_proof: delegationProof };
 }
@@ -70,14 +61,6 @@ export async function createAmaAgentSession(
   `)
     .bind(input.sessionId, input.ownerId, input.agentId, input.amaSessionId ?? null, input.sessionPublicKey, delegationProof, now)
     .run();
-
-  await registerBetterAuthAgentSession(env, db, {
-    ownerId: input.ownerId,
-    agentId: input.agentId,
-    hostId: amaRuntimeHostId(input.ownerId),
-    sessionId: input.sessionId,
-    sessionPublicKey: input.sessionPublicKey,
-  });
 
   return { delegation_proof: delegationProof };
 }
@@ -117,80 +100,6 @@ export async function getAmaAgentSession(db: D1, sessionId: string): Promise<Ama
     .prepare("SELECT id, owner_id, agent_id, ama_session_id, status, secret_ref FROM ama_agent_sessions WHERE id = ?")
     .bind(sessionId)
     .first<AmaAgentSessionRow>();
-}
-
-async function registerBetterAuthAgentSession(
-  env: Env,
-  db: D1,
-  input: { ownerId: string; agentId: string; hostId: string; sessionId: string; sessionPublicKey: string },
-) {
-  const auth = createAuth(env);
-  const authCtx = await auth.$context;
-
-  const existingHost = await authCtx.adapter.findOne({ model: "agentHost", where: [{ field: "id", value: input.hostId }] });
-  if (!existingHost) {
-    await authCtx.adapter.create({
-      model: "agentHost",
-      data: {
-        id: input.hostId,
-        name: input.hostId.startsWith("ama-runtime-") ? "ama-runtime" : `machine-${input.hostId.slice(0, 8)}`,
-        userId: input.ownerId,
-        status: "active",
-        activatedAt: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      forceAllowId: true,
-    });
-  }
-
-  const jwk = JSON.stringify({ kty: "OKP", crv: "Ed25519", x: input.sessionPublicKey });
-  await authCtx.adapter.create({
-    model: "agent",
-    data: {
-      id: input.sessionId,
-      name: `session-${input.sessionId.slice(0, 8)}`,
-      userId: input.ownerId,
-      hostId: input.hostId,
-      status: "active",
-      mode: "autonomous",
-      publicKey: jwk,
-      activatedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    forceAllowId: true,
-  });
-
-  // Grant capabilities based on agent kind
-  const agentRow = await db.prepare("SELECT kind FROM agents WHERE id = ?").bind(input.agentId).first<{ kind: string }>();
-  if (!agentRow) throw new Error("Agent not found");
-  const kind = agentRow.kind;
-  const capabilities =
-    kind === "leader"
-      ? ["task:complete", "task:reject", "task:cancel", "task:log", "task:message", "agent:usage"]
-      : ["task:claim", "task:review", "task:log", "task:message", "agent:usage"];
-  for (const cap of capabilities) {
-    await authCtx.adapter.create({
-      model: "agentCapabilityGrant",
-      data: {
-        agentId: input.sessionId,
-        capability: cap,
-        grantedBy: input.ownerId,
-        deniedBy: null,
-        expiresAt: null,
-        status: "active",
-        reason: null,
-        constraints: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
-  }
-}
-
-function amaRuntimeHostId(ownerId: string): string {
-  return `ama-runtime-${ownerId}`;
 }
 
 export async function getSession(db: D1, sessionId: string): Promise<AgentSession | null> {

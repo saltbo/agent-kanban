@@ -35,7 +35,6 @@ export interface SessionFile {
   status?: SessionStatus;
   model?: string;
   providerResumeToken?: string;
-  gpgSubkeyId?: string | null;
   agentUsername?: string;
   agentName?: string;
 

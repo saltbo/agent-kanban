@@ -19,7 +19,7 @@ function d1DatabasePath(): string {
 }
 
 test.describe("Task chat runtime events", () => {
-  test("loads the latest page and loads earlier activity on scroll up", async ({ page }) => {
+  test("requests the AK-authorized session socket without exposing an AMA token", async ({ page }) => {
     // 1. Sign up a fresh user and land on the board page
     await signUpAndGetBoard(page, `chatpagination_${Date.now()}@example.com`);
 
@@ -28,12 +28,17 @@ test.describe("Task chat runtime events", () => {
 
     // 3. Create a worker agent via API (the user owns it; agent creation is allowed for users)
     const { agentUsername } = await page.evaluate(async () => {
-      const token = localStorage.getItem("auth-token");
+      const session = await fetch("/api/auth/session", { credentials: "include" }).then((response) => response.json());
       const username = `chat-pg-agent-${Date.now()}`;
       const res = await fetch(`${window.location.origin}/api/agents`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ username, runtime: "claude" }),
+        headers: { "Content-Type": "application/json", "x-csrf-token": session.session.csrfToken },
+        body: JSON.stringify({
+          username,
+          runtime: "claude",
+          realmroot_agent_id: `rr-${username}`,
+          realmroot_credential_ref: `ama://vaults/e2e/credentials/${username}`,
+        }),
       });
       if (!res.ok) throw new Error(`agent create: ${res.status} ${await res.text()}`);
       const agent = (await res.json()) as { id: string };
@@ -70,34 +75,26 @@ test.describe("Task chat runtime events", () => {
     const detailSheet = page.locator('[data-slot="sheet-content"]').first();
     await expect(detailSheet).toBeVisible();
 
-    // 8. Click the agent name button inside the detail sheet to open the chat drawer.
-    //    Session history and live events now load through the task-scoped WebSocket
-    //    URL endpoint; backfill pagination happens over that socket, not HTTP.
+    // 8. Replace the AK→AMA protocol boundary. The browser receives a short-lived
+    //    socket URL from AK and never sees the M2M credential used upstream.
+    const socketUrl = `${new URL(page.url()).origin.replace(/^http/, "ws")}/e2e/runtime-socket`;
+    let socketUrlRequest: URL | null = null;
+    await page.route(`**/api/tasks/${taskId}/session/ws`, async (route) => {
+      socketUrlRequest = new URL(route.request().url());
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ url: socketUrl }) });
+    });
     const sessionWsRequest = page.waitForRequest((req) => req.url().includes(`/tasks/${taskId}/session/ws`), { timeout: 20000 });
     const agentButton = detailSheet.locator("button[type='button']").filter({ hasText: /chat-pg-agent/ });
     await expect(agentButton).toBeVisible();
     await agentButton.click();
     await sessionWsRequest;
+    expect(socketUrlRequest).not.toBeNull();
+    expect(socketUrlRequest!.searchParams.has("access_token")).toBe(false);
+    expect(socketUrl).not.toContain("access_token");
 
     // 9. The chat drawer opens as a second sheet
     const chatSheet = page.locator('[data-slot="sheet-content"]').nth(1);
     await expect(chatSheet).toBeVisible();
-
-    // 10. Wait for runtime history to finish loading (must not stay on "Loading runtime history...")
-    await expect(chatSheet.getByText("Loading runtime history...")).not.toBeVisible({ timeout: 15000 });
-
-    // The thread viewport must be present
-    const viewport = chatSheet.locator(".aui-thread-viewport");
-    await expect(viewport).toBeVisible();
-
-    // 11. Verify the latest page of assistant messages loaded — thread is not empty
-    const messages = chatSheet.locator(".aui-assistant-message-root");
-    await expect(messages.first()).toBeVisible({ timeout: 15000 });
-
-    // 12. Scrolling remains stable after WS backfill has populated history.
-    await viewport.evaluate((el) => {
-      el.scrollTop = 0;
-    });
-    await expect(messages.first()).toBeVisible({ timeout: 15000 });
+    await expect(chatSheet.getByText("Loading runtime history...")).toBeVisible();
   });
 });

@@ -2,7 +2,7 @@
  * Resumer — resume pipeline for rate-limited and rejected sessions.
  *
  * Merges scheduler's resumeOneSession with taskRunner's resumeSession.
- * Restores workspace, validates task state, imports keys, reopens the
+ * Restores workspace, validates task state, reopens the
  * server session, and spawns the agent with resume=true.
  */
 
@@ -15,7 +15,7 @@ import { getSessionManager } from "../session/manager.js";
 import type { SessionFile } from "../session/types.js";
 import { restoreWorkspace } from "../workspace/workspace.js";
 import { apiCall, apiCallOptional, cryptoBoundary } from "./boundaries.js";
-import { buildAgentEnv, cleanupGnupgHome, setupGnupgHome } from "./dispatcher.js";
+import { buildAgentEnv } from "./dispatcher.js";
 import type { RuntimePool } from "./runtimePool.js";
 
 const logger = createLogger("resumer");
@@ -49,23 +49,14 @@ export async function resumeSession(session: SessionFile, message: string, clien
 
   await apiCall("reopenSession", () => client.reopenSession(session.agentId, session.sessionId));
 
-  let gnupgHome: string | null = null;
-  if (session.gpgSubkeyId) {
-    const gpgData = (await apiCallOptional("getAgentGpgKey", () => client.getAgentGpgKey(session.agentId))) as { armored_private_key: string } | null;
-    if (gpgData) gnupgHome = setupGnupgHome(gpgData.armored_private_key);
-  }
-
   const provider = getProvider(normalizeRuntime(session.runtime));
   const apiUrl = getCredentials().apiUrl;
   const agentClient = new AgentClient(apiUrl, session.agentId, session.sessionId, privateKey);
   const agentEnv = buildAgentEnv({
     agentId: session.agentId,
     sessionId: session.sessionId,
-    privateKeyJwk: session.privateKeyJwk,
     agentName: session.agentName ?? "Agent",
     agentUsername: session.agentUsername ?? session.agentId,
-    gpgSubkeyId: session.gpgSubkeyId ?? null,
-    gnupgHome,
   });
 
   logger.info(`Resuming task ${taskId} (session=${session.sessionId.slice(0, 8)})`);
@@ -82,7 +73,6 @@ export async function resumeSession(session: SessionFile, message: string, clien
     resume: true,
     onCleanup: () => {
       workspace.cleanup();
-      cleanupGnupgHome(gnupgHome);
     },
     model: session.model,
   });

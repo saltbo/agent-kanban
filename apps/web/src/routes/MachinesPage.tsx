@@ -1,7 +1,6 @@
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { AddMachineSteps } from "../components/AddMachineSteps";
 import { Header } from "../components/Header";
 import { MachineRuntimeBadges } from "../components/MachineRuntimes";
 import { formatRelative } from "../components/TaskDetailFields";
@@ -10,39 +9,23 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "../components/ui/input";
 import { useMachines } from "../hooks/useMachines";
 import { api } from "../lib/api";
-import { authClient } from "../lib/auth-client";
 
 const statusDotColors: Record<string, string> = {
   online: "bg-success",
   offline: "bg-content-tertiary",
 };
 
-type DialogStep = "choose" | "cloud" | "waiting";
-
-function randomName() {
-  const adj = ["swift", "quiet", "bright", "sharp", "bold", "calm", "keen", "warm"];
-  const noun = ["falcon", "cedar", "river", "spark", "forge", "ridge", "stone", "drift"];
-  const pick = (arr: string[]) => arr[Math.floor(Math.random() * arr.length)];
-  return `${pick(adj)}-${pick(noun)}`;
-}
+type DialogStep = "choose" | "cloud" | "local";
 
 export function MachinesPage() {
   const { machines, loading, refresh } = useMachines();
   const [showDialog, setShowDialog] = useState(false);
   const [dialogStep, setDialogStep] = useState<DialogStep>("choose");
-  const [createdKey, setCreatedKey] = useState<string | null>(null);
-  const [createdKeyId, setCreatedKeyId] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
   const [creatingCloud, setCreatingCloud] = useState(false);
   const [cloudName, setCloudName] = useState("");
 
-  async function handleChooseLocal() {
-    const name = randomName();
-    const { data, error } = await authClient.apiKey.create({ name });
-    if (error || !data) return;
-    setCreatedKey(data.key);
-    setCreatedKeyId(data.id);
-    setDialogStep("waiting");
+  function handleChooseLocal() {
+    setDialogStep("local");
   }
 
   function handleChooseCloud() {
@@ -61,30 +44,15 @@ export function MachinesPage() {
       refresh();
     } catch (err) {
       const status = (err as { status?: number }).status;
-      toast.error(status === 403 ? "Connect AMA to add a cloud sandbox" : (err as Error).message || "Failed to add cloud sandbox");
+      toast.error(status === 403 ? "AMA resources are not available for this tenant" : (err as Error).message || "Failed to add cloud sandbox");
     } finally {
       setCreatingCloud(false);
     }
   }
 
-  const handleConnected = useCallback(async () => {
-    setConnected(true);
-    refresh();
-  }, [refresh]);
-
-  async function closeDialog() {
-    if (createdKeyId && !connected) {
-      await authClient.apiKey.delete({ keyId: createdKeyId }).catch(() => {});
-    }
-    resetDialog();
-  }
-
   function resetDialog() {
     setShowDialog(false);
     setDialogStep("choose");
-    setCreatedKey(null);
-    setCreatedKeyId(null);
-    setConnected(false);
     setCloudName("");
   }
 
@@ -170,7 +138,7 @@ export function MachinesPage() {
       <Dialog
         open={showDialog}
         onOpenChange={(open) => {
-          if (!open) closeDialog();
+          if (!open) resetDialog();
         }}
       >
         <DialogContent className="sm:max-w-md" showCloseButton={false}>
@@ -260,8 +228,19 @@ export function MachinesPage() {
             </div>
           )}
 
-          {dialogStep === "waiting" && createdKey && createdKeyId && (
-            <AddMachineSteps apiKey={createdKey} apiKeyId={createdKeyId} onDone={resetDialog} onConnected={handleConnected} />
+          {dialogStep === "local" && (
+            <div className="space-y-4">
+              <p className="text-xs text-content-secondary">Authenticate this machine through Realmroot, then start the runtime.</p>
+              <pre className="overflow-x-auto rounded-md bg-surface-primary p-3 font-mono text-xs text-content-primary">{`npx agent-kanban auth login --api-url ${window.location.origin}\nnpx agent-kanban start`}</pre>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setDialogStep("choose")}>
+                  Back
+                </Button>
+                <Button size="sm" onClick={resetDialog}>
+                  Done
+                </Button>
+              </div>
+            </div>
           )}
         </DialogContent>
       </Dialog>

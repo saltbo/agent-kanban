@@ -32,7 +32,7 @@ In QA mode, flag any code that doesn't match DESIGN.md.
 - Data access: thin repo layer (taskRepo.ts, boardRepo.ts, agentRepo.ts, messageRepo.ts) — no raw SQL in route handlers
 - Error handling: Hono onError + HTTPException — centralized error envelope { error: { code, message } }
 - Claim atomicity: db.batch() for race-condition-free task claims
-- Auth: Three identity types — **user** (Better Auth session), **machine** (@better-auth/api-key), **agent** (@better-auth/agent-auth Ed25519 JWT). Machines assign tasks; agents claim/review with own JWT. Data scoped by `owner_id`.
+- Auth: Realmroot Native only. Browser users use AK's opaque server Session Cookie; CLI/machines and Agents use DPoP-bound Realmroot access tokens for the AK Resource. Agents are bound by `realmroot_agent_id`. Business data is scoped by the canonical Realmroot tenant ID in `owner_id`.
 - Agent identity: registered via `POST /api/agents` with Ed25519 public key. Each agent has a cryptographic identity (identicon, fingerprint). Daemon generates ephemeral keypair per spawn.
 - Agent status: idle → working (on claim/assign) → idle (on complete/release/cancel with no other active tasks) → offline (on stale timeout)
 - Task lifecycle: Todo → Todo+assigned (AMA runtime dispatch) → In Progress (agent claim) → In Review (agent review+PR) → Done (reviewer complete) or Cancelled (cancel at any stage). Reviewer = human or lead agent.

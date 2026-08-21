@@ -23,8 +23,8 @@ test.describe("Machines Page", () => {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("Delete Machine")).toBeVisible();
 
-    // expect: The dialog body mentions the machine name
-    await expect(dialog.getByText(/This will revoke the API key for/)).toBeVisible();
+    // expect: Deletion does not claim that AK owns a static API key.
+    await expect(dialog.getByText(/revoke the API key/i)).toHaveCount(0);
 
     // expect: Cancel and 'Delete' (destructive) buttons are shown
     await expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();

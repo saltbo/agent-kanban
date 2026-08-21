@@ -13,8 +13,7 @@ test.describe("Routing and Navigation Guards", () => {
     // expect: The browser is redirected to /auth
     await expect(page).toHaveURL(/\/auth/, { timeout: 5000 });
 
-    // expect: The sign-in form is displayed
-    await expect(page.getByText("Sign in to your account")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sign In" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in with Realmroot" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue to Realmroot" })).toBeVisible();
   });
 });

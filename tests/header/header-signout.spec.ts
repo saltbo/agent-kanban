@@ -5,9 +5,24 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../helpers/auth";
 
 test.describe("Header and Navigation", () => {
-  test("Sign out via avatar dropdown", async ({ page }) => {
+  test("Sign out sends CSRF and follows the Realmroot end-session redirect", async ({ page }) => {
     // 1. Sign in and navigate to any page
     await signUpAndGetBoard(page, `headersignout_${Date.now()}@example.com`);
+
+    const realmrootLogoutUrl =
+      "https://logout.realmroot.test/end-session?client_id=ak-web-e2e&post_logout_redirect_uri=http%3A%2F%2Flocalhost%3A6265%2F";
+    let logoutCsrf: string | null = null;
+    await page.route("**/api/auth/logout", async (route) => {
+      logoutCsrf = route.request().headers()["x-csrf-token"] ?? null;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ logoutUrl: realmrootLogoutUrl }),
+      });
+    });
+    await page.route("https://logout.realmroot.test/**", (route) => {
+      route.fulfill({ status: 200, contentType: "text/html", body: "<main>Realmroot signed out</main>" });
+    });
 
     const header = page.locator("header");
 
@@ -21,11 +36,8 @@ test.describe("Header and Navigation", () => {
     // Click 'Sign out'
     await dropdown.getByText("Sign out").click();
 
-    // expect: The user is signed out
-    // expect: The browser navigates to /auth
-    await expect(page).toHaveURL(/\/auth/);
-
-    // expect: The sign-in form is displayed
-    await expect(page.getByText("Sign in to your account")).toBeVisible();
+    await expect(page).toHaveURL(realmrootLogoutUrl);
+    await expect(page.getByText("Realmroot signed out")).toBeVisible();
+    expect(logoutCsrf).toBeTruthy();
   });
 });

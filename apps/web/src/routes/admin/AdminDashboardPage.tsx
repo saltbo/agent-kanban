@@ -12,7 +12,6 @@ interface TasksByStatus {
 }
 
 interface AdminStats {
-  users: { total: number; recent: number };
   agents: { total: number; online: number };
   machines: { total: number; online: number };
   tasks: TasksByStatus;
@@ -119,15 +118,14 @@ export function AdminDashboardPage() {
       <h1 className="text-2xl font-semibold text-content-primary tracking-tight mb-8">Dashboard</h1>
 
       {loading ? (
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-          {[0, 1, 2, 3, 4, 5].map((i) => (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {[0, 1, 2, 3, 4].map((i) => (
             <StatCardSkeleton key={i} />
           ))}
         </div>
       ) : stats ? (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-            <StatCard label="Users" value={stats.users.total} subtitle={`${stats.users.recent} new this week`} />
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <StatCard label="Agents" value={stats.agents.total} subtitle={`${stats.agents.online} online`} />
             <StatCard label="Machines" value={stats.machines.total} subtitle={`${stats.machines.online} online`} />
             <StatCard label="Tasks" value={taskTotal} subtitle={`${activeTaskCount} active`} />

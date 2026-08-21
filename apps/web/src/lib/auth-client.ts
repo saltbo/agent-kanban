@@ -1,93 +1,55 @@
-import { agentAuthClient } from "@better-auth/agent-auth/client";
-import { apiKeyClient } from "@better-auth/api-key/client";
-import { adminClient, genericOAuthClient } from "better-auth/client/plugins";
-import { createAuthClient } from "better-auth/react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-const TOKEN_KEY = "auth-token";
-
-export function getAuthToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-export function setAuthToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token);
-}
-
-export function clearAuthToken() {
-  localStorage.removeItem(TOKEN_KEY);
-}
-
-export async function refreshAuthToken(): Promise<string | null> {
-  const res = await fetch("/api/auth/get-session", { credentials: "include" });
-  if (!res.ok) {
-    clearAuthToken();
-    return null;
-  }
-
-  const data = (await res.json()) as { session?: { token?: string } } | null;
-  const token = data?.session?.token ?? null;
-  if (!token) {
-    clearAuthToken();
-    return null;
-  }
-  setAuthToken(token);
-  return token;
-}
-
-export const authClient = createAuthClient({
-  plugins: [agentAuthClient(), apiKeyClient(), adminClient(), genericOAuthClient()],
-  fetchOptions: {
-    auth: {
-      type: "Bearer",
-      token: () => getAuthToken() || "",
-    },
-    onSuccess: (ctx) => {
-      const token = ctx.response.headers.get("set-auth-token");
-      if (token) {
-        setAuthToken(token);
-      }
-    },
-  },
-});
-
-export const { useSession, signIn, signUp, signOut, sendVerificationEmail } = authClient;
-
-// ─── Account API types ────────────────────────────────────────────────────────
-// Better Auth generates these methods dynamically from the server endpoints.
-// We declare a narrow typed wrapper here instead of scattering `as any` at call sites.
-
-export type LinkedAccount = {
-  id: string;
-  providerId: string;
-  accountId: string;
-  createdAt: Date;
-  scopes: string[];
+export type RealmrootSession = {
+  session: { id: string; expiresAt: string; csrfToken: string };
+  user: { id: string; tenantId: string; name: string; email: string; image?: string | null; role: string };
 };
 
-export type SessionEntry = {
-  id: string;
-  token: string;
-  createdAt: Date;
-  updatedAt: Date;
-  expiresAt: Date;
-  ipAddress?: string | null;
-  userAgent?: string | null;
-  userId: string;
-};
+let csrfToken: string | null = null;
 
-type AuthResult<T> = Promise<{ data: T | null; error: { message: string } | null }>;
+export async function getSession(): Promise<RealmrootSession | null> {
+  const response = await fetch("/api/auth/session", { credentials: "include" });
+  if (response.status === 401) {
+    csrfToken = null;
+    return null;
+  }
+  if (!response.ok) throw new Error(`Session request failed with HTTP ${response.status}`);
+  const session = (await response.json()) as RealmrootSession;
+  csrfToken = session.session.csrfToken;
+  return session;
+}
 
-type AccountAuthClient = {
-  listAccounts: () => AuthResult<LinkedAccount[]>;
-  listSessions: () => AuthResult<SessionEntry[]>;
-  changePassword: (body: { currentPassword: string; newPassword: string; revokeOtherSessions?: boolean }) => AuthResult<{ status: boolean }>;
-  revokeOtherSessions: () => AuthResult<{ status: boolean }>;
-  linkSocial: (body: { provider: string; callbackURL?: string }) => AuthResult<unknown>;
-  unlinkAccount: (body: { providerId: string; accountId?: string }) => AuthResult<{ status: boolean }>;
-  // Generic OIDC link (AMA). The genericOAuth client exposes it as oauth2.link.
-  oauth2: {
-    link: (body: { providerId: string; callbackURL?: string }) => AuthResult<{ url: string; redirect: boolean }>;
+export function useSession() {
+  const query = useQuery({ queryKey: ["realmroot-session"], queryFn: getSession, staleTime: 30_000, retry: false });
+  return { data: query.data ?? null, isPending: query.isPending, refetch: query.refetch };
+}
+
+export function getCsrfToken(): string | null {
+  return csrfToken;
+}
+
+export async function signOut(): Promise<boolean> {
+  const response = await fetch("/api/auth/logout", {
+    method: "POST",
+    credentials: "include",
+    headers: csrfToken ? { "x-csrf-token": csrfToken } : {},
+  });
+  if (!response.ok && response.status !== 401) throw new Error(`Sign out failed with HTTP ${response.status}`);
+  csrfToken = null;
+  if (response.ok && response.status !== 204) {
+    const body = (await response.json()) as { logoutUrl?: string };
+    if (body.logoutUrl) {
+      window.location.assign(body.logoutUrl);
+      return true;
+    }
+  }
+  return false;
+}
+
+export function useSignOut() {
+  const queryClient = useQueryClient();
+  return async () => {
+    await signOut();
+    queryClient.setQueryData(["realmroot-session"], null);
   };
-};
-
-export const accountAuthClient = authClient as unknown as AccountAuthClient;
+}

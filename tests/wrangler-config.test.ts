@@ -24,6 +24,13 @@ function stringArrayValue(body: string, key: string): string[] | null {
 }
 
 describe("production wrangler configuration", () => {
+  it("routes the canonical API resource and its descendants to the Worker before SPA assets", () => {
+    const workerFirst = stringArrayValue(tableBody("[assets]"), "run_worker_first");
+
+    expect(workerFirst).toEqual(expect.arrayContaining(["/api", "/api/*"]));
+    expect(workerFirst?.filter((pattern) => pattern === "/api")).toHaveLength(1);
+  });
+
   it("keeps both production hostnames routed to the worker", () => {
     const productionConfig = config.split("[env.staging]", 1)[0];
     const routes = [...productionConfig.matchAll(/^\[\[routes\]\]\s*\n([\s\S]*?)(?=^\s*\[|(?![\s\S]))/gm)].map((match) => ({

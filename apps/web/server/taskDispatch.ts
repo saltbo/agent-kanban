@@ -52,7 +52,6 @@ export { amaRuntimeName };
 export const AK_VARIABLES_CREDENTIAL_NAME = "ak-variables";
 export const USER_VARIABLES_CREDENTIAL_NAME = "user-variables";
 export const AK_SESSION_CREDENTIAL_PREFIX = "ak-session-";
-const AK_AGENT_KEY_DATA_KEY = "AK_AGENT_KEY";
 const GH_USERNAME_DATA_KEY = "GH_USERNAME";
 const GH_TOKEN_DATA_KEY = "GH_TOKEN";
 
@@ -88,8 +87,8 @@ export async function dispatchTaskToAma(
   if (options.takeover !== true && dispatchBackoffActive(task)) return task;
 
   const assignedTo = task.assigned_to;
-  // The project is provisioned eagerly when the owner connects AMA; dispatch
-  // reads it rather than creating it.
+  // The project is initialized idempotently on first AMA use; dispatch only
+  // reads the resulting resource mapping.
   const amaProjectId = await requireAmaProjectId(db, ownerId);
   const akAgent = await getAgent(db, assignedTo, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
@@ -98,7 +97,7 @@ export async function dispatchTaskToAma(
   // reads the stored id and never creates one.
   const amaAgentId = await getAgentAmaId(db, assignedTo);
   if (!amaAgentId) {
-    throw new HTTPException(409, { message: `Agent "${akAgent.username}" has no AMA agent; recreate it with AMA connected` });
+    throw new HTTPException(409, { message: `Agent "${akAgent.username}" has no AMA resource; initialize it again` });
   }
 
   // Atomic dispatch claim: the create/assign request and the cron sweep can
@@ -163,17 +162,16 @@ export async function dispatchTaskToAma(
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
-    secret = await createAmaSessionSecret(env, ownerId, {
-      projectId: amaProjectId,
-      vaultId,
-      name: sessionCredentialName(sessionIdentity.sessionId),
-      secretData: {
-        [AK_AGENT_KEY_DATA_KEY]: JSON.stringify(sessionIdentity.privateKeyJwk),
-        ...(githubCloneCredential?.secretData ?? {}),
-      },
-      metadata: { akSessionId: sessionIdentity.sessionId, ...(githubCloneCredential?.metadata ?? {}) },
-    });
-    await setAmaAgentSessionSecretRef(db, sessionIdentity.sessionId, secret.secretRef);
+    if (githubCloneCredential) {
+      secret = await createAmaSessionSecret(env, ownerId, {
+        projectId: amaProjectId,
+        vaultId,
+        name: sessionCredentialName(sessionIdentity.sessionId),
+        secretData: githubCloneCredential.secretData,
+        metadata: { akSessionId: sessionIdentity.sessionId, ...githubCloneCredential.metadata },
+      });
+      await setAmaAgentSessionSecretRef(db, sessionIdentity.sessionId, secret.secretRef);
+    }
 
     dispatch = await createAmaTaskSession(env, ownerId, {
       projectId: amaProjectId,
@@ -183,16 +181,17 @@ export async function dispatchTaskToAma(
       title: `AK task ${task.id}: ${task.title}`,
       initialPrompt: cloudDispatch ? cloudTaskInitialPrompt(task, resourceRefs) : taskInitialPrompt(task),
       resourceRefs,
-      gitCredentialSecret: githubCloneCredential
-        ? {
-            vaultId,
-            credentialId: secret.credentialId,
-            items: [
-              { key: GH_USERNAME_DATA_KEY, path: "username" },
-              { key: GH_TOKEN_DATA_KEY, path: "password" },
-            ],
-          }
-        : null,
+      gitCredentialSecret:
+        githubCloneCredential && secret
+          ? {
+              vaultId,
+              credentialId: secret.credentialId,
+              items: [
+                { key: GH_USERNAME_DATA_KEY, path: "username" },
+                { key: GH_TOKEN_DATA_KEY, path: "password" },
+              ],
+            }
+          : null,
       runtimeEnv: {
         AK_WORKER: "1",
         AK_AGENT_ID: assignedTo,
@@ -201,10 +200,7 @@ export async function dispatchTaskToAma(
         ...(cloudDispatch ? cloudSandboxHomeEnv() : {}),
         ...agentGitIdentityEnv(akAgent),
       },
-      runtimeSecretEnv: [
-        ...boardRuntimeSecretEnv,
-        { name: AK_AGENT_KEY_DATA_KEY, vaultId, credentialId: secret.credentialId, key: AK_AGENT_KEY_DATA_KEY },
-      ],
+      runtimeSecretEnv: boardRuntimeSecretEnv,
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
@@ -252,7 +248,11 @@ interface AkAgentProfile {
   skills?: string[] | null;
   subagents?: string[] | null;
   handoff_to?: string[] | null;
+  realmroot_agent_id?: string | null;
+  realmroot_credential_ref?: string | null;
 }
+
+const REALMROOT_AGENT_ORIGIN = "https://id.realmroot.dev";
 
 async function buildAmaAgentInput(
   db: D1,
@@ -262,6 +262,9 @@ async function buildAmaAgentInput(
   runtime: string,
   options: { memoryEnabled?: boolean },
 ) {
+  if (!akAgent.realmroot_agent_id || !akAgent.realmroot_credential_ref) {
+    throw new Error("AMA Agent requires a Realmroot Agent id and active AMA Vault credential reference");
+  }
   const runtimeProfile = resolveAmaProviderModelProfile({ runtime, preferredModel: akAgent.model });
   const subagents = await Promise.all((akAgent.subagents ?? []).map((id) => getSubagent(db, id, ownerId)));
   return {
@@ -283,6 +286,11 @@ async function buildAmaAgentInput(
     handoffPolicy: amaAgentHandoffPolicy(akAgent.handoff_to),
     metadata: { runtime: runtimeProfile.runtime },
     memoryPolicy: amaAgentMemoryPolicy(options.memoryEnabled === true),
+    realmroot: {
+      agentId: akAgent.realmroot_agent_id,
+      origin: REALMROOT_AGENT_ORIGIN,
+      credentialRef: akAgent.realmroot_credential_ref,
+    },
   };
 }
 
@@ -832,18 +840,12 @@ function dispatchBackoffActive(task: Task): boolean {
 
 // Records a failed dispatch attempt: clears the binding result and arms the
 // backoff. Returns the updated task.
-// One-line reason for the task timeline. The wrapped AMA error is
-// "AMA <op> failed[ HTTP NNN][: <raw response body>]". Keep the envelope
-// (operation + status) and, when the body carries a structured human message,
-// append just that field — never the raw response body, which can carry
-// internal detail (credential ids, etc.). The raw error stays in the worker logs.
+// One-line safe reason for the task timeline. AMA response bodies remain on
+// the server-side cause chain and are never copied into task-visible metadata.
 function dispatchErrorReason(error: unknown): string {
   if (error == null) return "dispatch failed";
   const raw = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
-  const envelope = raw.split(/:\s*[{[]/, 1)[0]?.trim() ?? raw;
-  const bodyMessage = raw.match(/"(?:message|detail|error)"\s*:\s*"([^"]{1,160})"/)?.[1];
-  const reason = bodyMessage ? `${envelope}: ${bodyMessage}` : envelope;
-  return (reason || raw).slice(0, 300) || "unknown error";
+  return raw.slice(0, 300) || "unknown error";
 }
 
 async function recordDispatchFailure(db: D1, task: Task, error: unknown): Promise<Task> {

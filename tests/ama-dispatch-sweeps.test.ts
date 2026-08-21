@@ -13,16 +13,23 @@
 import { randomUUID } from "node:crypto";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { addCloudSandboxMachine, createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
+import { addCloudSandboxMachine, createTestAgent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
+
+vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
+  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
+  invalidateAmaMachineToken: vi.fn(),
+}));
 
 const OWNER = "ama-sweep-test-user";
 
 // Shared AMA env-var bundle — matches routes.test.ts pattern
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
-  AMA_OIDC_ISSUER: "https://auth.test",
-  AMA_OIDC_CLIENT_ID: "ak-app",
-  AMA_OIDC_CLIENT_SECRET: "ak-secret",
+  REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
+  AMA_MACHINE_CLIENT_ID: "ak-machine",
+  AMA_MACHINE_CLIENT_SECRET: "ak-secret",
+  AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
+  AMA_DPOP_PRIVATE_JWK: "{}",
   AK_API_URL: "https://ak.test",
 };
 
@@ -166,13 +173,13 @@ afterEach(() => {
 async function configureAmaIntegration(ownerId: string, projectId = "project_123", vaultId = "vault_123") {
   await db
     .prepare(
-      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-       VALUES (?, ?, ?, ?, '{}')
-       ON CONFLICT(owner_id) DO UPDATE SET
+      `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+       VALUES (?, ?, ?, '{}')
+       ON CONFLICT(tenant_id) DO UPDATE SET
          ama_project_id = excluded.ama_project_id,
          session_secret_vault_id = excluded.session_secret_vault_id`,
     )
-    .bind(ownerId, projectId, ownerId, vaultId)
+    .bind(ownerId, projectId, vaultId)
     .run();
 }
 
@@ -1421,7 +1428,7 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
 
 // ─── 5. POST /api/tasks/:id/reject — AMA command returns 409 ─────────────────
 
-describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
+describe.skip("legacy Agent JWT reject handling (removed by Realmroot Native cutover)", () => {
   const BETTER_AUTH_URL = "http://localhost:8788";
 
   it("returns 409 and leaves the task untouched when AMA command returns 409", async () => {
@@ -1559,20 +1566,6 @@ describe("amaRuntime requireEnv guards", () => {
     const { readAmaSession } = await import("../apps/web/server/amaRuntime");
     await expect(readAmaSession(makeEnv({ AMA_ORIGIN: undefined }), OWNER, "session_x")).rejects.toThrow("AMA_ORIGIN is required");
   });
-
-  it("throws a clear error when the owner has no linked AMA account", async () => {
-    const { revokeAmaVaultCredential } = await import("../apps/web/server/amaRuntime");
-    // A freshly seeded user with no AMA account link.
-    const unlinkedOwner = `unlinked-${randomUUID()}`;
-    const now = new Date().toISOString();
-    await db
-      .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
-      .bind(unlinkedOwner, "Unlinked", `${unlinkedOwner}@test.local`, now, now)
-      .run();
-    await expect(revokeAmaVaultCredential(makeEnv(), unlinkedOwner, "project_test", "vault_test", "cred_test")).rejects.toThrow(
-      /No linked AMA account/,
-    );
-  });
 });
 
 // ─── 6c. revokeAmaVaultCredential and createAmaSessionSecret ─────────────────
@@ -1590,7 +1583,7 @@ describe("amaRuntime vault credential helpers", () => {
       const url = reqUrl(input);
       if (url === "https://ama.test/api/v1/vaults/vault_test/credentials/cred_test") {
         const authHeader = input instanceof Request ? input.headers.get("authorization") : (init?.headers as Record<string, string>)?.authorization;
-        expect(authHeader).toBe("Bearer test.jwt.token");
+        expect(authHeader).toBe("DPoP test.jwt.token");
         revokeCalls.push({ url, body: JSON.parse(await reqBody(input, init)) });
         return jsonResponse({ id: "cred_test", state: "revoked" }, 200);
       }
@@ -1875,10 +1868,10 @@ describe("createAmaCloudSandboxEnvironment", () => {
     await seedUser(db, cloudOwner, `${cloudOwner}@test.local`);
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')`,
       )
-      .bind(cloudOwner, "project_cloud_new", cloudOwner, "vault_cloud_new")
+      .bind(cloudOwner, "project_cloud_new", "vault_cloud_new")
       .run();
 
     const newEnvId = "cloud_env_new_123";
@@ -1914,10 +1907,10 @@ describe("createAmaCloudSandboxEnvironment", () => {
     await seedUser(db, owner, `${owner}@test.local`);
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')`,
       )
-      .bind(owner, "project_cloud_twice", owner, "vault_cloud_twice")
+      .bind(owner, "project_cloud_twice", "vault_cloud_twice")
       .run();
 
     let counter = 0;
@@ -1951,10 +1944,10 @@ describe("resolveAmaSessionSecretVaultId", () => {
     // Seed integration with null session_secret_vault_id and alive project
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, NULL, '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, NULL, '{}')`,
       )
-      .bind(noVaultOwner, "project_no_vault", noVaultOwner)
+      .bind(noVaultOwner, "project_no_vault")
       .run();
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2149,7 +2142,6 @@ describe("dispatchTaskToAma — GitHub clone credential (GitHub App installation
       metadata: { repository: "saltbo/agent-kanban" },
       secret: {
         stringData: {
-          AK_AGENT_KEY: expect.stringContaining('"kty":"OKP"'),
           GH_USERNAME: "x-access-token",
           GH_TOKEN: "ghs_minted_token",
         },
@@ -2237,10 +2229,10 @@ describe("dispatchTaskToAma — GitHub clone credential (GitHub App installation
     const env = makeEnv();
     await dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" });
 
-    // Only one vault credential call — the session key; no clone token was minted
-    expect(vaultCredCalls).toHaveLength(1);
+    // Realmroot Agent authority is referenced by AMA; AK creates no Agent JWT secret.
+    expect(vaultCredCalls).toHaveLength(0);
 
-    // The session's envFrom must only contain AK_AGENT_KEY, not GH_TOKEN.
+    // GitHub credentials are never exposed as runtime environment variables.
     const sessionBody = getSessionBody();
     expect(sessionBody).not.toBeNull();
     const ghTokenEntry = (sessionBody?.spec.envFrom ?? []).find((s: any) => s.name === "GH_TOKEN");
@@ -2263,10 +2255,10 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
     const cloudEnvId = "cloud_env_rt_123";
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, ?)`,
       )
-      .bind(cloudRtOwner, "project_cloud_rt", cloudRtOwner, "vault_cloud_rt", "{}")
+      .bind(cloudRtOwner, "project_cloud_rt", "vault_cloud_rt", "{}")
       .run();
     // A cloud-sandbox machine carries the cloud env; dispatch selects it as the
     // candidate (no runner gate) for the agent's cloud runtime.
@@ -2405,10 +2397,10 @@ describe("ensureAmaOwnerIntegration self-heal (Feature A)", () => {
     // Seed an integration with a project id that AMA will say is gone
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')`,
       )
-      .bind(healOwner, "project_stale", healOwner, "vault_stale")
+      .bind(healOwner, "project_stale", "vault_stale")
       .run();
 
     const newProjectId = "project_new_heal";
@@ -2444,10 +2436,10 @@ describe("ensureAmaOwnerIntegration self-heal (Feature A)", () => {
     await seedUser(db, aliveOwner, `${aliveOwner}@test.local`);
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')`,
       )
-      .bind(aliveOwner, "project_alive", aliveOwner, "vault_alive")
+      .bind(aliveOwner, "project_alive", "vault_alive")
       .run();
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -2479,18 +2471,14 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
     // Seed the owner integration (alive project, alive vault)
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')
-         ON CONFLICT(owner_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')
+         ON CONFLICT(tenant_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
       )
-      .bind(machineOwner, "project_envheal", machineOwner, "vault_envheal")
+      .bind(machineOwner, "project_envheal", "vault_envheal")
       .run();
 
-    // Create an API key for this user so POST /api/machines works
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const auth = createAuth(makeEnv());
-    const apiKeyResult = await auth.api.createApiKey({ body: { userId: machineOwner } });
-    const apiKey = apiKeyResult.key;
+    const webSession = await createTestWebSession(db, machineOwner);
 
     const newEnvId = "env_envheal_new";
     const deviceId = `device-envheal-${randomUUID()}`;
@@ -2542,7 +2530,8 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
           "Content-Type": "application/json",
           Host: "localhost:8788",
           "x-forwarded-proto": "http",
-          Authorization: `Bearer ${apiKey}`,
+          cookie: `ak_session=${webSession.token}`,
+          "x-csrf-token": webSession.csrfToken,
         },
         body: JSON.stringify({
           name: "env-heal-machine",

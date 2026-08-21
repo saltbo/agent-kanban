@@ -38,6 +38,8 @@ export function AgentNewPage() {
   const [runtime, setRuntime] = useState<AgentRuntime>("claude");
   const [model, setModel] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
+  const [realmrootAgentId, setRealmrootAgentId] = useState("");
+  const [realmrootCredentialRef, setRealmrootCredentialRef] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const existingRoles = [...new Set(agents.map((a) => a.role).filter(Boolean))];
@@ -73,6 +75,10 @@ export function AgentNewPage() {
   async function handleCreate() {
     if (!username.trim()) return;
     setError(null);
+    if (!realmrootAgentId.trim() || !realmrootCredentialRef.trim()) {
+      setError("Realmroot Agent ID and AMA Vault credential reference are required.");
+      return;
+    }
     const invalidSkill = findInvalidSkillRef(skills);
     if (invalidSkill) {
       setError(`Invalid skill "${invalidSkill}". Use source/repo[#ref]@skill-name format.`);
@@ -89,6 +95,8 @@ export function AgentNewPage() {
         runtime,
         model: model.trim() || undefined,
         skills: skills.length ? skills : undefined,
+        realmroot_agent_id: realmrootAgentId.trim(),
+        realmroot_credential_ref: realmrootCredentialRef.trim(),
       });
       navigate("/agents");
     } catch (err: any) {
@@ -124,6 +132,10 @@ export function AgentNewPage() {
             setModel={setModel}
             skills={skills}
             setSkills={setSkills}
+            realmrootAgentId={realmrootAgentId}
+            setRealmrootAgentId={setRealmrootAgentId}
+            realmrootCredentialRef={realmrootCredentialRef}
+            setRealmrootCredentialRef={setRealmrootCredentialRef}
             creating={createAgent.isPending}
             error={error}
             onBack={() => setStep(selectedTemplate ? "recruit" : "choose")}
@@ -319,6 +331,10 @@ interface FormStepProps {
   setModel: (v: string) => void;
   skills: string[];
   setSkills: (v: string[]) => void;
+  realmrootAgentId: string;
+  setRealmrootAgentId: (v: string) => void;
+  realmrootCredentialRef: string;
+  setRealmrootCredentialRef: (v: string) => void;
   creating: boolean;
   error: string | null;
   onBack: () => void;
@@ -347,6 +363,10 @@ function FormStep(props: FormStepProps) {
     setModel,
     skills,
     setSkills,
+    realmrootAgentId,
+    setRealmrootAgentId,
+    realmrootCredentialRef,
+    setRealmrootCredentialRef,
     creating,
     error,
     onBack,
@@ -415,6 +435,27 @@ function FormStep(props: FormStepProps) {
             <div className="space-y-1.5">
               <Label htmlFor="agent-bio">Bio</Label>
               <Input id="agent-bio" value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Short description" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="realmroot-agent-id">Realmroot Agent ID</Label>
+              <Input
+                id="realmroot-agent-id"
+                value={realmrootAgentId}
+                onChange={(e) => setRealmrootAgentId(e.target.value)}
+                placeholder="Realmroot Agent identifier"
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="realmroot-credential-ref">Realmroot credential reference</Label>
+              <Input
+                id="realmroot-credential-ref"
+                value={realmrootCredentialRef}
+                onChange={(e) => setRealmrootCredentialRef(e.target.value)}
+                placeholder="ama://vaults/.../credentials/..."
+                className="font-mono"
+              />
+              <p className="text-[11px] text-content-tertiary">Active Realmroot state credential stored in this tenant's AMA Vault.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="agent-soul">Soul</Label>

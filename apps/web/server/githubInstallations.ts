@@ -124,25 +124,6 @@ export async function removeInstallationRepositories(db: D1, installationId: num
   );
 }
 
-// Best-effort owner mapping for installations seen via webhook before the setup
-// callback runs: a personal install's account id equals the user's GitHub OAuth
-// account id. Org installs never match (the account is the org) and stay NULL
-// until the setup callback sets the owner authoritatively.
-export async function backfillInstallationOwner(db: D1, installationId: number, accountId: number): Promise<boolean> {
-  const result = await db
-    .prepare(
-      `UPDATE github_installations
-       SET owner_id = (SELECT userId FROM account WHERE providerId = 'github' AND accountId = ? LIMIT 1),
-           updated_at = datetime('now')
-       WHERE installation_id = ?
-         AND owner_id IS NULL
-         AND EXISTS (SELECT 1 FROM account WHERE providerId = 'github' AND accountId = ?)`,
-    )
-    .bind(String(accountId), installationId, String(accountId))
-    .run();
-  return result.meta.changes > 0;
-}
-
 // ─── Reads (repo model + browse) ───
 
 export async function getInstallationsForOwner(db: D1, ownerId: string): Promise<GithubInstallation[]> {

@@ -18,7 +18,6 @@ export interface BoardMaintainer {
   last_run_at: string | null;
   last_ama_session_id: string | null;
   last_error_message: string | null;
-  api_key_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -36,7 +35,6 @@ export interface CreateBoardMaintainerInput {
   intervalSeconds: number;
   heartbeatEnabled: boolean;
   status: "active" | "paused";
-  apiKeyId?: string | null;
 }
 
 export interface UpdateBoardMaintainerInput {
@@ -70,8 +68,8 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
     .prepare(
       `INSERT INTO board_maintainers (
         id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_http_trigger_serialized, ama_memory_store_id, ama_board_vault_id,
-        prompt, interval_seconds, heartbeat_enabled, status, api_key_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        prompt, interval_seconds, heartbeat_enabled, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -87,7 +85,6 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
       input.intervalSeconds,
       input.heartbeatEnabled ? 1 : 0,
       input.status,
-      input.apiKeyId ?? null,
       now,
       now,
     )
@@ -152,13 +149,6 @@ export async function setBoardMaintainerVaultId(db: D1, ownerId: string, boardId
   await db
     .prepare("UPDATE board_maintainers SET ama_board_vault_id = ?, updated_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?")
     .bind(vaultId, new Date().toISOString(), ownerId, boardId, maintainerId)
-    .run();
-}
-
-export async function setBoardMaintainerApiKeyId(db: D1, ownerId: string, boardId: string, maintainerId: string, apiKeyId: string): Promise<void> {
-  await db
-    .prepare("UPDATE board_maintainers SET api_key_id = ?, updated_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?")
-    .bind(apiKeyId, new Date().toISOString(), ownerId, boardId, maintainerId)
     .run();
 }
 

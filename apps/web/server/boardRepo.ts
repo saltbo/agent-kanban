@@ -1,7 +1,6 @@
 import type { Board, BoardLabel, BoardType, BoardWithTasks, Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { customAlphabet } from "nanoid";
-import { seedBuiltinAgents } from "./agentRepo";
 import { type D1, newId, parseJsonFields } from "./db";
 
 const nanoidSlug = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
@@ -42,8 +41,6 @@ export async function createBoard(db: D1, ownerId: string, name: string, type: B
     .bind(id, ownerId, name, description || null, type, now, now)
     .run();
 
-  await seedBuiltinAgents(db, ownerId);
-
   const board = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(id).first<Board>();
   return parseBoard(board!);
 }
@@ -58,8 +55,8 @@ export async function getBoardByName(db: D1, ownerId: string, name: string): Pro
   return board ? parseBoard(board) : null;
 }
 
-export async function getBoard(db: D1, boardId: string): Promise<BoardWithTasks | null> {
-  const board = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(boardId).first<Board>();
+export async function getBoard(db: D1, boardId: string, ownerId: string): Promise<BoardWithTasks | null> {
+  const board = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
   if (!board) return null;
 
   const tasks = await db
@@ -95,6 +92,7 @@ export async function getDefaultBoard(db: D1, ownerId: string): Promise<Board | 
 export async function updateBoard(
   db: D1,
   boardId: string,
+  ownerId: string,
   updates: { name?: string; description?: string; visibility?: "private" | "public"; labels?: BoardLabel[] },
 ): Promise<Board | null> {
   const sets: string[] = [];
@@ -111,7 +109,10 @@ export async function updateBoard(
     sets.push("visibility = ?");
     values.push(updates.visibility);
     if (updates.visibility === "public") {
-      const existing = await db.prepare("SELECT share_slug FROM boards WHERE id = ?").bind(boardId).first<{ share_slug: string | null }>();
+      const existing = await db
+        .prepare("SELECT share_slug FROM boards WHERE id = ? AND owner_id = ?")
+        .bind(boardId, ownerId)
+        .first<{ share_slug: string | null }>();
       if (existing && !existing.share_slug) {
         sets.push("share_slug = ?");
         values.push(nanoidSlug());
@@ -123,33 +124,34 @@ export async function updateBoard(
     values.push(JSON.stringify(normalizeLabels(updates.labels)));
   }
   if (sets.length === 0) {
-    const board = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(boardId).first<Board>();
+    const board = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
     return board ? parseBoard(board) : null;
   }
 
   sets.push("updated_at = ?");
   values.push(new Date().toISOString());
   values.push(boardId);
+  values.push(ownerId);
 
   await db
-    .prepare(`UPDATE boards SET ${sets.join(", ")} WHERE id = ?`)
+    .prepare(`UPDATE boards SET ${sets.join(", ")} WHERE id = ? AND owner_id = ?`)
     .bind(...values)
     .run();
-  const board = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(boardId).first<Board>();
+  const board = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
   return board ? parseBoard(board) : null;
 }
 
-export async function createBoardLabel(db: D1, boardId: string, input: BoardLabel): Promise<Board | null> {
-  const board = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(boardId).first<Board>();
+export async function createBoardLabel(db: D1, boardId: string, ownerId: string, input: BoardLabel): Promise<Board | null> {
+  const board = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
   if (!board) return null;
   const labels = parseBoard(board).labels;
   const label = normalizeLabel(input);
   if (labels.some((existing) => existing.name === label.name)) throw new HTTPException(409, { message: `Label already exists: ${label.name}` });
-  return updateBoard(db, boardId, { labels: [...labels, label] });
+  return updateBoard(db, boardId, ownerId, { labels: [...labels, label] });
 }
 
-export async function updateBoardLabel(db: D1, boardId: string, name: string, input: Partial<BoardLabel>): Promise<Board | null> {
-  const board = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(boardId).first<Board>();
+export async function updateBoardLabel(db: D1, boardId: string, ownerId: string, name: string, input: Partial<BoardLabel>): Promise<Board | null> {
+  const board = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
   if (!board) return null;
   const labels = parseBoard(board).labels;
   const current = labels.find((label) => label.name === name);
@@ -164,7 +166,7 @@ export async function updateBoardLabel(db: D1, boardId: string, name: string, in
   }
 
   const updatedLabels = labels.map((label) => (label.name === name ? next : label));
-  await updateBoard(db, boardId, { labels: updatedLabels });
+  await updateBoard(db, boardId, ownerId, { labels: updatedLabels });
 
   if (next.name !== name) {
     const tasks = await db
@@ -182,12 +184,12 @@ export async function updateBoardLabel(db: D1, boardId: string, name: string, in
     if (statements.length > 0) await db.batch(statements);
   }
 
-  const nextBoard = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(boardId).first<Board>();
+  const nextBoard = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
   return nextBoard ? parseBoard(nextBoard) : null;
 }
 
-export async function deleteBoardLabel(db: D1, boardId: string, name: string): Promise<Board | null> {
-  const board = await db.prepare("SELECT * FROM boards WHERE id = ?").bind(boardId).first<Board>();
+export async function deleteBoardLabel(db: D1, boardId: string, ownerId: string, name: string): Promise<Board | null> {
+  const board = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
   if (!board) return null;
   const labels = parseBoard(board).labels;
   if (!labels.some((label) => label.name === name)) throw new HTTPException(404, { message: `Label not found: ${name}` });
@@ -206,7 +208,7 @@ export async function deleteBoardLabel(db: D1, boardId: string, name: string): P
     .map((task) => db.prepare("UPDATE tasks SET labels = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(task.next), now, task.id));
   if (statements.length > 0) await db.batch(statements);
 
-  return updateBoard(db, boardId, { labels: labels.filter((label) => label.name !== name) });
+  return updateBoard(db, boardId, ownerId, { labels: labels.filter((label) => label.name !== name) });
 }
 
 export async function getBoardBySlug(db: D1, slug: string): Promise<BoardWithTasks | null> {
@@ -230,7 +232,7 @@ export async function getBoardBySlug(db: D1, slug: string): Promise<BoardWithTas
   return parseBoard({ ...board, tasks: tasks.results.map((t) => parseJsonFields(t, ["labels", "input", "metadata"])) });
 }
 
-export async function deleteBoard(db: D1, boardId: string): Promise<boolean> {
-  const result = await db.prepare("DELETE FROM boards WHERE id = ?").bind(boardId).run();
+export async function deleteBoard(db: D1, boardId: string, ownerId: string): Promise<boolean> {
+  const result = await db.prepare("DELETE FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).run();
   return result.meta.changes > 0;
 }

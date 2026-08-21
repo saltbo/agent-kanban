@@ -144,7 +144,6 @@ export function migrateLegacySessions(): void {
       workspace: s.workspace,
       status: s.status ?? "active",
       model: s.model,
-      gpgSubkeyId: s.gpgSubkeyId,
       agentUsername: s.agentUsername,
       agentName: s.agentName,
     });

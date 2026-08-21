@@ -7,24 +7,26 @@
  *  3. setInstallationSuspended — suspend / unsuspend
  *  4. replaceInstallationRepositories — full replace
  *  5. addInstallationRepositories / removeInstallationRepositories — partial edits
- *  6. backfillInstallationOwner — sets owner when github account row exists
- *  7. handleGithubInstallationEvent — webhook dispatch: created/deleted/suspend/unsuspend
- *  8. handleGithubInstallationRepositoriesEvent — added/removed/selection flip
- *  9. repoAppStatus / repoAppStatusBatch — coverage computation
- * 10. getInstallationsForOwner — owner-scoped read
- * 11. POST /api/webhooks/github-app — installation + installation_repositories route dispatch
- * 12. GET /api/github-app/config — authenticated, owner-scoped installed/accounts fields
- * 13. repo read model — app_status on POST/GET /api/repositories
- * 14. recordInstallationFromSetup — fetch stubbed, upsert + replace exercised
+ *  6. handleGithubInstallationEvent — webhook dispatch: created/deleted/suspend/unsuspend
+ *  7. handleGithubInstallationRepositoriesEvent — added/removed/selection flip
+ *  8. repoAppStatus / repoAppStatusBatch — coverage computation
+ *  9. getInstallationsForOwner — owner-scoped read
+ * 10. POST /api/webhooks/github-app — installation + installation_repositories route dispatch
+ * 11. GET /api/github-app/config — authenticated, owner-scoped installed/accounts fields
+ * 12. repo read model — app_status on POST/GET /api/repositories
+ * 13. recordInstallationFromSetup — fetch stubbed, upsert + replace exercised
  */
 
-import { randomUUID } from "node:crypto";
-import { SignJWT } from "jose";
+import { createHash, randomUUID } from "node:crypto";
+import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createTestAgent, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import { createTestAgent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
+const REALMROOT_ISSUER = "https://github-installations.realmroot.test";
+const AK_RESOURCE = "http://localhost/api";
+const realmrootIssuerKeysPromise = generateKeyPair("ES256", { extractable: true });
 
 let db: D1Database;
 let mf: Miniflare;
@@ -75,6 +77,9 @@ function makeEnv(overrides: Record<string, unknown> = {}): any {
     GITHUB_CLIENT_SECRET: "x",
     MAILS_ADMIN_TOKEN: "",
     GITHUB_APP_WEBHOOK_SECRET: WEBHOOK_SECRET,
+    REALMROOT_ISSUER,
+    REALMROOT_CLI_CLIENT_ID: "ak-cli-test",
+    AK_RESOURCE,
     ...overrides,
   };
 }
@@ -96,7 +101,13 @@ async function apiRequest(
 ) {
   const { api } = await import("../apps/web/server/routes");
   const allHeaders: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http", ...headers };
-  if (token) allHeaders.Authorization = `Bearer ${token}`;
+  if (token?.includes(":csrf:")) {
+    const [sessionToken, csrfToken] = token.split(":csrf:");
+    allHeaders.cookie = `ak_session=${sessionToken}`;
+    if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") allHeaders["x-csrf-token"] = csrfToken;
+  } else if (token) {
+    allHeaders.Authorization = `Bearer ${token}`;
+  }
   const init: RequestInit = {
     method,
     headers: allHeaders,
@@ -106,44 +117,73 @@ async function apiRequest(
 }
 
 async function createVerifiedUserToken(): Promise<{ token: string; userId: string }> {
-  const { createAuth } = await import("../apps/web/server/betterAuth");
-  const auth = createAuth(makeEnv());
+  const userId = `github-config-${randomUUID()}`;
   const email = `config-test-${randomUUID()}@test.local`;
-  const result = await signUpVerifiedUser(db, auth, { name: "Config Test User", email, password: "test-password-123" });
-  return { token: result.token, userId: result.user.id };
+  await seedUser(db, userId, email);
+  const session = await createTestWebSession(db, userId, { email });
+  return { token: `${session.token}:csrf:${session.csrfToken}`, userId };
 }
 
-async function createWorkerSession(ownerId: string, agentId: string): Promise<{ token: string; sessionId: string }> {
+async function createRealmrootAgentAuthorization(ownerId: string, realmrootAgentId: string, path: string) {
+  const issuerKeys = await realmrootIssuerKeysPromise;
+  const issuerJwk = await exportJWK(issuerKeys.publicKey);
+  issuerJwk.kid = "github-installations-realmroot-key";
+  const dpopKeys = await generateKeyPair("ES256", { extractable: true });
+  const dpopJwk = await exportJWK(dpopKeys.publicKey);
+  const accessToken = await new SignJWT({
+    scope: "ak:write",
+    client_id: "realmroot-cli",
+    cnf: { jkt: await calculateJwkThumbprint(dpopJwk) },
+    act: { sub: realmrootAgentId, sub_profile: "ai_agent" },
+    "urn:realmroot:params:oauth:org": ownerId,
+  })
+    .setProtectedHeader({ alg: "ES256", kid: issuerJwk.kid, typ: "at+jwt" })
+    .setIssuer(REALMROOT_ISSUER)
+    .setAudience(AK_RESOURCE)
+    .setSubject("controller-test")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(issuerKeys.privateKey);
+  const dpopProof = await new SignJWT({
+    htu: `http://localhost${path}`,
+    htm: "POST",
+    ath: createHash("sha256").update(accessToken).digest("base64url"),
+  })
+    .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopJwk })
+    .setJti(randomUUID())
+    .setIssuedAt()
+    .sign(dpopKeys.privateKey);
+  return { accessToken, dpopProof, issuerJwk };
+}
+
+function realmrootFetch(issuerJwk: JsonWebKey, githubFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url === `${REALMROOT_ISSUER}/.well-known/openid-configuration`) {
+      return Response.json({
+        issuer: REALMROOT_ISSUER,
+        authorization_endpoint: `${REALMROOT_ISSUER}/authorize`,
+        token_endpoint: `${REALMROOT_ISSUER}/token`,
+        jwks_uri: `${REALMROOT_ISSUER}/jwks`,
+        id_token_signing_alg_values_supported: ["ES256"],
+      });
+    }
+    if (url === `${REALMROOT_ISSUER}/jwks`) return Response.json({ keys: [issuerJwk] });
+    return githubFetch(input, init);
+  });
+}
+
+async function createBoundAgentSession(ownerId: string, agentId: string): Promise<string> {
   const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
   const sessionId = randomUUID();
-  const keypair = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
-  const pubJwk = await crypto.subtle.exportKey("jwk", (keypair as any).publicKey);
   await createAmaAgentSession(db, makeEnv(), {
     ownerId,
     agentId,
     sessionId,
-    sessionPublicKey: pubJwk.x!,
+    sessionPublicKey: "realmroot-session-public-key",
     amaSessionId: `ama-session-${sessionId}`,
   });
-  const token = await new SignJWT({ sub: sessionId, aid: agentId, jti: randomUUID(), aud: "http://localhost:8788" })
-    .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
-    .setIssuedAt()
-    .setExpirationTime("60s")
-    .sign((keypair as any).privateKey);
-  return { token, sessionId };
-}
-
-async function createWorkerSessionToken(ownerId: string, agentId: string): Promise<string> {
-  return (await createWorkerSession(ownerId, agentId)).token;
-}
-
-// Seed a github account row so backfill can join on it.
-async function seedGithubAccount(db: D1Database, userId: string, githubAccountId: number) {
-  const now = new Date().toISOString();
-  await db
-    .prepare("INSERT INTO account (id, accountId, providerId, userId, createdAt, updatedAt) VALUES (?, ?, 'github', ?, ?, ?)")
-    .bind(`acct-gh-${userId}-${githubAccountId}`, String(githubAccountId), userId, now, now)
-    .run();
+  return sessionId;
 }
 
 beforeAll(async () => {
@@ -539,80 +579,9 @@ describe("removeInstallationRepositories", () => {
   });
 });
 
-// ─── 6. backfillInstallationOwner ────────────────────────────────────────────
-
-describe("backfillInstallationOwner", () => {
-  const OWNER_ID = `backfill-owner-${randomUUID()}`;
-  const GITHUB_ACCOUNT_ID = 88_888;
-
-  beforeAll(async () => {
-    await seedUser(db, OWNER_ID, `${OWNER_ID}@test.local`);
-    await seedGithubAccount(db, OWNER_ID, GITHUB_ACCOUNT_ID);
-  });
-
-  it("sets owner_id from github account when owner_id is NULL", async () => {
-    const { upsertInstallation, backfillInstallationOwner } = await import("../apps/web/server/githubInstallations");
-    const id = Math.floor(Math.random() * 1_000_000) + 1_200_000;
-    await upsertInstallation(db, {
-      installationId: id,
-      ownerId: null,
-      accountLogin: "bf-acct",
-      accountId: GITHUB_ACCOUNT_ID,
-      accountType: "User",
-      repositorySelection: "all",
-    });
-    const changed = await backfillInstallationOwner(db, id, GITHUB_ACCOUNT_ID);
-    expect(changed).toBe(true);
-    const row = await db.prepare("SELECT owner_id FROM github_installations WHERE installation_id = ?").bind(id).first<{ owner_id: string | null }>();
-    expect(row!.owner_id).toBe(OWNER_ID);
-  });
-
-  it("returns false when owner_id is already set", async () => {
-    const { upsertInstallation, backfillInstallationOwner } = await import("../apps/web/server/githubInstallations");
-    const id = Math.floor(Math.random() * 1_000_000) + 1_210_000;
-    await upsertInstallation(db, {
-      installationId: id,
-      ownerId: "already-set",
-      accountLogin: "bf-acct2",
-      accountId: GITHUB_ACCOUNT_ID,
-      accountType: "User",
-      repositorySelection: "all",
-    });
-    const changed = await backfillInstallationOwner(db, id, GITHUB_ACCOUNT_ID);
-    expect(changed).toBe(false);
-    const row = await db.prepare("SELECT owner_id FROM github_installations WHERE installation_id = ?").bind(id).first<{ owner_id: string | null }>();
-    expect(row!.owner_id).toBe("already-set");
-  });
-
-  it("returns false when no github account row matches", async () => {
-    const { upsertInstallation, backfillInstallationOwner } = await import("../apps/web/server/githubInstallations");
-    const id = Math.floor(Math.random() * 1_000_000) + 1_220_000;
-    await upsertInstallation(db, {
-      installationId: id,
-      ownerId: null,
-      accountLogin: "bf-no-match",
-      accountId: 999_999,
-      accountType: "Organization",
-      repositorySelection: "all",
-    });
-    const changed = await backfillInstallationOwner(db, id, 999_999);
-    expect(changed).toBe(false);
-    const row = await db.prepare("SELECT owner_id FROM github_installations WHERE installation_id = ?").bind(id).first<{ owner_id: string | null }>();
-    expect(row!.owner_id).toBeNull();
-  });
-});
-
-// ─── 7. handleGithubInstallationEvent ────────────────────────────────────────
+// ─── 6. handleGithubInstallationEvent ────────────────────────────────────────
 
 describe("handleGithubInstallationEvent", () => {
-  const OWNER_ID = `install-event-owner-${randomUUID()}`;
-  const GH_ACCOUNT_ID = 77_777;
-
-  beforeAll(async () => {
-    await seedUser(db, OWNER_ID, `${OWNER_ID}@test.local`);
-    await seedGithubAccount(db, OWNER_ID, GH_ACCOUNT_ID);
-  });
-
   it("returns handled:false when installation id is missing", async () => {
     const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
     const result = await handleGithubInstallationEvent(db, { action: "created", installation: undefined });
@@ -663,17 +632,6 @@ describe("handleGithubInstallationEvent", () => {
       .bind(id)
       .all<{ full_name: string }>();
     expect(rows.results.map((r) => r.full_name).sort()).toEqual(["selorg/repo1", "selorg/repo2"]);
-  });
-
-  it("backfills owner_id when a matching github account row exists", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
-    const id = Math.floor(Math.random() * 1_000_000) + 1_330_000;
-    await handleGithubInstallationEvent(db, {
-      action: "created",
-      installation: { id, account: { login: "personaluser", id: GH_ACCOUNT_ID, type: "User" }, repository_selection: "all" },
-    });
-    const row = await db.prepare("SELECT owner_id FROM github_installations WHERE installation_id = ?").bind(id).first<{ owner_id: string | null }>();
-    expect(row!.owner_id).toBe(OWNER_ID);
   });
 
   it("deletes the installation row on 'deleted'", async () => {
@@ -1603,10 +1561,11 @@ describe("recordInstallationFromSetup", () => {
       heartbeatEnabled: true,
       status: "active",
     });
-    const jwt = await createWorkerSessionToken(ownerId, agent.id);
+    const path = `/api/repositories/${repo.id}/github-token`;
+    const authority = await createRealmrootAgentAuthorization(ownerId, agent.realmroot_agent_id!, path);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      realmrootFetch(authority.issuerJwk, async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input);
         if (url === "https://api.github.com/repos/maintainer-auth-org/maintainer-auth-repo/installation") {
           return new Response(JSON.stringify({ id: 8_001 }), { status: 200, headers: { "content-type": "application/json" } });
@@ -1628,11 +1587,10 @@ describe("recordInstallationFromSetup", () => {
 
     const res = await apiRequest(
       "POST",
-      `/api/repositories/${repo.id}/github-token`,
+      path,
       undefined,
-      {},
+      { Authorization: `DPoP ${authority.accessToken}`, DPoP: authority.dpopProof },
       { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-      jwt,
     );
 
     expect(res.status).toBe(200);
@@ -1669,23 +1627,25 @@ describe("recordInstallationFromSetup", () => {
       username: `plain-worker-${randomUUID()}`,
       runtime: "claude",
     });
-    const jwt = await createWorkerSessionToken(ownerId, worker.id);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    const path = `/api/repositories/${repo.id}/github-token`;
+    const authority = await createRealmrootAgentAuthorization(ownerId, worker.realmroot_agent_id!, path);
+    const githubFetch = vi.fn(async () => {
+      throw new Error("GitHub must not be called for an unauthorized Agent");
+    });
+    vi.stubGlobal("fetch", realmrootFetch(authority.issuerJwk, githubFetch));
 
     const res = await apiRequest(
       "POST",
-      `/api/repositories/${repo.id}/github-token`,
+      path,
       undefined,
-      {},
+      { Authorization: `DPoP ${authority.accessToken}`, DPoP: authority.dpopProof },
       { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-      jwt,
     );
 
     expect(res.status).toBe(403);
     const body = (await res.json()) as any;
     expect(body.error.message).toBe("Worker agent is not an active maintainer or current task worker for this repository");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(githubFetch).not.toHaveBeenCalled();
   });
 
   it("POST /api/repositories/:id/github-token allows the current task worker for its task repository", async () => {
@@ -1715,7 +1675,7 @@ describe("recordInstallationFromSetup", () => {
       username: `task-worker-${randomUUID()}`,
       runtime: "claude",
     });
-    const { token: jwt, sessionId } = await createWorkerSession(ownerId, worker.id);
+    const sessionId = await createBoundAgentSession(ownerId, worker.id);
     await createTask(db, ownerId, {
       title: "Use task-scoped GitHub auth",
       board_id: board.id,
@@ -1724,9 +1684,11 @@ describe("recordInstallationFromSetup", () => {
       metadata: { annotations: { agentSessionId: sessionId } },
       skipRuntimeAvailability: true,
     });
+    const path = `/api/repositories/${repo.id}/github-token`;
+    const authority = await createRealmrootAgentAuthorization(ownerId, worker.realmroot_agent_id!, path);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      realmrootFetch(authority.issuerJwk, async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input);
         if (url === "https://api.github.com/repos/task-worker-org/task-worker-repo/installation") {
           return new Response(JSON.stringify({ id: 8_003 }), { status: 200, headers: { "content-type": "application/json" } });
@@ -1748,11 +1710,14 @@ describe("recordInstallationFromSetup", () => {
 
     const res = await apiRequest(
       "POST",
-      `/api/repositories/${repo.id}/github-token`,
+      path,
       undefined,
-      {},
+      {
+        Authorization: `DPoP ${authority.accessToken}`,
+        DPoP: authority.dpopProof,
+        "X-AK-Session-ID": sessionId,
+      },
       { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-      jwt,
     );
 
     expect(res.status).toBe(200);
@@ -1801,7 +1766,7 @@ describe("recordInstallationFromSetup", () => {
         username: `other-task-worker-${randomUUID()}`,
         runtime: "claude",
       });
-      const { token: jwt, sessionId } = await createWorkerSession(ownerId, worker.id);
+      const sessionId = await createBoundAgentSession(ownerId, worker.id);
       const task = await createTask(db, ownerId, {
         title: `Denied task-scoped GitHub auth: ${scenario.name}`,
         board_id: board.id,
@@ -1813,22 +1778,29 @@ describe("recordInstallationFromSetup", () => {
       if (scenario.status) {
         await db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").bind(scenario.status, new Date().toISOString(), task.id).run();
       }
-      const fetchMock = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
+      const path = `/api/repositories/${scenario.requestOtherRepo ? otherRepo.id : repo.id}/github-token`;
+      const authority = await createRealmrootAgentAuthorization(ownerId, worker.realmroot_agent_id!, path);
+      const githubFetch = vi.fn(async () => {
+        throw new Error("GitHub must not be called for an unauthorized task Agent");
+      });
+      vi.stubGlobal("fetch", realmrootFetch(authority.issuerJwk, githubFetch));
 
       const res = await apiRequest(
         "POST",
-        `/api/repositories/${scenario.requestOtherRepo ? otherRepo.id : repo.id}/github-token`,
+        path,
         undefined,
-        {},
+        {
+          Authorization: `DPoP ${authority.accessToken}`,
+          DPoP: authority.dpopProof,
+          "X-AK-Session-ID": sessionId,
+        },
         { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-        jwt,
       );
 
       expect(res.status, scenario.name).toBe(403);
       const body = (await res.json()) as any;
       expect(body.error.message, scenario.name).toBe("Worker agent is not an active maintainer or current task worker for this repository");
-      expect(fetchMock, scenario.name).not.toHaveBeenCalled();
+      expect(githubFetch, scenario.name).not.toHaveBeenCalled();
       vi.unstubAllGlobals();
     }
   }, 30_000);
@@ -1933,7 +1905,7 @@ describe("DELETE /api/repositories does not remove installation rows", () => {
     );
 
     const repo = await createRepository(db, OWNER, { name: "del-test-repo", url: "https://github.com/del-repo-acme/del-test-repo" });
-    await deleteRepository(db, repo.id);
+    await deleteRepository(db, repo.id, OWNER);
 
     // Installation row must still be there
     const row = await db.prepare("SELECT 1 FROM github_installations WHERE installation_id = ?").bind(installId).first();

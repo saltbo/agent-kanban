@@ -15,9 +15,9 @@ test.describe("Header and Navigation", () => {
     await expect(header).toBeVisible();
     await expect(header.getByRole("link", { name: "Agent Kanban" })).toBeVisible();
 
-    // expect: Agents is visible on desktop; deprecated Machines is no longer a primary nav item
+    // expect: Both Realmroot-protected runtime resource pages are available.
     await expect(header.getByRole("link", { name: "Agents" })).toBeVisible();
-    await expect(header.getByRole("link", { name: "Machines" })).toHaveCount(0);
+    await expect(header.getByRole("link", { name: "Machines" })).toBeVisible();
 
     // expect: A user avatar button is visible on the right
     // The avatar is inside a DropdownMenuTrigger button

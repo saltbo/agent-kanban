@@ -12,13 +12,20 @@
 import { randomUUID } from "node:crypto";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
+import { createTestAgent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
+
+vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
+  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
+  invalidateAmaMachineToken: vi.fn(),
+}));
 
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
-  AMA_OIDC_ISSUER: "https://auth.test",
-  AMA_OIDC_CLIENT_ID: "ak-app",
-  AMA_OIDC_CLIENT_SECRET: "ak-secret",
+  REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
+  AMA_MACHINE_CLIENT_ID: "ak-machine",
+  AMA_MACHINE_CLIENT_SECRET: "ak-secret",
+  AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
+  AMA_DPOP_PRIVATE_JWK: "{}",
   AK_API_URL: "https://ak.test",
 };
 
@@ -380,11 +387,11 @@ describe("amaRunnerCanRunRuntime", () => {
     // Configure AMA integration and machine environment
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')
-         ON CONFLICT(owner_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')
+         ON CONFLICT(tenant_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
       )
-      .bind(quotaOwner, "project_123", quotaOwner, "vault_123")
+      .bind(quotaOwner, "project_123", "vault_123")
       .run();
 
     const now = new Date().toISOString();
@@ -471,11 +478,11 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
   async function configureAmaIntegration(ownerId: string) {
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')
-         ON CONFLICT(owner_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')
+         ON CONFLICT(tenant_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
       )
-      .bind(ownerId, "project_usage", ownerId, "vault_usage")
+      .bind(ownerId, "project_usage", "vault_usage")
       .run();
   }
 
@@ -696,11 +703,9 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
 describe("POST /api/machines runner.version from env", () => {
   let apiKey: string;
 
-  async function createApiKeyForUser(userId: string, envObj: any): Promise<string> {
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const auth = createAuth(envObj);
-    const result = await auth.api.createApiKey({ body: { userId } });
-    return result.key;
+  async function createSessionForUser(userId: string, envObj: any): Promise<string> {
+    const session = await createTestWebSession(envObj.DB, userId);
+    return `${session.token}:csrf:${session.csrfToken}`;
   }
 
   async function apiRequestWithEnv(method: string, path: string, body: unknown, token: string, envObj: any) {
@@ -709,8 +714,10 @@ describe("POST /api/machines runner.version from env", () => {
       "Content-Type": "application/json",
       Host: "localhost:8788",
       "x-forwarded-proto": "http",
-      Authorization: `Bearer ${token}`,
     };
+    const [sessionToken, csrfToken] = token.split(":csrf:");
+    headers.cookie = `ak_session=${sessionToken}`;
+    if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") headers["x-csrf-token"] = csrfToken;
     const init: RequestInit = { method, headers };
     if (body !== undefined && method !== "GET") init.body = JSON.stringify(body);
     return api.request(path, init, envObj);
@@ -734,15 +741,15 @@ describe("POST /api/machines runner.version from env", () => {
     });
     await seedUser(db, userId, `${userId}@test.local`);
     envWithVersion.DB = db;
-    apiKey = await createApiKeyForUser(userId, envWithVersion);
+    apiKey = await createSessionForUser(userId, envWithVersion);
     // Seed the owner integration so registration doesn't provision a project/vault
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')
-         ON CONFLICT(owner_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')
+         ON CONFLICT(tenant_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
       )
-      .bind(userId, "project_verpinned", userId, "vault_verpinned")
+      .bind(userId, "project_verpinned", "vault_verpinned")
       .run();
 
     // Mock AMA calls needed for environment creation + runner token
@@ -807,7 +814,8 @@ describe("POST /api/machines runner.version from env", () => {
       // No AMA config
     };
     await seedUser(db, userId, `${userId}@test.local`);
-    const key = await createApiKeyForUser(userId, envNoAma);
+    const key = await createSessionForUser(userId, envNoAma);
+    const [sessionToken, csrfToken] = key.split(":csrf:");
 
     const { api } = await import("../apps/web/server/routes");
     const res = await api.request(
@@ -818,7 +826,8 @@ describe("POST /api/machines runner.version from env", () => {
           "Content-Type": "application/json",
           Host: "localhost:8788",
           "x-forwarded-proto": "http",
-          Authorization: `Bearer ${key}`,
+          cookie: `ak_session=${sessionToken}`,
+          "x-csrf-token": csrfToken,
         },
         body: JSON.stringify({
           name: "no-ama-machine",
@@ -849,11 +858,11 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
     const now = new Date().toISOString();
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, '{}')
-         ON CONFLICT(owner_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, '{}')
+         ON CONFLICT(tenant_id) DO UPDATE SET ama_project_id = excluded.ama_project_id, session_secret_vault_id = excluded.session_secret_vault_id`,
       )
-      .bind(ownerId, "project_git", ownerId, "vault_git")
+      .bind(ownerId, "project_git", "vault_git")
       .run();
     await db
       .prepare(

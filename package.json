@@ -15,7 +15,8 @@
     "skills:sync": "bash scripts/sync-skill-references.sh",
     "skills:check": "bash scripts/sync-skill-references.sh --check",
     "prepare": "lefthook install",
-    "install:cli": "bash scripts/install-cli.sh"
+    "install:cli": "bash scripts/install-cli.sh",
+    "migrate:realmroot-owners": "node scripts/migrate-realmroot-owners.mjs"
   },
   "keywords": [
     "kanban",
@@ -51,7 +52,6 @@
     "@assistant-ui/react": "^0.12.24",
     "@openai/codex-sdk": "^0.118.0",
     "dompurify": "^3.3.3",
-    "framer-motion": "^12.38.0",
-    "openpgp": "^6.3.0"
+    "framer-motion": "^12.38.0"
   }
 }

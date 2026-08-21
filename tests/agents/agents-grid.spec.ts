@@ -2,12 +2,13 @@
 // section: 7.2 Agents page renders agent cards in a grid
 
 import { expect, test } from "@playwright/test";
-import { signUpAndGetBoard } from "../helpers/auth";
+import { seedRealmrootAgent, signUpAndGetBoard } from "../helpers/auth";
 
 test.describe("Agents Page", () => {
   test("Agents page renders agent cards in a grid", async ({ page }) => {
     // 1. Sign in as a user with at least one agent and navigate to /agents
     await signUpAndGetBoard(page, `agents_grid_${Date.now()}@example.com`);
+    await seedRealmrootAgent(page);
     await page.goto("/agents");
 
     // Wait for the agent card grid to load

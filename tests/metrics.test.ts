@@ -2,7 +2,7 @@
 
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createTestEnv, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import { createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 // ─── metricsMiddleware unit tests ───
 
@@ -442,7 +442,7 @@ let mf: Miniflare;
 async function apiRequest(method: string, path: string, body?: Record<string, unknown>, token?: string) {
   const { api } = await import("../apps/web/server/routes");
   const headers: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http" };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) headers.cookie = `ak_session=${token}`;
   const init: RequestInit = { method, headers };
   if (body && method !== "GET") init.body = JSON.stringify(body);
   return api.request(path, init, routeEnv);
@@ -461,23 +461,10 @@ describe("GET /api/admin/machines", () => {
   let regularToken: string;
 
   beforeAll(async () => {
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const auth = createAuth(routeEnv);
-
-    const adminResult = await signUpVerifiedUser(
-      routeEnv.DB,
-      auth,
-      { name: "Admin Machines User", email: "admin-machines@test.com", password: "admin-password-123" },
-      "admin",
-    );
-    adminToken = adminResult.token;
-
-    const regularResult = await signUpVerifiedUser(routeEnv.DB, auth, {
-      name: "Regular Machines User",
-      email: "regular-machines@test.com",
-      password: "regular-password-123",
-    });
-    regularToken = regularResult.token;
+    await seedUser(routeEnv.DB, "admin-machines-user", "admin-machines@test.com");
+    await seedUser(routeEnv.DB, "regular-machines-user", "regular-machines@test.com");
+    adminToken = (await createTestWebSession(routeEnv.DB, "admin-machines-user", { role: "admin" })).token;
+    regularToken = (await createTestWebSession(routeEnv.DB, "regular-machines-user")).token;
 
     // stub fetch so getMachineMetrics does not make real network calls
     vi.stubGlobal(
@@ -557,13 +544,5 @@ describe("GET /api/admin/machines", () => {
     const machine = body.find((m) => m.name === "Test Machine");
     expect(machine).toBeDefined();
     expect(Array.isArray(machine.runtimes)).toBe(true);
-  });
-
-  it("returns machine api key auth as 403", async () => {
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const auth = createAuth(routeEnv);
-    const machineKeyResult = await auth.api.createApiKey({ body: { userId: "machine-key-for-admin-machines" } });
-    const res = await apiRequest("GET", "/api/admin/machines", undefined, machineKeyResult.key);
-    expect(res.status).toBe(403);
   });
 });

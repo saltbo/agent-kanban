@@ -87,8 +87,8 @@ export async function getRepository(db: D1, id: string, ownerId: string): Promis
   return row ? withFullName(row) : null;
 }
 
-export async function deleteRepository(db: D1, id: string): Promise<boolean> {
-  const result = await db.prepare("DELETE FROM repositories WHERE id = ?").bind(id).run();
+export async function deleteRepository(db: D1, id: string, ownerId: string): Promise<boolean> {
+  const result = await db.prepare("DELETE FROM repositories WHERE id = ? AND owner_id = ?").bind(id, ownerId).run();
   return result.meta.changes > 0;
 }
 

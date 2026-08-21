@@ -40,6 +40,7 @@ const MAX_IDLE_BACKOFF_MS = 120_000;
 export interface LoopOpts {
   maxConcurrent: number;
   pollInterval: number;
+  machineId: string;
 }
 
 // ---- DaemonLoop class ----
@@ -166,6 +167,7 @@ export class DaemonLoop {
       {
         maxConcurrent: this.opts.maxConcurrent,
         pollInterval: this.opts.pollInterval,
+        machineId: this.opts.machineId,
       },
       this.circuitBreaker,
     );

@@ -13,6 +13,11 @@ import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
+vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
+  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
+  invalidateAmaMachineToken: vi.fn(),
+}));
+
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
 
 let db: D1Database;
@@ -112,9 +117,11 @@ function makeEnv(overrides: Record<string, unknown> = {}): any {
     MAILS_ADMIN_TOKEN: "",
     GITHUB_APP_WEBHOOK_SECRET: WEBHOOK_SECRET,
     AMA_ORIGIN: "https://ama.test",
-    AMA_OIDC_ISSUER: "https://auth.test",
-    AMA_OIDC_CLIENT_ID: "ak-app",
-    AMA_OIDC_CLIENT_SECRET: "ak-secret",
+    REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
+    AMA_MACHINE_CLIENT_ID: "ak-machine",
+    AMA_MACHINE_CLIENT_SECRET: "ak-secret",
+    AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
+    AMA_DPOP_PRIVATE_JWK: "{}",
     ...overrides,
   };
 }
@@ -209,10 +216,10 @@ describe("POST /api/webhooks/github-app route", () => {
     await seedUser(db, input.ownerId, `${input.ownerId}@test.com`);
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, 'vault_webhook', '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, 'vault_webhook', '{}')`,
       )
-      .bind(input.ownerId, input.projectId, input.ownerId)
+      .bind(input.ownerId, input.projectId)
       .run();
     await db
       .prepare(
@@ -1109,10 +1116,10 @@ describe("POST /api/webhooks/github-app route", () => {
     await seedUser(db, ownerId, `${ownerId}@test.com`);
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, 'project_webhook', ?, 'vault_webhook', '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, 'project_webhook', 'vault_webhook', '{}')`,
       )
-      .bind(ownerId, ownerId)
+      .bind(ownerId)
       .run();
     await db
       .prepare(
@@ -1303,10 +1310,10 @@ describe("POST /api/webhooks/github-app route", () => {
     await seedUser(db, ownerId, `${ownerId}@test.com`);
     await db
       .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, 'project_webhook_scope', ?, 'vault_webhook_scope', '{}')`,
+        `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+         VALUES (?, 'project_webhook_scope', 'vault_webhook_scope', '{}')`,
       )
-      .bind(ownerId, ownerId)
+      .bind(ownerId)
       .run();
     await db
       .prepare(
@@ -1541,9 +1548,11 @@ describe("handleGithubPullRequestEvent", () => {
 
     const AMA_ENV = {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_ISSUER: "https://auth.test",
-      AMA_OIDC_CLIENT_ID: "ak-app",
-      AMA_OIDC_CLIENT_SECRET: "ak-secret",
+      REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
+      AMA_MACHINE_CLIENT_ID: "ak-machine",
+      AMA_MACHINE_CLIENT_SECRET: "ak-secret",
+      AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
+      AMA_DPOP_PRIVATE_JWK: "{}",
     };
 
     const stops: string[] = [];
