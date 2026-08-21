@@ -113,8 +113,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@any-managed-agents/sdk':
-        specifier: github:saltbo/any-managed-agents#e0c95a21fc05f410330c59512e995778f0dbd706&path:sdk/typescript
-        version: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0c95a21fc05f410330c59512e995778f0dbd706#path:sdk/typescript
+        specifier: github:saltbo/any-managed-agents#21f0f7f89a02c18e407132ec8e92666038f7455e&path:sdk/typescript
+        version: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/21f0f7f89a02c18e407132ec8e92666038f7455e#path:sdk/typescript
       '@assistant-ui/react':
         specifier: ^0.12.24
         version: 0.12.24(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5))
@@ -334,8 +334,8 @@ packages:
       zod:
         optional: true
 
-  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0c95a21fc05f410330c59512e995778f0dbd706#path:sdk/typescript':
-    resolution: {path: sdk/typescript, tarball: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0c95a21fc05f410330c59512e995778f0dbd706}
+  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/21f0f7f89a02c18e407132ec8e92666038f7455e#path:sdk/typescript':
+    resolution: {path: sdk/typescript, tarball: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/21f0f7f89a02c18e407132ec8e92666038f7455e}
     version: 0.1.0
 
   '@asamuzakjp/css-color@5.1.8':
@@ -6456,7 +6456,7 @@ snapshots:
     optionalDependencies:
       zod: 4.3.6
 
-  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0c95a21fc05f410330c59512e995778f0dbd706#path:sdk/typescript': {}
+  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/21f0f7f89a02c18e407132ec8e92666038f7455e#path:sdk/typescript': {}
 
   '@asamuzakjp/css-color@5.1.8':
     dependencies:

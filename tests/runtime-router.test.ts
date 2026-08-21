@@ -3,11 +3,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
-  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
-  invalidateAmaMachineToken: vi.fn(),
-}));
-
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
 const { dispatchTaskToAmaMock, releaseTaskRuntimeBindingMock } = vi.hoisted(() => ({
@@ -39,10 +34,10 @@ function env(): any {
     MAILS_ADMIN_TOKEN: "",
     AMA_ORIGIN: "https://ama.test",
     REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
-    AMA_MACHINE_CLIENT_ID: "ak-machine",
-    AMA_MACHINE_CLIENT_SECRET: "ak-secret",
-    AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
-    AMA_DPOP_PRIVATE_JWK: "{}",
+    REALMROOT_WEB_CLIENT_ID: "ak-web-test",
+    REALMROOT_WEB_CLIENT_SECRET: "ak-web-secret",
+    REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+    AMA_RESOURCE: "https://ama.test/api",
     AK_API_URL: "https://ak.test",
   };
 }

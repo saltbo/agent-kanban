@@ -15,8 +15,7 @@
     "skills:sync": "bash scripts/sync-skill-references.sh",
     "skills:check": "bash scripts/sync-skill-references.sh --check",
     "prepare": "lefthook install",
-    "install:cli": "bash scripts/install-cli.sh",
-    "migrate:realmroot-owners": "node scripts/migrate-realmroot-owners.mjs"
+    "install:cli": "bash scripts/install-cli.sh"
   },
   "keywords": [
     "kanban",

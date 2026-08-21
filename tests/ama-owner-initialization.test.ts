@@ -4,11 +4,6 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestEnv, seedUser, setupMiniflare } from "./helpers/db";
 
-vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
-  createAmaMachineAuthorizer: () => async () => ({ accessToken: "machine-token", dpopProof: "machine-proof" }),
-  invalidateAmaMachineToken: vi.fn(),
-}));
-
 const activeMiniflares: Array<Awaited<ReturnType<typeof setupMiniflare>>["mf"]> = [];
 
 afterEach(async () => {
@@ -233,10 +228,7 @@ async function harness(ownerId: string) {
     ...createTestEnv(),
     DB: db,
     AMA_ORIGIN: "https://ama.init.test",
-    AMA_MACHINE_CLIENT_ID: "ak-init-machine",
-    AMA_MACHINE_CLIENT_SECRET: "machine-secret",
-    AMA_MACHINE_SCOPES: "projects:write vaults:write",
-    AMA_DPOP_PRIVATE_JWK: "{}",
+    AMA_RESOURCE: "https://ama.init.test/api",
   } as never;
   return { db, env };
 }

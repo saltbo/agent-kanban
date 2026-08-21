@@ -195,8 +195,6 @@ export abstract class ApiClient {
     model?: string;
     skills?: string[];
     subagents?: string[];
-    realmroot_agent_id: string;
-    realmroot_credential_ref?: string;
   }) {
     return this.request("POST", "/api/agents", input);
   }

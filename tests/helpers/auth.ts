@@ -85,8 +85,7 @@ export async function seedRealmrootAgent(
     d1DatabasePath(),
     `INSERT INTO agents (
        id, owner_id, name, username, bio, soul, role, kind, runtime, model,
-       public_key, private_key, fingerprint, builtin, ama_agent_id,
-       realmroot_agent_id, realmroot_credential_ref, created_at, updated_at
+       public_key, private_key, fingerprint, builtin, ama_agent_id, created_at, updated_at
      ) VALUES (
        '${id}',
        '${sqlString(session.user.tenantId)}',
@@ -103,8 +102,6 @@ export async function seedRealmrootAgent(
        '0123456789abcdef0123456789abcdef01234567',
        0,
        'ama-agent-${id}',
-       'realmroot-agent-${id}',
-       'ama://vaults/e2e/credentials/realmroot-${id}',
        '${now}',
        '${now}'
      );`,

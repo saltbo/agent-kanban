@@ -13,16 +13,16 @@ import {
   type Volume,
   type VolumeMount,
 } from "@any-managed-agents/sdk";
-import { createAmaMachineAuthorizer, invalidateAmaMachineToken } from "./realmrootMachineAuth";
+import { AmaUserGrantRequired, amaBearerToken } from "./realmrootAuth";
 import type { Env } from "./types";
 
-export class AmaMachineAuthError extends Error {
+export class AmaUserAuthError extends Error {
   readonly status = 401;
-  readonly code = "AMA_MACHINE_AUTH_FAILED";
+  readonly code = "AMA_USER_AUTH_REQUIRED";
 
-  constructor(message = "AMA rejected the AK machine authority.") {
+  constructor(message = "Sign in again to authorize Agent Kanban to use AMA.") {
     super(message);
-    this.name = "AmaMachineAuthError";
+    this.name = "AmaUserAuthError";
   }
 }
 
@@ -70,7 +70,7 @@ export interface AmaAgentInput {
   handoffPolicy?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   memoryPolicy?: Record<string, unknown>;
-  realmroot: { agentId: string; origin: string; credentialRef: string };
+  realmroot?: { agentId: string; origin: string; credentialRef: string } | null;
 }
 
 export interface AmaAgent {
@@ -90,7 +90,7 @@ function amaAgentSpec(input: AmaAgentInput) {
     subagents: toAmaAgentSubagents(input.subagents ?? []),
     allowedTools: [],
     mcpConnectors: [],
-    realmroot: input.realmroot,
+    realmroot: input.realmroot ?? null,
   };
 }
 
@@ -354,15 +354,18 @@ export function vendorFromModelId(modelId: string): string {
   return segments.length >= 2 && first ? first : "unknown";
 }
 
-// AMA is configured when AK's global Realmroot Machine Application is present.
-// Every tenant call uses that machine authority plus explicit tenant/project
-// context; no user token or account connection participates in authorization.
-function hasAmaMachineClient(env: Env): boolean {
-  return Boolean(env.REALMROOT_ISSUER && env.AMA_MACHINE_CLIENT_ID && env.AMA_MACHINE_CLIENT_SECRET && env.AMA_DPOP_PRIVATE_JWK);
+function hasAmaUserClient(env: Env): boolean {
+  return Boolean(
+    env.REALMROOT_ISSUER &&
+      env.REALMROOT_WEB_CLIENT_ID &&
+      env.REALMROOT_WEB_CLIENT_SECRET &&
+      env.REALMROOT_SESSION_ENCRYPTION_KEY &&
+      env.AMA_RESOURCE,
+  );
 }
 
 export function isAmaRuntimeConfigured(env: Env): boolean {
-  return Boolean(env.AMA_ORIGIN && hasAmaMachineClient(env));
+  return Boolean(env.AMA_ORIGIN && hasAmaUserClient(env));
 }
 
 export function isAmaTaskDispatchConfigured(env: Env): boolean {
@@ -654,13 +657,13 @@ async function withAmaErrorDetails<T>(env: Env, operation: string, fn: () => Pro
 }
 
 async function withAmaAuthRetry<T>(env: Env, idempotent: boolean, fn: () => Promise<T>): Promise<T> {
+  void env;
+  void idempotent;
   try {
     return await fn();
   } catch (error) {
-    if (!isAmaUnauthorizedError(error)) throw error;
-    invalidateAmaMachineToken(env);
-    if (!idempotent) throw error;
-    return await fn();
+    throwIfAmaAuthError(error);
+    throw error;
   }
 }
 
@@ -1208,35 +1211,52 @@ export async function dispatchAmaHttpTriggerRun(env: Env, ownerId: string, input
 }
 
 function throwIfAmaAuthError(error: unknown): void {
+  if (error instanceof AmaUserGrantRequired) throw new AmaUserAuthError(error.message);
   if (isAmaUnauthorizedError(error)) {
-    throw new AmaMachineAuthError();
+    throw new AmaUserAuthError();
   }
 }
 
 function isAmaUnauthorizedError(error: unknown): boolean {
-  if ((error as { status?: unknown }).status === 401) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /\bHTTP 401\b/.test(message) || /authentication required/i.test(message);
+  const candidate = error as { status?: unknown; statusCode?: unknown; responseText?: unknown; body?: unknown; cause?: unknown };
+  if (candidate.status === 401 || candidate.statusCode === 401) return true;
+  const detail = [
+    error instanceof Error ? error.message : String(error),
+    typeof candidate.responseText === "string" ? candidate.responseText : "",
+    typeof candidate.body === "string" ? candidate.body : JSON.stringify(candidate.body ?? ""),
+    candidate.cause instanceof Error ? candidate.cause.message : "",
+  ].join(" ");
+  return /\bHTTP 401\b/.test(detail) || /unauthorized|authentication required|invalid[_ -]?token/i.test(detail);
 }
 
 async function createAmaClient(env: Env, ownerId: string, projectId?: string, requestHeaders: Record<string, string> = {}) {
   const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
-  const client = createSdkClient({ baseUrl, projectId, headers: { "x-ak-tenant-id": ownerId, ...requestHeaders } });
-  const authorize = createAmaMachineAuthorizer(env);
+  const accessToken = await requiredAmaBearerToken(env, ownerId);
+  const client = createSdkClient({
+    baseUrl,
+    projectId,
+    headers: { ...requestHeaders, authorization: `Bearer ${accessToken}` },
+  });
   const authenticatedFetch: typeof fetch = async (input, init) => {
     const request = new Request(input, init);
-    const authority = await authorize(request.url, request.method);
     const headers = new Headers(request.headers);
-    headers.set("authorization", `DPoP ${authority.accessToken}`);
-    headers.set("dpop", authority.dpopProof);
-    return fetch(new Request(request, { headers }));
+    headers.set("authorization", `Bearer ${await requiredAmaBearerToken(env, ownerId)}`);
+    let response = await fetch(new Request(request, { headers }));
+    if (response.status === 401) {
+      const refreshed = await requiredAmaBearerToken(env, ownerId, true);
+      if (request.method === "GET" || request.method === "HEAD") {
+        headers.set("authorization", `Bearer ${refreshed}`);
+        response = await fetch(new Request(request, { headers }));
+      }
+    }
+    return response;
   };
   client.raw.setConfig({ fetch: authenticatedFetch });
   return client;
 }
 
 // Browsers connect only to AK. AK validates the Session Cookie and tenant-owned
-// session before opening an M2M DPoP-authenticated upstream socket to AMA.
+// session before opening a user-authorized upstream socket to AMA.
 export async function getAmaSessionSocketUrl(env: Env, _ownerId: string, sessionId: string, _projectId?: string): Promise<string> {
   const baseUrl = requireEnv(env.AK_API_URL ?? env.AK_RESOURCE, "AK_API_URL");
   const wsBase = baseUrl.replace(/^http(s?):\/\//i, (_match, secure) => `ws${secure}://`).replace(/\/api\/?$/, "");
@@ -1246,26 +1266,31 @@ export async function getAmaSessionSocketUrl(env: Env, _ownerId: string, session
 export async function proxyAmaSessionSocket(env: Env, ownerId: string, sessionId: string, projectId: string): Promise<Response> {
   const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
   const upstreamUrl = new URL(`/api/v1/sessions/${encodeURIComponent(sessionId)}/socket`, baseUrl).toString();
-  const connect = async () => {
-    const authority = await createAmaMachineAuthorizer(env)(upstreamUrl, "GET");
+  const connect = async (forceRefresh = false) => {
     return fetch(upstreamUrl, {
       headers: {
-        authorization: `DPoP ${authority.accessToken}`,
-        dpop: authority.dpopProof,
+        authorization: `Bearer ${await requiredAmaBearerToken(env, ownerId, forceRefresh)}`,
         upgrade: "websocket",
-        "x-ak-tenant-id": ownerId,
         "x-ama-project-id": projectId,
       },
     });
   };
   let response = await connect();
   if (response.status === 401) {
-    invalidateAmaMachineToken(env);
-    response = await connect();
+    response = await connect(true);
   }
   if (response.status === 101 && response.webSocket) return response;
   console.error("AMA WebSocket handshake failed", { status: response.status, sessionId, projectId });
   throw new Error("AMA WebSocket handshake failed");
+}
+
+async function requiredAmaBearerToken(env: Env, ownerId: string, forceRefresh = false): Promise<string> {
+  try {
+    return await amaBearerToken(env, ownerId, forceRefresh);
+  } catch (error) {
+    if (error instanceof AmaUserGrantRequired) throw new AmaUserAuthError(error.message);
+    throw error;
+  }
 }
 
 function requireEnv(value: string | undefined, name: string): string {

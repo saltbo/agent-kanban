@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { signUpAndGetBoard } from "../helpers/auth";
+import { seedRealmrootAgent, signUpAndGetBoard } from "../helpers/auth";
 
 const AMA_SESSION_ID = "b3c5b443-f551-42f1-b4f6-f0ad4aaa61c4";
 const AMA_PROJECT_ID = "project_b3a6a18924dd4e299f8bfe71ee8125b7";
@@ -26,24 +26,10 @@ test.describe("Task chat runtime events", () => {
     // 2. Capture the board id from the URL
     const boardId = page.url().split("/boards/")[1];
 
-    // 3. Create a worker agent via API (the user owns it; agent creation is allowed for users)
-    const { agentUsername } = await page.evaluate(async () => {
-      const session = await fetch("/api/auth/session", { credentials: "include" }).then((response) => response.json());
-      const username = `chat-pg-agent-${Date.now()}`;
-      const res = await fetch(`${window.location.origin}/api/agents`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-csrf-token": session.session.csrfToken },
-        body: JSON.stringify({
-          username,
-          runtime: "claude",
-          realmroot_agent_id: `rr-${username}`,
-          realmroot_credential_ref: `ama://vaults/e2e/credentials/${username}`,
-        }),
-      });
-      if (!res.ok) throw new Error(`agent create: ${res.status} ${await res.text()}`);
-      const agent = (await res.json()) as { id: string };
-      return { agentId: agent.id, agentUsername: username };
-    });
+    // 3. Seed an already-provisioned worker so this browser protocol test does
+    // not depend on external AMA provisioning.
+    const agentUsername = `chat-pg-agent-${Date.now()}`;
+    const agentId = await seedRealmrootAgent(page, { name: agentUsername, username: agentUsername });
 
     // 4. Tasks are created by agents only, so seed the task directly in D1 on the user's board,
     //    assigned to the agent and bound to the rich AMA session via its annotations. The runtime
@@ -51,9 +37,6 @@ test.describe("Task chat runtime events", () => {
     const taskId = `chatpg${Date.now()}`;
     const nowIso = new Date().toISOString();
     const metadataJson = JSON.stringify({ annotations: { "ama.sessionId": AMA_SESSION_ID, "ama.projectId": AMA_PROJECT_ID } });
-    const agentId = execFileSync("sqlite3", [d1DatabasePath(), `SELECT id FROM agents WHERE username = '${agentUsername}';`])
-      .toString()
-      .trim();
     execFileSync("sqlite3", [
       "-cmd",
       ".timeout 10000",

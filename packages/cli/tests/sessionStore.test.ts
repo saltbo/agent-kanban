@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -88,6 +88,29 @@ describe("writeSession / readSession", () => {
     const s = makeSession();
     writeSession(s); // must not throw
     expect(readSession(s.sessionId)).not.toBeNull();
+  });
+
+  it("stores private session state with owner-only directory and file permissions", () => {
+    chmodSync(testSessionsDir, 0o777);
+    const session = makeSession();
+
+    writeSession(session);
+
+    expect(statSync(testSessionsDir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(testSessionsDir, `${session.sessionId}.json`)).mode & 0o777).toBe(0o600);
+  });
+
+  it("repairs broad permissions on an existing sessions directory and file", () => {
+    const session = makeSession();
+    writeSession(session);
+    const path = join(testSessionsDir, `${session.sessionId}.json`);
+    chmodSync(testSessionsDir, 0o777);
+    chmodSync(path, 0o666);
+
+    writeSession({ ...session, status: "in_review" });
+
+    expect(statSync(testSessionsDir).mode & 0o777).toBe(0o700);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 });
 

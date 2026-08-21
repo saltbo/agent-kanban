@@ -5,11 +5,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getSystemStats } from "../apps/web/server/statsRepo";
 import { createTestAgent, createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
-vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
-  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
-  invalidateAmaMachineToken: vi.fn(),
-}));
-
 const env = createTestEnv();
 let mf: Miniflare;
 
@@ -232,16 +227,11 @@ describe("GET /api/admin/stats", () => {
   it("derives machine online stats from AMA runners when AMA dispatch is configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_MACHINE_CLIENT_ID: env.AMA_MACHINE_CLIENT_ID,
-      AMA_MACHINE_CLIENT_SECRET: env.AMA_MACHINE_CLIENT_SECRET,
-      AMA_DPOP_PRIVATE_JWK: env.AMA_DPOP_PRIVATE_JWK,
+      AMA_RESOURCE: env.AMA_RESOURCE,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_MACHINE_CLIENT_ID: "ak-machine",
-      AMA_MACHINE_CLIENT_SECRET: "ak-secret",
-      AMA_MACHINE_SCOPES: "runners:read",
-      AMA_DPOP_PRIVATE_JWK: "{}",
+      AMA_RESOURCE: "https://ama.test/api",
     });
     const ownerId = "admin-ama-machine-owner";
     const machineId = "admin-ama-machine";

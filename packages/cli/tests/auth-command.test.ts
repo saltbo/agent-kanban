@@ -40,6 +40,7 @@ vi.mock("../src/agent/leader.js", () => ({
 vi.mock("../src/commands/github.js", () => ({ configureGithubAuth: mocks.configureGithubAuth }));
 
 const { registerAuthCommand } = await import("../src/commands/auth.js");
+const { missingAuthSessionMessage } = await import("../src/auth/guidance.js");
 
 function program(): Command {
   const value = new Command();
@@ -115,15 +116,22 @@ describe("ak auth Realmroot commands", () => {
     expect(log).toHaveBeenCalledWith("API:         https://ak.example.test");
   });
 
-  it("reports an injected Realmroot Agent without reading native credentials", async () => {
+  it("reports an injected AK Agent Session without reading native credentials", async () => {
     mocks.fromEnv.mockResolvedValue({ getAgentId: () => "rr-agent-1", getSessionId: () => "session-1" });
 
     await program().parseAsync(["auth", "whoami"], { from: "user" });
 
     expect(mocks.getCredentials).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith("Type:        Realmroot Agent");
+    expect(log).toHaveBeenCalledWith("Type:        AK Agent Session");
     expect(log).toHaveBeenCalledWith("Agent ID:    rr-agent-1");
     expect(log).toHaveBeenCalledWith("Session ID:  session-1");
+  });
+
+  it("guides Agent runtimes to an AK-managed Ed25519 Session instead of Realmroot Agent enrollment", () => {
+    expect(missingAuthSessionMessage()).toContain(
+      "Agent runtimes receive an AK-managed Ed25519 Session through AK_AGENT_KEY, AK_AGENT_ID, AK_SESSION_ID, and AK_API_URL.",
+    );
+    expect(missingAuthSessionMessage()).not.toContain("REALMROOT_STATE_DIR");
   });
 });
 

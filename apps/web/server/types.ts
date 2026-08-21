@@ -8,6 +8,7 @@ export interface Env {
   REALMROOT_ISSUER: string;
   REALMROOT_WEB_CLIENT_ID: string;
   REALMROOT_WEB_CLIENT_SECRET: string;
+  REALMROOT_SESSION_ENCRYPTION_KEY: string;
   REALMROOT_CLI_CLIENT_ID: string;
   AK_RESOURCE: string;
   REALMROOT_CONSOLE_URL?: string;
@@ -17,10 +18,6 @@ export interface Env {
   AK_API_URL?: string;
   AMA_ORIGIN?: string;
   AMA_RESOURCE?: string;
-  AMA_MACHINE_CLIENT_ID?: string;
-  AMA_MACHINE_CLIENT_SECRET?: string;
-  AMA_MACHINE_SCOPES?: string;
-  AMA_DPOP_PRIVATE_JWK?: string;
   AMA_RUNNER_VERSION?: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;
@@ -41,7 +38,6 @@ declare module "hono" {
       subjectId: string;
       tenantId: string;
       clientId?: string;
-      realmrootAgentId?: string;
       scopes: string[];
     };
     machineId?: string;

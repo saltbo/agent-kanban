@@ -15,21 +15,16 @@ import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { addCloudSandboxMachine, createTestAgent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
-vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
-  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
-  invalidateAmaMachineToken: vi.fn(),
-}));
-
 const OWNER = "ama-sweep-test-user";
 
 // Shared AMA env-var bundle — matches routes.test.ts pattern
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
   REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
-  AMA_MACHINE_CLIENT_ID: "ak-machine",
-  AMA_MACHINE_CLIENT_SECRET: "ak-secret",
-  AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
-  AMA_DPOP_PRIVATE_JWK: "{}",
+  REALMROOT_WEB_CLIENT_ID: "ak-web-test",
+  REALMROOT_WEB_CLIENT_SECRET: "ak-web-secret",
+  REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+  AMA_RESOURCE: "https://ama.test/api",
   AK_API_URL: "https://ak.test",
 };
 
@@ -1583,7 +1578,7 @@ describe("amaRuntime vault credential helpers", () => {
       const url = reqUrl(input);
       if (url === "https://ama.test/api/v1/vaults/vault_test/credentials/cred_test") {
         const authHeader = input instanceof Request ? input.headers.get("authorization") : (init?.headers as Record<string, string>)?.authorization;
-        expect(authHeader).toBe("DPoP test.jwt.token");
+        expect(authHeader).toBe(`Bearer test-access:${OWNER}`);
         revokeCalls.push({ url, body: JSON.parse(await reqBody(input, init)) });
         return jsonResponse({ id: "cred_test", state: "revoked" }, 200);
       }
@@ -2229,8 +2224,9 @@ describe("dispatchTaskToAma — GitHub clone credential (GitHub App installation
     const env = makeEnv();
     await dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" });
 
-    // Realmroot Agent authority is referenced by AMA; AK creates no Agent JWT secret.
-    expect(vaultCredCalls).toHaveLength(0);
+    // The sole secret is AK's internal Ed25519 Agent session credential; no
+    // additional GitHub repository credential is created.
+    expect(vaultCredCalls).toHaveLength(1);
 
     // GitHub credentials are never exposed as runtime environment variables.
     const sessionBody = getSessionBody();

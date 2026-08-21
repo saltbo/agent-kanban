@@ -13,11 +13,6 @@ import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
-vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
-  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
-  invalidateAmaMachineToken: vi.fn(),
-}));
-
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
 
 let db: D1Database;
@@ -118,10 +113,10 @@ function makeEnv(overrides: Record<string, unknown> = {}): any {
     GITHUB_APP_WEBHOOK_SECRET: WEBHOOK_SECRET,
     AMA_ORIGIN: "https://ama.test",
     REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
-    AMA_MACHINE_CLIENT_ID: "ak-machine",
-    AMA_MACHINE_CLIENT_SECRET: "ak-secret",
-    AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
-    AMA_DPOP_PRIVATE_JWK: "{}",
+    REALMROOT_WEB_CLIENT_ID: "ak-web-test",
+    REALMROOT_WEB_CLIENT_SECRET: "ak-web-secret",
+    REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+    AMA_RESOURCE: "https://ama.test/api",
     ...overrides,
   };
 }
@@ -1549,10 +1544,10 @@ describe("handleGithubPullRequestEvent", () => {
     const AMA_ENV = {
       AMA_ORIGIN: "https://ama.test",
       REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
-      AMA_MACHINE_CLIENT_ID: "ak-machine",
-      AMA_MACHINE_CLIENT_SECRET: "ak-secret",
-      AMA_MACHINE_SCOPES: "projects:read projects:write sessions:write",
-      AMA_DPOP_PRIVATE_JWK: "{}",
+      REALMROOT_WEB_CLIENT_ID: "ak-web-test",
+      REALMROOT_WEB_CLIENT_SECRET: "ak-web-secret",
+      REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+      AMA_RESOURCE: "https://ama.test/api",
     };
 
     const stops: string[] = [];

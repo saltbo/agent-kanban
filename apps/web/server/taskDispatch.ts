@@ -54,6 +54,7 @@ export const USER_VARIABLES_CREDENTIAL_NAME = "user-variables";
 export const AK_SESSION_CREDENTIAL_PREFIX = "ak-session-";
 const GH_USERNAME_DATA_KEY = "GH_USERNAME";
 const GH_TOKEN_DATA_KEY = "GH_TOKEN";
+const AK_AGENT_KEY_DATA_KEY = "AK_AGENT_KEY";
 
 export function boardMaintainerResourceName(boardId: string): string {
   return `ak-boarder-${boardId}`;
@@ -162,16 +163,17 @@ export async function dispatchTaskToAma(
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
-    if (githubCloneCredential) {
-      secret = await createAmaSessionSecret(env, ownerId, {
-        projectId: amaProjectId,
-        vaultId,
-        name: sessionCredentialName(sessionIdentity.sessionId),
-        secretData: githubCloneCredential.secretData,
-        metadata: { akSessionId: sessionIdentity.sessionId, ...githubCloneCredential.metadata },
-      });
-      await setAmaAgentSessionSecretRef(db, sessionIdentity.sessionId, secret.secretRef);
-    }
+    secret = await createAmaSessionSecret(env, ownerId, {
+      projectId: amaProjectId,
+      vaultId,
+      name: sessionCredentialName(sessionIdentity.sessionId),
+      secretData: {
+        [AK_AGENT_KEY_DATA_KEY]: JSON.stringify(sessionIdentity.privateKeyJwk),
+        ...(githubCloneCredential?.secretData ?? {}),
+      },
+      metadata: { akSessionId: sessionIdentity.sessionId, ...(githubCloneCredential?.metadata ?? {}) },
+    });
+    await setAmaAgentSessionSecretRef(db, sessionIdentity.sessionId, secret.secretRef);
 
     dispatch = await createAmaTaskSession(env, ownerId, {
       projectId: amaProjectId,
@@ -181,17 +183,16 @@ export async function dispatchTaskToAma(
       title: `AK task ${task.id}: ${task.title}`,
       initialPrompt: cloudDispatch ? cloudTaskInitialPrompt(task, resourceRefs) : taskInitialPrompt(task),
       resourceRefs,
-      gitCredentialSecret:
-        githubCloneCredential && secret
-          ? {
-              vaultId,
-              credentialId: secret.credentialId,
-              items: [
-                { key: GH_USERNAME_DATA_KEY, path: "username" },
-                { key: GH_TOKEN_DATA_KEY, path: "password" },
-              ],
-            }
-          : null,
+      gitCredentialSecret: githubCloneCredential
+        ? {
+            vaultId,
+            credentialId: secret.credentialId,
+            items: [
+              { key: GH_USERNAME_DATA_KEY, path: "username" },
+              { key: GH_TOKEN_DATA_KEY, path: "password" },
+            ],
+          }
+        : null,
       runtimeEnv: {
         AK_WORKER: "1",
         AK_AGENT_ID: assignedTo,
@@ -200,7 +201,10 @@ export async function dispatchTaskToAma(
         ...(cloudDispatch ? cloudSandboxHomeEnv() : {}),
         ...agentGitIdentityEnv(akAgent),
       },
-      runtimeSecretEnv: boardRuntimeSecretEnv,
+      runtimeSecretEnv: [
+        ...boardRuntimeSecretEnv,
+        { name: AK_AGENT_KEY_DATA_KEY, vaultId, credentialId: secret.credentialId, key: AK_AGENT_KEY_DATA_KEY },
+      ],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
@@ -248,11 +252,7 @@ interface AkAgentProfile {
   skills?: string[] | null;
   subagents?: string[] | null;
   handoff_to?: string[] | null;
-  realmroot_agent_id?: string | null;
-  realmroot_credential_ref?: string | null;
 }
-
-const REALMROOT_AGENT_ORIGIN = "https://id.realmroot.dev";
 
 async function buildAmaAgentInput(
   db: D1,
@@ -262,9 +262,6 @@ async function buildAmaAgentInput(
   runtime: string,
   options: { memoryEnabled?: boolean },
 ) {
-  if (!akAgent.realmroot_agent_id || !akAgent.realmroot_credential_ref) {
-    throw new Error("AMA Agent requires a Realmroot Agent id and active AMA Vault credential reference");
-  }
   const runtimeProfile = resolveAmaProviderModelProfile({ runtime, preferredModel: akAgent.model });
   const subagents = await Promise.all((akAgent.subagents ?? []).map((id) => getSubagent(db, id, ownerId)));
   return {
@@ -286,11 +283,7 @@ async function buildAmaAgentInput(
     handoffPolicy: amaAgentHandoffPolicy(akAgent.handoff_to),
     metadata: { runtime: runtimeProfile.runtime },
     memoryPolicy: amaAgentMemoryPolicy(options.memoryEnabled === true),
-    realmroot: {
-      agentId: akAgent.realmroot_agent_id,
-      origin: REALMROOT_AGENT_ORIGIN,
-      credentialRef: akAgent.realmroot_credential_ref,
-    },
+    realmroot: null,
   };
 }
 

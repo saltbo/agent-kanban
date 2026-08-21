@@ -69,7 +69,7 @@ test.describe("Board Page", () => {
     await page.route("**/api/tasks/task-card-chat", async (route) => {
       await route.fulfill({ json: task });
     });
-    await page.route("**/api/tasks/task-card-chat/stream?*", async (route) => {
+    await page.route("**/api/tasks/task-card-chat/stream*", async (route) => {
       await route.fulfill({
         status: 200,
         headers: {

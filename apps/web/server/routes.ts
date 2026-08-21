@@ -53,8 +53,8 @@ import {
 } from "./agentSessionRepo";
 import { createAmaCloudSandboxEnvironment, ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
 import {
-  AmaMachineAuthError,
   type AmaRunner,
+  AmaUserAuthError,
   amaEnvironmentExists,
   archiveAmaAgent,
   archiveAmaEnvironment,
@@ -803,7 +803,7 @@ api.use("*", async (c, next) => {
 
 // Error handler
 api.onError((err, c) => {
-  if (err instanceof AmaMachineAuthError) {
+  if (err instanceof AmaUserAuthError) {
     return c.json({ error: { code: err.code, message: err.message } }, err.status);
   }
   if (err instanceof HTTPException) {
@@ -850,15 +850,19 @@ api.get("/api", (c) =>
   }),
 );
 
-function taskActionOpenApi(operationId: string, scope: string) {
+type OpenApiAuth = "realmroot" | "agent" | "either";
+
+function taskActionOpenApi(operationId: string, scope: string, auth: OpenApiAuth) {
   return {
     parameters: [{ name: "taskId", in: "path", required: true, schema: { type: "string" } }],
-    post: openApiOperation(operationId, scope, "Task transition accepted"),
+    post: openApiOperation(operationId, scope, "Task transition accepted", "200", auth),
   };
 }
 
-function openApiOperation(operationId: string, scope: string, description: string, status = "200") {
-  return { operationId, security: [{ realmroot: [scope] }], responses: { [status]: { description } } };
+function openApiOperation(operationId: string, scope: string, description: string, status = "200", auth: OpenApiAuth = "realmroot") {
+  const security =
+    auth === "realmroot" ? [{ realmroot: [scope] }] : auth === "agent" ? [{ agentSession: [] }] : [{ realmroot: [scope] }, { agentSession: [] }];
+  return { operationId, security, responses: { [status]: { description } } };
 }
 
 function openApiPathParameter(name: string) {
@@ -877,6 +881,12 @@ api.get("/api/openapi.json", (c) =>
           openIdConnectUrl: `${c.env.REALMROOT_ISSUER.replace(/\/$/, "")}/.well-known/openid-configuration`,
           "x-resource": resourceUrl(c.env, c.req.url),
           "x-token-type": "DPoP",
+        },
+        agentSession: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "agent+jwt",
+          description: "Short-lived Ed25519 AK Agent Session token issued for an active AK Agent runtime session.",
         },
       },
       schemas: {
@@ -901,66 +911,66 @@ api.get("/api/openapi.json", (c) =>
     security: [{ realmroot: [] }],
     paths: {
       "/tasks": {
-        get: openApiOperation("listTasks", "ak:read", "Tasks visible to the tenant"),
-        post: openApiOperation("createTask", "task:log", "Task created", "201"),
+        get: openApiOperation("listTasks", "ak:read", "Tasks visible to the tenant", "200", "either"),
+        post: openApiOperation("createTask", "task:log", "Task created", "201", "agent"),
       },
       "/tasks/{taskId}": {
         parameters: [openApiPathParameter("taskId")],
-        get: openApiOperation("getTask", "ak:read", "Task"),
-        patch: openApiOperation("updateTask", "task:log", "Task updated"),
-        delete: openApiOperation("deleteTask", "task:cancel", "Task deleted"),
+        get: openApiOperation("getTask", "ak:read", "Task", "200", "either"),
+        patch: openApiOperation("updateTask", "task:log", "Task updated", "200", "agent"),
+        delete: openApiOperation("deleteTask", "task:cancel", "Task deleted", "200", "agent"),
       },
-      "/tasks/{taskId}/claim": taskActionOpenApi("claimTask", "task:claim"),
-      "/tasks/{taskId}/assign": taskActionOpenApi("assignTask", "task:assign"),
-      "/tasks/{taskId}/release": taskActionOpenApi("releaseTask", "task:release"),
-      "/tasks/{taskId}/review": taskActionOpenApi("reviewTask", "task:review"),
-      "/tasks/{taskId}/complete": taskActionOpenApi("completeTask", "task:complete"),
-      "/tasks/{taskId}/reject": taskActionOpenApi("rejectTask", "task:reject"),
-      "/tasks/{taskId}/cancel": taskActionOpenApi("cancelTask", "task:cancel"),
+      "/tasks/{taskId}/claim": taskActionOpenApi("claimTask", "task:claim", "agent"),
+      "/tasks/{taskId}/assign": taskActionOpenApi("assignTask", "task:assign", "agent"),
+      "/tasks/{taskId}/release": taskActionOpenApi("releaseTask", "task:release", "either"),
+      "/tasks/{taskId}/review": taskActionOpenApi("reviewTask", "task:review", "agent"),
+      "/tasks/{taskId}/complete": taskActionOpenApi("completeTask", "task:complete", "either"),
+      "/tasks/{taskId}/reject": taskActionOpenApi("rejectTask", "task:reject", "either"),
+      "/tasks/{taskId}/cancel": taskActionOpenApi("cancelTask", "task:cancel", "either"),
       "/tasks/{taskId}/notes": {
         parameters: [openApiPathParameter("taskId")],
-        get: openApiOperation("listTaskNotes", "ak:read", "Task notes"),
-        post: openApiOperation("addTaskNote", "task:log", "Task note created", "201"),
+        get: openApiOperation("listTaskNotes", "ak:read", "Task notes", "200", "either"),
+        post: openApiOperation("addTaskNote", "task:log", "Task note created", "201", "agent"),
       },
       "/tasks/{taskId}/messages": {
         parameters: [openApiPathParameter("taskId")],
-        get: openApiOperation("listTaskMessages", "ak:read", "Task messages"),
-        post: openApiOperation("createTaskMessage", "task:message", "Task message created", "201"),
+        get: openApiOperation("listTaskMessages", "ak:read", "Task messages", "200", "either"),
+        post: openApiOperation("createTaskMessage", "task:message", "Task message created", "201", "either"),
       },
       "/tasks/{taskId}/session": {
         parameters: [openApiPathParameter("taskId")],
-        get: openApiOperation("getTaskSession", "ak:read", "Task runtime session"),
+        get: openApiOperation("getTaskSession", "ak:read", "Task runtime session", "200", "either"),
       },
       "/tasks/{taskId}/session/ws": {
         parameters: [openApiPathParameter("taskId")],
-        get: openApiOperation("getTaskSessionSocket", "ak:read", "Task runtime socket descriptor"),
+        get: openApiOperation("getTaskSessionSocket", "ak:read", "Task runtime socket descriptor", "200", "either"),
       },
       "/tasks/{taskId}/stream": {
         parameters: [openApiPathParameter("taskId")],
-        get: openApiOperation("streamTask", "ak:read", "Task Server-Sent Events stream"),
+        get: openApiOperation("streamTask", "ak:read", "Task Server-Sent Events stream", "200", "either"),
       },
-      "/sessions": { get: openApiOperation("listSessions", "ak:read", "Runtime sessions") },
+      "/sessions": { get: openApiOperation("listSessions", "ak:read", "Runtime sessions", "200", "either") },
       "/sessions/{sessionId}": {
         parameters: [openApiPathParameter("sessionId")],
-        get: openApiOperation("getSession", "ak:read", "Runtime session"),
+        get: openApiOperation("getSession", "ak:read", "Runtime session", "200", "either"),
       },
       "/sessions/{sessionId}/ws": {
         parameters: [openApiPathParameter("sessionId")],
-        get: openApiOperation("getSessionSocket", "ak:read", "Runtime socket descriptor"),
+        get: openApiOperation("getSessionSocket", "ak:read", "Runtime socket descriptor", "200", "either"),
       },
       "/agents": {
-        get: openApiOperation("listAgents", "ak:read", "Realmroot-bound Agents"),
-        post: openApiOperation("createAgent", "ak:write", "Realmroot-bound Agent created", "201"),
+        get: openApiOperation("listAgents", "ak:read", "AK-managed Agents", "200", "either"),
+        post: openApiOperation("createAgent", "ak:write", "AK-managed Agent created", "201", "either"),
       },
       "/agents/{agentId}": {
         parameters: [openApiPathParameter("agentId")],
-        get: openApiOperation("getAgent", "ak:read", "Realmroot-bound Agent"),
-        patch: openApiOperation("updateAgent", "ak:write", "Agent updated"),
-        delete: openApiOperation("deleteAgent", "ak:write", "Agent deleted"),
+        get: openApiOperation("getAgent", "ak:read", "AK-managed Agent", "200", "either"),
+        patch: openApiOperation("updateAgent", "ak:write", "Agent updated", "200", "either"),
+        delete: openApiOperation("deleteAgent", "ak:write", "Agent deleted", "200", "either"),
       },
       "/agents/{agentId}/sessions": {
         parameters: [openApiPathParameter("agentId")],
-        get: openApiOperation("listAgentSessions", "ak:read", "Agent sessions"),
+        get: openApiOperation("listAgentSessions", "ak:read", "Agent sessions", "200", "either"),
         post: {
           ...openApiOperation("createAgentSession", "ak:write", "Agent session created", "201"),
           parameters: [{ $ref: "#/components/parameters/AkMachineContext" }],
@@ -976,7 +986,7 @@ api.get("/api/openapi.json", (c) =>
       },
       "/agents/{agentId}/sessions/{sessionId}/usage": {
         parameters: [openApiPathParameter("agentId"), openApiPathParameter("sessionId")],
-        patch: openApiOperation("updateAgentSessionUsage", "agent:usage", "Agent usage updated"),
+        patch: openApiOperation("updateAgentSessionUsage", "agent:usage", "Agent usage updated", "200", "either"),
       },
       "/agents/{agentId}/inbox": {
         parameters: [openApiPathParameter("agentId")],
@@ -987,14 +997,14 @@ api.get("/api/openapi.json", (c) =>
         get: openApiOperation("getAgentInboxMessage", "ak:read", "Agent inbox message"),
       },
       "/subagents": {
-        get: openApiOperation("listSubagents", "ak:read", "Subagents"),
-        post: openApiOperation("createSubagent", "ak:write", "Subagent created", "201"),
+        get: openApiOperation("listSubagents", "ak:read", "Subagents", "200", "either"),
+        post: openApiOperation("createSubagent", "ak:write", "Subagent created", "201", "either"),
       },
       "/subagents/{subagentId}": {
         parameters: [openApiPathParameter("subagentId")],
-        get: openApiOperation("getSubagent", "ak:read", "Subagent"),
-        patch: openApiOperation("updateSubagent", "ak:write", "Subagent updated"),
-        delete: openApiOperation("deleteSubagent", "ak:write", "Subagent deleted"),
+        get: openApiOperation("getSubagent", "ak:read", "Subagent", "200", "either"),
+        patch: openApiOperation("updateSubagent", "ak:write", "Subagent updated", "200", "either"),
+        delete: openApiOperation("deleteSubagent", "ak:write", "Subagent deleted", "200", "either"),
       },
       "/machines": {
         get: openApiOperation("listMachines", "ak:read", "Machines"),
@@ -1015,70 +1025,70 @@ api.get("/api/openapi.json", (c) =>
         parameters: [openApiPathParameter("sessionId")],
         get: openApiOperation("proxyAmaSessionSocket", "ak:read", "Authenticated AMA WebSocket proxy"),
       },
-      "/models": { get: openApiOperation("listModels", "ak:read", "Runtime models") },
+      "/models": { get: openApiOperation("listModels", "ak:read", "Runtime models", "200", "either") },
       "/boards": {
-        get: openApiOperation("listBoards", "ak:read", "Boards"),
-        post: openApiOperation("createBoard", "ak:write", "Board created", "201"),
+        get: openApiOperation("listBoards", "ak:read", "Boards", "200", "either"),
+        post: openApiOperation("createBoard", "ak:write", "Board created", "201", "either"),
       },
       "/boards/{boardId}": {
         parameters: [openApiPathParameter("boardId")],
-        get: openApiOperation("getBoard", "ak:read", "Board"),
-        patch: openApiOperation("updateBoard", "ak:write", "Board updated"),
-        delete: openApiOperation("deleteBoard", "ak:write", "Board deleted"),
+        get: openApiOperation("getBoard", "ak:read", "Board", "200", "either"),
+        patch: openApiOperation("updateBoard", "ak:write", "Board updated", "200", "either"),
+        delete: openApiOperation("deleteBoard", "ak:write", "Board deleted", "200", "either"),
       },
       "/boards/{boardId}/labels": {
         parameters: [openApiPathParameter("boardId")],
-        post: openApiOperation("createBoardLabel", "ak:write", "Board label created", "201"),
+        post: openApiOperation("createBoardLabel", "ak:write", "Board label created", "201", "either"),
       },
       "/boards/{boardId}/labels/{labelName}": {
         parameters: [openApiPathParameter("boardId"), openApiPathParameter("labelName")],
-        patch: openApiOperation("updateBoardLabel", "ak:write", "Board label updated"),
-        delete: openApiOperation("deleteBoardLabel", "ak:write", "Board label deleted"),
+        patch: openApiOperation("updateBoardLabel", "ak:write", "Board label updated", "200", "either"),
+        delete: openApiOperation("deleteBoardLabel", "ak:write", "Board label deleted", "200", "either"),
       },
       "/boards/{boardId}/maintainers": {
         parameters: [openApiPathParameter("boardId")],
-        get: openApiOperation("listBoardMaintainers", "ak:read", "Board maintainers"),
-        post: openApiOperation("createBoardMaintainer", "ak:write", "Board maintainer created", "201"),
+        get: openApiOperation("listBoardMaintainers", "ak:read", "Board maintainers", "200", "either"),
+        post: openApiOperation("createBoardMaintainer", "ak:write", "Board maintainer created", "201", "either"),
       },
       "/boards/{boardId}/maintainers/{maintainerId}": {
         parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
-        get: openApiOperation("getBoardMaintainer", "ak:read", "Board maintainer"),
-        patch: openApiOperation("updateBoardMaintainer", "ak:write", "Board maintainer updated"),
-        delete: openApiOperation("deleteBoardMaintainer", "ak:write", "Board maintainer deleted"),
+        get: openApiOperation("getBoardMaintainer", "ak:read", "Board maintainer", "200", "either"),
+        patch: openApiOperation("updateBoardMaintainer", "ak:write", "Board maintainer updated", "200", "either"),
+        delete: openApiOperation("deleteBoardMaintainer", "ak:write", "Board maintainer deleted", "200", "either"),
       },
       "/boards/{boardId}/maintainers/{maintainerId}/runs": {
         parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
-        get: openApiOperation("listBoardMaintainerRuns", "ak:read", "Board maintainer runs"),
+        get: openApiOperation("listBoardMaintainerRuns", "ak:read", "Board maintainer runs", "200", "either"),
       },
       "/boards/{boardId}/maintainers/{maintainerId}/variables": {
         parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
-        get: openApiOperation("listMaintainerVariables", "ak:read", "Maintainer variables"),
-        put: openApiOperation("replaceMaintainerVariables", "ak:write", "Maintainer variables replaced"),
+        get: openApiOperation("listMaintainerVariables", "ak:read", "Maintainer variables", "200", "either"),
+        put: openApiOperation("replaceMaintainerVariables", "ak:write", "Maintainer variables replaced", "200", "either"),
       },
       "/boards/{boardId}/maintainers/{maintainerId}/sessions": {
         parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
-        post: openApiOperation("createMaintainerSession", "ak:write", "Maintainer session created", "201"),
+        post: openApiOperation("createMaintainerSession", "ak:write", "Maintainer session created", "201", "agent"),
       },
       "/boards/{boardId}/maintainers/{maintainerId}/memories": {
         parameters: [openApiPathParameter("boardId"), openApiPathParameter("maintainerId")],
-        get: openApiOperation("listMaintainerMemories", "ak:read", "Maintainer memories"),
+        get: openApiOperation("listMaintainerMemories", "ak:read", "Maintainer memories", "200", "either"),
       },
       "/boards/{boardId}/stream": {
         parameters: [openApiPathParameter("boardId")],
-        get: openApiOperation("streamBoard", "ak:read", "Board Server-Sent Events stream"),
+        get: openApiOperation("streamBoard", "ak:read", "Board Server-Sent Events stream", "200", "either"),
       },
       "/repositories": {
-        get: openApiOperation("listRepositories", "ak:read", "Repositories"),
-        post: openApiOperation("createRepository", "ak:write", "Repository created", "201"),
+        get: openApiOperation("listRepositories", "ak:read", "Repositories", "200", "either"),
+        post: openApiOperation("createRepository", "ak:write", "Repository created", "201", "either"),
       },
       "/repositories/{repositoryId}": {
         parameters: [openApiPathParameter("repositoryId")],
-        get: openApiOperation("getRepository", "ak:read", "Repository"),
-        delete: openApiOperation("deleteRepository", "ak:write", "Repository deleted"),
+        get: openApiOperation("getRepository", "ak:read", "Repository", "200", "either"),
+        delete: openApiOperation("deleteRepository", "ak:write", "Repository deleted", "200", "either"),
       },
       "/repositories/{repositoryId}/github-token": {
         parameters: [openApiPathParameter("repositoryId")],
-        post: openApiOperation("createRepositoryGithubToken", "ak:write", "Short-lived GitHub App token created"),
+        post: openApiOperation("createRepositoryGithubToken", "ak:read", "Short-lived GitHub App token created", "200", "either"),
       },
       "/github-app/config": { get: openApiOperation("getGithubAppConfig", "ak:read", "GitHub App configuration") },
       "/github-app/setup": { get: openApiOperation("completeGithubAppSetup", "ak:read", "GitHub App installation setup") },
@@ -1485,8 +1495,6 @@ api.post("/api/agents", async (c) => {
     skills?: string[];
     subagents?: string[];
     taints?: AgentTaint[];
-    realmroot_agent_id?: string;
-    realmroot_credential_ref?: string;
   }>();
   assertJsonObject(body, "agent");
   if (!body.username) throw new HTTPException(400, { message: "username is required" });
@@ -1505,12 +1513,6 @@ api.post("/api/agents", async (c) => {
   assertSubagentRuntime(body.runtime, body.subagents);
   const ownerId = c.get("ownerId");
   const isWorker = (body.kind ?? "worker") === "worker";
-  if (!body.realmroot_agent_id?.trim() || body.realmroot_agent_id.length > 160) {
-    throw new HTTPException(400, { message: "realmroot_agent_id is required and must be at most 160 characters" });
-  }
-  if (isWorker && isAmaTaskDispatchConfigured(c.env) && !/^ama:\/\/vaults\/[^/]+\/credentials\/[^/]+$/.test(body.realmroot_credential_ref ?? "")) {
-    throw new HTTPException(400, { message: "realmroot_credential_ref must reference an active AMA Vault credential" });
-  }
 
   const existingUsername = await c.env.DB.prepare("SELECT owner_id FROM agents WHERE username = ? LIMIT 1")
     .bind(body.username)
@@ -1520,7 +1522,7 @@ api.post("/api/agents", async (c) => {
   }
   const latestIdentity = existingUsername
     ? await c.env.DB.prepare(
-        "SELECT id, kind, public_key, private_key, fingerprint, realmroot_agent_id, realmroot_credential_ref FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
+        "SELECT id, kind, public_key, private_key, fingerprint FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
       )
         .bind(body.username, ownerId)
         .first<{
@@ -1529,8 +1531,6 @@ api.post("/api/agents", async (c) => {
           public_key: string;
           private_key: string;
           fingerprint: string;
-          realmroot_agent_id: string | null;
-          realmroot_credential_ref: string | null;
         }>()
     : null;
   if (latestIdentity?.kind === "leader") {
@@ -1539,14 +1539,6 @@ api.post("/api/agents", async (c) => {
   if (latestIdentity && latestIdentity.kind !== (body.kind ?? "worker")) {
     throw new HTTPException(409, { message: "Agent kind cannot be changed" });
   }
-  if (
-    latestIdentity &&
-    (latestIdentity.realmroot_agent_id !== body.realmroot_agent_id.trim() ||
-      latestIdentity.realmroot_credential_ref !== (body.realmroot_credential_ref ?? null))
-  ) {
-    throw new HTTPException(409, { message: "Realmroot Agent bindings are immutable; create a new Agent identity instead" });
-  }
-
   // Worker agents are dispatch targets and need a backing AMA agent. Leaders
   // only authenticate/review inside AK, so they do not mirror to AMA.
   if (isWorker) await requireAmaConnected(c.env.DB, c.env, ownerId);
@@ -1614,9 +1606,6 @@ api.patch("/api/agents/:id", async (c) => {
   const body = await c.req.json();
   assertJsonObject(body, "agent update");
   const updates = body as Partial<CreateAgentInput>;
-  if (updates.realmroot_agent_id !== undefined || updates.realmroot_credential_ref !== undefined) {
-    throw new HTTPException(400, { message: "Realmroot Agent bindings are immutable; create a new Agent identity instead" });
-  }
   assertValidAgentRole(updates.role);
   assertValidHandoffRoles(updates.handoff_to);
   assertValidAgentRuntime(updates.runtime, existing.kind);
@@ -1734,16 +1723,25 @@ async function assertOwnedAgentSession(c: Context<{ Bindings: Env }>): Promise<v
     `SELECT s.id, s.machine_id
      FROM agent_sessions s
      JOIN agents a ON a.id = s.agent_id
-     WHERE s.id = ? AND s.agent_id = ? AND a.owner_id = ? AND a.version = 'latest'`,
+     WHERE s.id = ? AND s.agent_id = ? AND a.owner_id = ? AND a.version = 'latest'
+     UNION ALL
+     SELECT s.id, NULL AS machine_id
+     FROM ama_agent_sessions s
+     JOIN agents a ON a.id = s.agent_id AND a.owner_id = s.owner_id
+     WHERE s.id = ? AND s.agent_id = ? AND s.owner_id = ? AND a.version = 'latest'
+     LIMIT 1`,
   )
-    .bind(c.req.param("sessionId"), c.req.param("agentId"), c.get("ownerId"))
-    .first<{ id: string; machine_id: string }>();
+    .bind(c.req.param("sessionId"), c.req.param("agentId"), c.get("ownerId"), c.req.param("sessionId"), c.req.param("agentId"), c.get("ownerId"))
+    .first<{ id: string; machine_id: string | null }>();
   if (!session) throw new HTTPException(404, { message: "Agent session not found" });
   const principal = c.get("principal");
+  if (principal.type === "agent" && (c.get("agentId") !== c.req.param("agentId") || c.get("sessionId") !== c.req.param("sessionId"))) {
+    throw new HTTPException(403, { message: "Agent authority is bound to a different Session" });
+  }
   if (principal.type === "machine" && c.get("machineId") !== session.machine_id) {
     throw new HTTPException(403, { message: "Realmroot machine authority is bound to a different session machine" });
   }
-  if (principal.type === "human") await assertNativeMachineBinding(c, session.machine_id);
+  if (principal.type === "human" && session.machine_id) await assertNativeMachineBinding(c, session.machine_id);
 }
 
 async function assertNativeMachineBinding(c: Context<{ Bindings: Env }>, machineId: string): Promise<void> {
@@ -1826,7 +1824,7 @@ api.patch("/api/agents/:agentId/sessions/:sessionId/usage", async (c) => {
   await assertOwnedAgentSession(c);
   const boundAgentId = c.get("agentId");
   if (boundAgentId && boundAgentId !== c.req.param("agentId")) {
-    throw new HTTPException(403, { message: "Realmroot Agent authority is bound to a different AK Agent" });
+    throw new HTTPException(403, { message: "AK Agent Session is bound to a different Agent" });
   }
   const body = await c.req.json();
   await updateSessionUsage(c.env.DB, c.req.param("sessionId"), body);
@@ -2512,7 +2510,7 @@ api.post("/api/boards/:id/maintainers/:maintainerId/sessions", async (c) => {
   if (!maintainer || maintainer.status === "archived") throw new HTTPException(404, { message: "Board maintainer not found" });
   if (maintainer.status !== "active") throw new HTTPException(409, { message: "Board maintainer is not active" });
   if (c.get("identityType") === "agent:leader" && c.get("agentId") !== maintainer.agent_id) {
-    throw new HTTPException(403, { message: "Realmroot Agent is bound to a different maintainer" });
+    throw new HTTPException(403, { message: "AK Agent Session is bound to a different maintainer" });
   }
 
   const result = await createAmaAgentSession(c.env.DB, c.env, {

@@ -75,10 +75,10 @@ ak start                    # Start an authenticated AK machine runtime
 Base URL: `https://agent-kanban.dev/api`
 
 ### Authentication
-Realmroot Native identities:
+Authentication authorities:
 - **Human:** Realmroot Web login or Native CLI token; the browser uses an AK Session Cookie.
 - **Machine:** Realmroot Native token obtained by Device Authorization and bound with DPoP.
-- **Agent:** Realmroot Agent actor token obtained by Realmroot Toolbox and bound with DPoP.
+- **Agent:** AK-managed Ed25519 Session token (`agent+jwt`) injected into the runtime when AK dispatches it.
 - **Service:** Realmroot service authority for explicitly allowed integrations.
 
 The canonical Resource is `https://agent-kanban.dev/api`. Static API keys and Bearer fallback are not supported.

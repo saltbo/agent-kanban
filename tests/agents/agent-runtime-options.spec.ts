@@ -30,8 +30,6 @@ test.describe("Agent runtime options", () => {
           username: `opencode-leader-${Date.now()}`,
           kind: "leader",
           runtime: "opencode",
-          realmroot_agent_id: `rr-agent-leader-${Date.now()}`,
-          realmroot_credential_ref: `ama://vaults/e2e/credentials/leader-${Date.now()}`,
         }),
       });
       if (!response.ok) throw new Error(`Failed to create leader: ${response.status} ${await response.text()}`);
@@ -51,8 +49,6 @@ test.describe("Agent runtime options", () => {
           username: `claude-worker-${Date.now()}`,
           kind: "leader",
           runtime: "pi",
-          realmroot_agent_id: `rr-agent-worker-${Date.now()}`,
-          realmroot_credential_ref: `ama://vaults/e2e/credentials/worker-${Date.now()}`,
         }),
       });
       if (!response.ok) throw new Error(`Failed to seed worker identity: ${response.status} ${await response.text()}`);

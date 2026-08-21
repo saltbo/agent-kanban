@@ -45,7 +45,7 @@ export function registerAuthCommand(program: Command) {
     .action(async () => {
       const agent = await AgentClient.fromEnv();
       if (agent) {
-        console.log("Type:        Realmroot Agent");
+        console.log("Type:        AK Agent Session");
         console.log(`Agent ID:    ${agent.getAgentId()}`);
         if (agent.getSessionId()) console.log(`Session ID:  ${agent.getSessionId()}`);
         return;

@@ -5,11 +5,6 @@ import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, createTestEnv, seedUser, setupMiniflare } from "./helpers/db";
 
-vi.mock("../apps/web/server/realmrootMachineAuth", () => ({
-  createAmaMachineAuthorizer: () => async () => ({ accessToken: "test.jwt.token", dpopProof: "test-dpop-proof" }),
-  invalidateAmaMachineToken: vi.fn(),
-}));
-
 let db: D1Database;
 let mf: Miniflare;
 
@@ -18,10 +13,7 @@ function env() {
     ...createTestEnv(),
     DB: db,
     AMA_ORIGIN: "https://ama.test",
-    AMA_MACHINE_CLIENT_ID: "ak-app",
-    AMA_MACHINE_CLIENT_SECRET: "ak-secret",
-    AMA_MACHINE_SCOPES: "ama:read ama:write",
-    AMA_DPOP_PRIVATE_JWK: "{}",
+    AMA_RESOURCE: "https://ama.test/api",
   } as any;
 }
 

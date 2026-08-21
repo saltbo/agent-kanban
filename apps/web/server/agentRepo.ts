@@ -161,8 +161,6 @@ export async function prepareAgent(
     fingerprint,
     builtin: builtin ? 1 : 0,
     ama_agent_id: amaAgentId,
-    realmroot_agent_id: input.realmroot_agent_id ?? null,
-    realmroot_credential_ref: input.realmroot_credential_ref ?? null,
     metadata: {},
     created_at: now,
     updated_at: now,
@@ -178,8 +176,8 @@ export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailb
   const metadataJson = JSON.stringify(agent.metadata ?? {});
   await db
     .prepare(`
-    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, ama_agent_id, realmroot_agent_id, realmroot_credential_ref, metadata, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, ama_agent_id, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       agent.id,
@@ -203,8 +201,6 @@ export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailb
       agent.builtin,
       extras?.mailboxToken ?? null,
       agent.ama_agent_id ?? null,
-      agent.realmroot_agent_id,
-      agent.realmroot_credential_ref,
       metadataJson,
       agent.created_at,
       agent.updated_at,
@@ -242,7 +238,7 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
     )
     SELECT a.id, a.owner_id, a.name, a.username, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents, a.taints,
       a.version,
-      a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.realmroot_agent_id, a.realmroot_credential_ref, a.metadata, a.created_at, a.updated_at,
+      a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
         SELECT 1 FROM machines m, json_each(m.runtimes) rt
         WHERE m.owner_id = a.owner_id
@@ -323,7 +319,7 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
       .prepare(`
     SELECT a.id, a.owner_id, a.name, a.username, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents, a.taints,
       a.version,
-      a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.realmroot_agent_id, a.realmroot_credential_ref, a.metadata, a.created_at, a.updated_at,
+      a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
         SELECT 1 FROM machines m, json_each(m.runtimes) rt
         WHERE m.owner_id = a.owner_id
@@ -426,7 +422,7 @@ function jsonOrNull(value: unknown | null): string | null {
 async function getLatestAgentSnapshot(db: D1, username: string, ownerId: string): Promise<AgentSnapshot | null> {
   const row = await db
     .prepare(
-      "SELECT id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, ama_agent_id, realmroot_agent_id, realmroot_credential_ref, metadata, created_at, updated_at FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
+      "SELECT id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, ama_agent_id, metadata, created_at, updated_at FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
     )
     .bind(username, ownerId)
     .first<Agent & { private_key: string; mailbox_token: string | null }>();
@@ -450,8 +446,8 @@ async function insertAgentSnapshot(db: D1, source: AgentSnapshot, version: strin
   const snapshotId = crypto.randomUUID();
   await db
     .prepare(`
-      INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, ama_agent_id, realmroot_agent_id, realmroot_credential_ref, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, ama_agent_id, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .bind(
       snapshotId,
@@ -475,8 +471,6 @@ async function insertAgentSnapshot(db: D1, source: AgentSnapshot, version: strin
       source.builtin,
       source.mailbox_token ?? null,
       source.ama_agent_id ?? null,
-      source.realmroot_agent_id ?? null,
-      source.realmroot_credential_ref ?? null,
       JSON.stringify(source.metadata ?? {}),
       now,
       now,

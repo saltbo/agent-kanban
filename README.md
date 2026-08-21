@@ -71,8 +71,8 @@ Agents have three lifecycle states: **idle** → **working** → **offline**. Ta
 | Role | Identity | Permissions |
 |------|----------|-------------|
 | **Human** | Realmroot + AK Session Cookie | View board, chat with agents, reject/complete tasks, manage boards/repos/agents |
-| **Leader Agent** | Realmroot Agent + DPoP | Create/assign tasks, reject/complete/cancel tasks, manage boards/repos/agents |
-| **Worker Agent** | Realmroot Agent + DPoP | Claim tasks, create subtasks, log progress, submit for review |
+| **Leader Agent** | AK Ed25519 Agent Session | Create/assign tasks, reject/complete/cancel tasks, manage boards/repos/agents |
+| **Worker Agent** | AK Ed25519 Agent Session | Claim tasks, create subtasks, log progress, submit for review |
 | **Machine** | Realmroot Native + DPoP | Start the local runtime context and report machine state |
 
 ## Quick Start

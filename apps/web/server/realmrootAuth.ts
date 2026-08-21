@@ -13,6 +13,8 @@ const DISCOVERY_CACHE_MS = 10 * 60 * 1000;
 const discoveryCache = new Map<string, { metadata: OidcMetadata; expiresAt: number }>();
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const logger = createLogger("realmroot-auth");
+const AMA_TOKEN_REFRESH_WINDOW_MS = 60_000;
+const amaGrantRefreshes = new Map<string, { force: boolean; promise: Promise<string> }>();
 
 export const AK_SCOPES = [
   "ak:read",
@@ -29,12 +31,33 @@ export const AK_SCOPES = [
   "agent:usage",
 ] as const;
 
+export const AMA_SCOPES = [
+  "agents:read",
+  "agents:write",
+  "environments:read",
+  "environments:write",
+  "memory-stores:read",
+  "memory-stores:write",
+  "projects:read",
+  "projects:write",
+  "providers:read",
+  "runners:read",
+  "sessions:read",
+  "sessions:write",
+  "triggers:read",
+  "triggers:write",
+  "usage-records:read",
+  "vaults:read",
+  "vaults:write",
+] as const;
+
 type OidcMetadata = {
   issuer: string;
   authorization_endpoint: string;
   token_endpoint: string;
   jwks_uri: string;
   end_session_endpoint?: string;
+  revocation_endpoint?: string;
   id_token_signing_alg_values_supported?: string[];
 };
 
@@ -50,13 +73,29 @@ type StoredSession = {
   expires_at: string;
 };
 
+type TokenResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  id_token?: string;
+};
+
+type StoredAmaGrant = {
+  tenant_id: string;
+  subject_id: string;
+  refresh_token_ciphertext: string;
+  refresh_token_nonce: string;
+  access_token_ciphertext: string;
+  access_token_nonce: string;
+  access_token_expires_at: string;
+};
+
 export type RealmrootPrincipal = {
   source: "session" | "token";
   type: "human" | "machine" | "agent" | "service";
   subjectId: string;
   tenantId: string;
   clientId?: string;
-  realmrootAgentId?: string;
   scopes: string[];
 };
 
@@ -84,12 +123,13 @@ export async function beginRealmrootLogin(c: Context<{ Bindings: Env }>): Promis
   authorizationUrl.searchParams.set("client_id", required(c.env.REALMROOT_WEB_CLIENT_ID, "REALMROOT_WEB_CLIENT_ID"));
   authorizationUrl.searchParams.set("redirect_uri", callbackUrl);
   authorizationUrl.searchParams.set("response_type", "code");
-  authorizationUrl.searchParams.set("scope", "openid profile email");
+  authorizationUrl.searchParams.set("scope", ["openid", "profile", "email", "offline_access", "ak:read", "ak:write", ...AMA_SCOPES].join(" "));
   authorizationUrl.searchParams.set("state", state);
   authorizationUrl.searchParams.set("nonce", nonce);
   authorizationUrl.searchParams.set("code_challenge", challenge);
   authorizationUrl.searchParams.set("code_challenge_method", "S256");
-  authorizationUrl.searchParams.set("resource", resourceUrl(c.env, c.req.url));
+  authorizationUrl.searchParams.append("resource", resourceUrl(c.env, c.req.url));
+  authorizationUrl.searchParams.append("resource", required(c.env.AMA_RESOURCE, "AMA_RESOURCE"));
 
   return new Response(null, {
     status: 302,
@@ -137,8 +177,8 @@ export async function finishRealmrootLogin(c: Context<{ Bindings: Env }>): Promi
       resource: resourceUrl(c.env, c.req.url),
     }),
   });
-  const tokenBody = (await tokenResponse.json().catch(() => null)) as { id_token?: string } | null;
-  if (!tokenResponse.ok || !tokenBody?.id_token) return authFailure("Realmroot token exchange failed");
+  const tokenBody = (await tokenResponse.json().catch(() => null)) as TokenResponse | null;
+  if (!tokenResponse.ok || !tokenBody?.id_token || !tokenBody.refresh_token) return authFailure("Realmroot token exchange failed");
 
   const claims = await verifyJwt(tokenBody.id_token, metadata, c.env.REALMROOT_WEB_CLIENT_ID, "JWT");
   if (claims.nonce !== attempt.nonce || typeof claims.sub !== "string") return authFailure("Invalid Realmroot ID token");
@@ -165,6 +205,36 @@ export async function finishRealmrootLogin(c: Context<{ Bindings: Env }>): Promi
          updated_at = ?`,
     ).bind(tenantId, claims.sub, email, name, role, now),
   ]);
+
+  const amaTokens = await exchangeRefreshToken(c.env, metadata, tokenBody.refresh_token, required(c.env.AMA_RESOURCE, "AMA_RESOURCE")).catch(
+    () => null,
+  );
+  if (!amaTokens?.access_token || !amaTokens.refresh_token) return authFailure("Realmroot AMA grant exchange failed");
+  const encryptedRefresh = await encryptSecret(c.env, amaTokens.refresh_token);
+  const encryptedAccess = await encryptSecret(c.env, amaTokens.access_token);
+  const accessExpiresAt = new Date(Date.now() + Math.max(1, amaTokens.expires_in ?? 300) * 1000).toISOString();
+  await c.env.DB.prepare(
+    `INSERT INTO realmroot_user_ama_grants
+       (tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce, access_token_ciphertext, access_token_nonce, access_token_expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(tenant_id, subject_id) DO UPDATE SET
+       refresh_token_ciphertext = excluded.refresh_token_ciphertext,
+       refresh_token_nonce = excluded.refresh_token_nonce,
+       access_token_ciphertext = excluded.access_token_ciphertext,
+       access_token_nonce = excluded.access_token_nonce,
+       access_token_expires_at = excluded.access_token_expires_at,
+       updated_at = datetime('now')`,
+  )
+    .bind(
+      tenantId,
+      claims.sub,
+      encryptedRefresh.ciphertext,
+      encryptedRefresh.nonce,
+      encryptedAccess.ciphertext,
+      encryptedAccess.nonce,
+      accessExpiresAt,
+    )
+    .run();
 
   const sessionToken = randomToken(48);
   const sessionId = crypto.randomUUID();
@@ -198,15 +268,20 @@ export async function endRealmrootWebSession(c: Context<{ Bindings: Env }>): Pro
   if (!csrf || !(await constantTimeEqual(csrf, stored.csrf_token))) {
     return c.json({ error: { code: "CSRF_INVALID", message: "Invalid CSRF token" } }, 403);
   }
-  await c.env.DB.prepare("DELETE FROM realmroot_web_sessions WHERE id = ?").bind(stored.id).run();
+  const grant = await findAmaGrant(c.env.DB, stored.tenant_id, stored.subject_id);
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM realmroot_web_sessions WHERE id = ?").bind(stored.id),
+    c.env.DB.prepare("DELETE FROM realmroot_user_ama_grants WHERE tenant_id = ? AND subject_id = ?").bind(stored.tenant_id, stored.subject_id),
+  ]);
 
-  // AK deliberately never requests or stores a refresh token, so there is no
-  // server-held grant to revoke. Complete RP-initiated logout when Realmroot
-  // advertises it, after the local session has been irreversibly destroyed.
   const metadata = await discover(c.env.REALMROOT_ISSUER).catch((error) => {
     logger.warn(`Realmroot logout discovery failed after local session deletion: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   });
+  if (grant && metadata?.revocation_endpoint) {
+    const refreshToken = await decryptSecret(c.env, grant.refresh_token_ciphertext, grant.refresh_token_nonce).catch(() => null);
+    if (refreshToken) await revokeRefreshToken(c.env, metadata.revocation_endpoint, refreshToken);
+  }
   const logoutUrl = metadata?.end_session_endpoint ? new URL(metadata.end_session_endpoint) : null;
   if (logoutUrl) {
     logoutUrl.searchParams.set("client_id", required(c.env.REALMROOT_WEB_CLIENT_ID, "REALMROOT_WEB_CLIENT_ID"));
@@ -270,7 +345,6 @@ export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>):
     subjectId,
     tenantId: tenantFromClaims(claims),
     ...(clientId ? { clientId } : {}),
-    ...(realmrootAgentId ? { realmrootAgentId } : {}),
     scopes: stringList(claims.scope),
   };
 
@@ -318,6 +392,156 @@ async function rememberDpopProof(db: D1Database, thumbprint: string, proof: stri
     if (String(error).includes("UNIQUE") || String(error).includes("PRIMARY KEY")) throw new AuthError("Replayed DPoP proof");
     throw error;
   }
+}
+
+export class AmaUserGrantRequired extends Error {
+  readonly status = 401;
+  readonly code = "AMA_USER_GRANT_REQUIRED";
+
+  constructor(message = "Sign in again to authorize Agent Kanban to use AMA.") {
+    super(message);
+    this.name = "AmaUserGrantRequired";
+  }
+}
+
+export async function amaBearerToken(env: Env, tenantId: string, forceRefresh = false): Promise<string> {
+  const pending = amaGrantRefreshes.get(tenantId);
+  if (pending) {
+    if (!forceRefresh || pending.force) return pending.promise;
+    try {
+      await pending.promise;
+    } catch {
+      // A forced refresh must still run after a failed non-forced lookup.
+    }
+    return amaBearerToken(env, tenantId, true);
+  }
+  const refresh = refreshAmaBearerToken(env, tenantId, forceRefresh);
+  const entry = { force: forceRefresh, promise: refresh };
+  amaGrantRefreshes.set(tenantId, entry);
+  try {
+    return await refresh;
+  } finally {
+    if (amaGrantRefreshes.get(tenantId) === entry) amaGrantRefreshes.delete(tenantId);
+  }
+}
+
+async function refreshAmaBearerToken(env: Env, tenantId: string, forceRefresh: boolean): Promise<string> {
+  let grant = await findAmaGrant(env.DB, tenantId);
+  if (!grant) throw new AmaUserGrantRequired();
+  if (!forceRefresh && Date.parse(grant.access_token_expires_at) - AMA_TOKEN_REFRESH_WINDOW_MS > Date.now()) {
+    return decryptSecret(env, grant.access_token_ciphertext, grant.access_token_nonce);
+  }
+
+  const metadata = await discover(env.REALMROOT_ISSUER);
+  const refreshToken = await decryptSecret(env, grant.refresh_token_ciphertext, grant.refresh_token_nonce);
+  const tokens = await exchangeRefreshToken(env, metadata, refreshToken, required(env.AMA_RESOURCE, "AMA_RESOURCE")).catch(async (error) => {
+    const current = await findAmaGrant(env.DB, tenantId);
+    if (current && current.refresh_token_ciphertext !== grant?.refresh_token_ciphertext) {
+      return {
+        access_token: await decryptSecret(env, current.access_token_ciphertext, current.access_token_nonce),
+        refresh_token: await decryptSecret(env, current.refresh_token_ciphertext, current.refresh_token_nonce),
+        expires_in: Math.max(1, Math.floor((Date.parse(current.access_token_expires_at) - Date.now()) / 1000)),
+      } satisfies TokenResponse;
+    }
+    throw error;
+  });
+  if (!tokens.access_token || !tokens.refresh_token) throw new AmaUserGrantRequired("Realmroot did not return an AMA access grant.");
+  const encryptedRefresh = await encryptSecret(env, tokens.refresh_token);
+  const encryptedAccess = await encryptSecret(env, tokens.access_token);
+  const expiresAt = new Date(Date.now() + Math.max(1, tokens.expires_in ?? 300) * 1000).toISOString();
+  const updated = await env.DB.prepare(
+    `UPDATE realmroot_user_ama_grants SET
+       refresh_token_ciphertext = ?, refresh_token_nonce = ?,
+       access_token_ciphertext = ?, access_token_nonce = ?, access_token_expires_at = ?, updated_at = datetime('now')
+     WHERE tenant_id = ? AND subject_id = ? AND refresh_token_ciphertext = ?`,
+  )
+    .bind(
+      encryptedRefresh.ciphertext,
+      encryptedRefresh.nonce,
+      encryptedAccess.ciphertext,
+      encryptedAccess.nonce,
+      expiresAt,
+      grant.tenant_id,
+      grant.subject_id,
+      grant.refresh_token_ciphertext,
+    )
+    .run();
+  if ((updated.meta.changes ?? 0) === 0) {
+    grant = await findAmaGrant(env.DB, tenantId);
+    if (!grant) throw new AmaUserGrantRequired();
+    return decryptSecret(env, grant.access_token_ciphertext, grant.access_token_nonce);
+  }
+  return tokens.access_token;
+}
+
+async function findAmaGrant(db: D1Database, tenantId: string, subjectId?: string): Promise<StoredAmaGrant | null> {
+  const suffix = subjectId ? "AND subject_id = ?" : "";
+  const statement = db.prepare(
+    `SELECT tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce,
+            access_token_ciphertext, access_token_nonce, access_token_expires_at
+     FROM realmroot_user_ama_grants WHERE tenant_id = ? ${suffix}
+     ORDER BY updated_at DESC LIMIT 1`,
+  );
+  return (subjectId ? statement.bind(tenantId, subjectId) : statement.bind(tenantId)).first<StoredAmaGrant>();
+}
+
+async function exchangeRefreshToken(env: Env, metadata: OidcMetadata, refreshToken: string, resource: string): Promise<TokenResponse> {
+  const response = await fetch(metadata.token_endpoint, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      authorization: basicClientAuthorization(env),
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, resource }),
+  });
+  const body = (await response.json().catch(() => null)) as TokenResponse | null;
+  if (!response.ok || !body) throw new AmaUserGrantRequired("Realmroot AMA grant refresh failed.");
+  return body;
+}
+
+async function revokeRefreshToken(env: Env, endpoint: string, token: string): Promise<void> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { authorization: basicClientAuthorization(env), "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token, token_type_hint: "refresh_token" }),
+  }).catch((error) => {
+    logger.warn(`Realmroot refresh-token revocation failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  });
+  if (response && !response.ok) logger.warn(`Realmroot refresh-token revocation failed with HTTP ${response.status}`);
+}
+
+function basicClientAuthorization(env: Env): string {
+  return `Basic ${btoa(`${required(env.REALMROOT_WEB_CLIENT_ID, "REALMROOT_WEB_CLIENT_ID")}:${required(env.REALMROOT_WEB_CLIENT_SECRET, "REALMROOT_WEB_CLIENT_SECRET")}`)}`;
+}
+
+async function encryptionKey(env: Env): Promise<CryptoKey> {
+  const encoded = required(env.REALMROOT_SESSION_ENCRYPTION_KEY, "REALMROOT_SESSION_ENCRYPTION_KEY");
+  const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+  if (bytes.byteLength !== 32) throw new Error("REALMROOT_SESSION_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
+  return crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+async function encryptSecret(env: Env, value: string): Promise<{ ciphertext: string; nonce: string }> {
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, await encryptionKey(env), new TextEncoder().encode(value));
+  return { ciphertext: base64Url(new Uint8Array(ciphertext)), nonce: base64Url(nonce) };
+}
+
+async function decryptSecret(env: Env, ciphertext: string, nonce: string): Promise<string> {
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromBase64Url(nonce).buffer as ArrayBuffer },
+    await encryptionKey(env),
+    fromBase64Url(ciphertext).buffer as ArrayBuffer,
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+function fromBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
 }
 
 async function findWebSession(c: Context<{ Bindings: Env }>): Promise<StoredSession | null> {

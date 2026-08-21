@@ -92,8 +92,6 @@ export const api = {
       runtime: AgentRuntime;
       model?: string;
       skills?: string[];
-      realmroot_agent_id: string;
-      realmroot_credential_ref: string;
     }) => request<any>("POST", "/agents", input),
     update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/agents/${id}`, body),
     delete: (id: string) => request<void>("DELETE", `/agents/${id}`),

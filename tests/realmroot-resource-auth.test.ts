@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "../apps/web/node_modules/hono/dist/index.js";
@@ -29,309 +29,165 @@ function env(): Env {
   return { ...createTestEnv(), DB: db, AK_RESOURCE: resource, REALMROOT_CLI_CLIENT_ID: "ak-cli" } as never;
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 describe("Realmroot Resource Server authorization", () => {
   it("denies a valid human session when no route authorization rule exists", async () => {
-    await db.prepare("INSERT INTO realmroot_tenants (id) VALUES ('tenant-human')").run();
-    await db
-      .prepare(
-        `INSERT INTO realmroot_web_sessions
-          (id, token_hash, tenant_id, subject_id, email, name, role, csrf_token, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        "session-human",
-        await sha256Hex("human-session-token"),
-        "tenant-human",
-        "human-1",
-        "human@example.test",
-        "Human",
-        "member",
-        "csrf-token",
-        new Date(Date.now() + 60_000).toISOString(),
-      )
-      .run();
+    await seedUser(db, "tenant-human", "human@example.test");
+    const session = await createTestWebSession(db, "tenant-human");
     const app = new Hono<{ Bindings: Env }>();
     app.use("*", authMiddleware);
     app.get("/api/unlisted-operation", (c) => c.json({ leaked: true }));
 
-    const response = await app.fetch(
-      new Request("https://ak.example.test/api/unlisted-operation", { headers: { cookie: "ak_session=human-session-token" } }),
-      env(),
-    );
+    const response = await app.fetch(new Request("https://ak.example.test/api/unlisted-operation", { headers: { cookie: session.cookie } }), env());
 
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
   });
 
-  it("accepts an at+jwt-bound Agent proof once and rejects replay", async () => {
-    await db
-      .prepare(
-        `INSERT INTO agents
-          (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, realmroot_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        "agent-ak-1",
-        "tenant-a",
-        "Worker",
-        "codex",
-        "public",
-        "private",
-        "fingerprint",
-        "worker",
-        "worker",
-        "rr-agent-1",
-        "2026-08-19T00:00:00.000Z",
-        "2026-08-19T00:00:00.000Z",
-      )
-      .run();
-    const { accessToken, proof } = await realmrootAgentAuthority({ scope: "task:claim", htu: `${resource}/tasks/task-1/claim` });
+  it("accepts an AK Ed25519 agent+jwt once and rejects its replay", async () => {
+    const agent = await createAkAgentSession("tenant-a", "agent-ak-1", "worker");
+    const token = await agent.sign();
     const app = new Hono<{ Bindings: Env }>();
     app.use("*", authMiddleware);
-    app.post("/api/tasks/:id/claim", (c) => c.json({ ownerId: c.get("ownerId"), agentId: c.get("agentId"), identityType: c.get("identityType") }));
+    app.post("/api/tasks/:id/claim", (c) =>
+      c.json({ ownerId: c.get("ownerId"), agentId: c.get("agentId"), sessionId: c.get("sessionId"), identityType: c.get("identityType") }),
+    );
     const request = () =>
       new Request(`${resource}/tasks/task-1/claim`, {
         method: "POST",
-        headers: { authorization: `DPoP ${accessToken}`, dpop: proof },
+        headers: { authorization: `Bearer ${token}` },
       });
 
     const accepted = await app.fetch(request(), env());
     expect(accepted.status).toBe(200);
-    expect(await accepted.json()).toEqual({ ownerId: "tenant-a", agentId: "agent-ak-1", identityType: "agent:worker" });
+    expect(await accepted.json()).toEqual({
+      ownerId: "tenant-a",
+      agentId: "agent-ak-1",
+      sessionId: agent.sessionId,
+      identityType: "agent:worker",
+    });
 
     const replay = await app.fetch(request(), env());
     expect(replay.status).toBe(401);
-    expect(await replay.json()).toMatchObject({ error: { code: "UNAUTHORIZED", message: "Replayed DPoP proof" } });
+    expect(await replay.json()).toMatchObject({ error: { code: "UNAUTHORIZED", message: "Replayed AK Agent token" } });
   });
 
-  it("rejects a valid Agent authority when the operation scope is missing", async () => {
-    await db
-      .prepare(
-        `INSERT INTO agents
-          (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, realmroot_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        "agent-ak-2",
-        "tenant-a",
-        "Worker",
-        "codex",
-        "public",
-        "private",
-        "fingerprint-2",
-        "worker",
-        "worker-2",
-        "rr-agent-2",
-        "2026-08-19T00:00:00.000Z",
-        "2026-08-19T00:00:00.000Z",
-      )
-      .run();
-    const { accessToken, proof } = await realmrootAgentAuthority({
-      agentId: "rr-agent-2",
-      scope: "task:review",
-      htu: `${resource}/tasks/task-1/claim`,
-    });
+  it.each([
+    ["stale iat", { issuedAtOffset: -121, expirationOffset: 10 }],
+    ["future iat", { issuedAtOffset: 31, expirationOffset: 60 }],
+    ["lifetime over 120 seconds", { issuedAtOffset: 0, expirationOffset: 121 }],
+    ["expiration over 150 seconds in the future", { issuedAtOffset: 30, expirationOffset: 151 }],
+  ])("rejects an AK Agent token with %s", async (_label, timing) => {
+    const agent = await createAkAgentSession("tenant-timing", `agent-${randomUUID()}`, "worker");
     const app = new Hono<{ Bindings: Env }>();
     app.use("*", authMiddleware);
     app.post("/api/tasks/:id/claim", (c) => c.json({ accepted: true }));
-
-    const response = await app.fetch(
-      new Request(`${resource}/tasks/task-1/claim`, {
-        method: "POST",
-        headers: { authorization: `DPoP ${accessToken}`, dpop: proof },
-      }),
-      env(),
-    );
-
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ error: { code: "FORBIDDEN", message: "Missing scope: task:claim" } });
-  });
-
-  it("rejects an Agent access token issued to a non-Realmroot CLI client", async () => {
-    await db
-      .prepare(
-        `INSERT INTO agents
-          (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, realmroot_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        "agent-ak-invalid-client",
-        "tenant-a",
-        "Worker",
-        "codex",
-        "public",
-        "private",
-        "fingerprint-invalid-client",
-        "worker",
-        "worker-invalid-client",
-        "rr-agent-invalid-client",
-        "2026-08-19T00:00:00.000Z",
-        "2026-08-19T00:00:00.000Z",
-      )
-      .run();
-    const { accessToken, proof } = await realmrootAgentAuthority({
-      agentId: "rr-agent-invalid-client",
-      clientId: "unknown-native-client",
-      scope: "task:claim",
-      htu: `${resource}/tasks/task-1/claim`,
-    });
-    const app = new Hono<{ Bindings: Env }>();
-    app.use("*", authMiddleware);
-    app.post("/api/tasks/:id/claim", (c) => c.json({ accepted: true }));
-
-    const response = await app.fetch(
-      new Request(`${resource}/tasks/task-1/claim`, {
-        method: "POST",
-        headers: { authorization: `DPoP ${accessToken}`, dpop: proof },
-      }),
-      env(),
-    );
-
-    expect(response.status).toBe(401);
-    expect(await response.json()).toMatchObject({ error: { code: "UNAUTHORIZED", message: "Access token client is not allowed for AK" } });
-  });
-
-  it("rejects an Agent request carrying a session context not bound to that Agent", async () => {
-    await db
-      .prepare(
-        `INSERT INTO agents
-          (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, realmroot_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        "agent-ak-session",
-        "tenant-a",
-        "Worker",
-        "codex",
-        "public",
-        "private",
-        "fingerprint-session",
-        "worker",
-        "worker-session",
-        "rr-agent-session",
-        "2026-08-19T00:00:00.000Z",
-        "2026-08-19T00:00:00.000Z",
-      )
-      .run();
-    const { accessToken, proof } = await realmrootAgentAuthority({
-      agentId: "rr-agent-session",
-      scope: "task:claim",
-      htu: `${resource}/tasks/task-1/claim`,
-    });
-    const app = new Hono<{ Bindings: Env }>();
-    app.use("*", authMiddleware);
-    app.post("/api/tasks/:id/claim", (c) => c.json({ accepted: true }));
+    const now = Math.floor(Date.now() / 1000);
 
     const response = await app.fetch(
       new Request(`${resource}/tasks/task-1/claim`, {
         method: "POST",
         headers: {
-          authorization: `DPoP ${accessToken}`,
-          dpop: proof,
-          "x-ak-session-id": "not-bound-to-this-agent",
+          authorization: `Bearer ${await agent.sign({ issuedAt: now + timing.issuedAtOffset, expirationTime: now + timing.expirationOffset })}`,
         },
       }),
       env(),
     );
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ error: { message: "AK Agent session context is invalid" } });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { code: "UNAUTHORIZED", message: "Invalid AK Agent token claims" } });
   });
 
-  it("prevents a Realmroot Agent from updating another Agent's session usage", async () => {
-    for (const [id, realmrootAgentId] of [
-      ["agent-usage-a", "rr-agent-usage-a"],
-      ["agent-usage-b", "rr-agent-usage-b"],
-    ]) {
-      await db
-        .prepare(
-          `INSERT INTO agents
-            (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, realmroot_agent_id, created_at, updated_at)
-           VALUES (?, 'tenant-a', 'Worker', 'codex', 'public', 'private', ?, 'worker', ?, ?, ?, ?)`,
-        )
-        .bind(id, `fingerprint-${id}`, `worker-${id}`, realmrootAgentId, "2026-08-19T00:00:00.000Z", "2026-08-19T00:00:00.000Z")
-        .run();
-    }
-    const { upsertMachine } = await import("../apps/web/server/machineRepo");
-    const machine = await upsertMachine(db, "tenant-a", {
-      name: "Usage machine",
-      os: "test",
-      version: "1",
-      device_id: "usage-machine",
-      runtimes: [],
-    });
-    await db
-      .prepare(
-        `INSERT INTO agent_sessions
-          (id, agent_id, machine_id, status, public_key, delegation_proof, created_at)
-         VALUES ('usage-session-b', 'agent-usage-b', ?, 'active', 'public', 'proof', ?)`,
-      )
-      .bind(machine.id, new Date().toISOString())
-      .run();
-    const path = "/api/agents/agent-usage-b/sessions/usage-session-b/usage";
-    const { accessToken, proof } = await realmrootAgentAuthority({
-      agentId: "rr-agent-usage-a",
-      scope: "agent:usage",
-      htu: `${resource}/agents/agent-usage-b/sessions/usage-session-b/usage`,
-      htm: "PATCH",
-    });
-    const { api } = await import("../apps/web/server/routes");
+  it("rejects an AK Agent token whose session is closed or unknown", async () => {
+    const agent = await createAkAgentSession("tenant-a", "agent-closed", "worker");
+    await db.prepare("UPDATE agent_sessions SET status = 'closed' WHERE id = ?").bind(agent.sessionId).run();
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", authMiddleware);
+    app.post("/api/tasks/:id/claim", (c) => c.json({ accepted: true }));
 
+    const response = await app.fetch(
+      new Request(`${resource}/tasks/task-1/claim`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${await agent.sign()}` },
+      }),
+      env(),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { message: "AK Agent session is not active" } });
+  });
+
+  it("derives scopes from the AK Agent kind instead of accepting token-provided scopes", async () => {
+    const agent = await createAkAgentSession("tenant-a", "agent-worker", "worker");
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", authMiddleware);
+    app.delete("/api/tasks/:id", (c) => c.json({ accepted: true }));
+
+    const response = await app.fetch(
+      new Request(`${resource}/tasks/task-1`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${await agent.sign({ extraClaims: { scope: "task:cancel" } })}` },
+      }),
+      env(),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "FORBIDDEN", message: "Missing scope: task:cancel" } });
+  });
+
+  it("rejects Realmroot Agent actor tokens because AK Agents use internal sessions", async () => {
+    const authority = await realmrootAgentAuthority(`${resource}/tasks/task-1/claim`);
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", authMiddleware);
+    app.post("/api/tasks/:id/claim", (c) => c.json({ accepted: true }));
+
+    const response = await app.fetch(
+      new Request(`${resource}/tasks/task-1/claim`, {
+        method: "POST",
+        headers: { authorization: `DPoP ${authority.accessToken}`, dpop: authority.proof },
+      }),
+      env(),
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { message: "Realmroot Agent tokens are not accepted by AK" } });
+  });
+
+  it("prevents an AK Agent from updating another Agent's session usage", async () => {
+    const agentA = await createAkAgentSession("tenant-a", "agent-usage-a", "worker");
+    const agentB = await createAkAgentSession("tenant-a", "agent-usage-b", "worker");
+    const { api } = await import("../apps/web/server/routes");
     const response = await api.fetch(
-      new Request(`https://ak.example.test${path}`, {
+      new Request(`${resource}/agents/${agentB.agentId}/sessions/${agentB.sessionId}/usage`, {
         method: "PATCH",
-        headers: { authorization: `DPoP ${accessToken}`, dpop: proof, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${await agentA.sign()}`, "content-type": "application/json" },
         body: JSON.stringify({ input_tokens: 1, output_tokens: 2, cache_read_tokens: 0, cache_creation_tokens: 0, cost_micro_usd: 3 }),
       }),
       env(),
     );
 
     expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({
-      error: { message: "Realmroot Agent authority is bound to a different AK Agent" },
-    });
+    expect(await response.json()).toMatchObject({ error: { message: "Agent authority is bound to a different Session" } });
   });
 
-  it("rejects cross-tenant task mutation, review, notes, messages, and SSE resume", async () => {
-    await seedUser(db, "tenant-a", "tenant-a@example.test");
+  it("rejects cross-tenant task mutation, review, notes, messages, SSE, boards, and repositories", async () => {
+    const agent = await createAkAgentSession("tenant-a", "cross-tenant-agent", "worker");
+    const leader = await createAkAgentSession("tenant-a", "cross-tenant-leader", "leader");
     await seedUser(db, "tenant-b", "tenant-b@example.test");
-    await db
-      .prepare(
-        `INSERT INTO agents
-          (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, realmroot_agent_id, created_at, updated_at)
-         VALUES ('cross-tenant-agent', 'tenant-a', 'Worker', 'codex', 'public', 'private', 'cross-fingerprint', 'worker',
-                 'cross-tenant-agent', 'rr-cross-tenant-agent', ?, ?)`,
-      )
-      .bind(new Date().toISOString(), new Date().toISOString())
-      .run();
-    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createBoard, updateBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
     const board = await createBoard(db, "tenant-b", "Tenant B board", "ops");
     const task = await createTask(db, "tenant-b", { title: "Tenant B task", board_id: board.id });
     const { api } = await import("../apps/web/server/routes");
-    const agentOperations = [
-      { method: "PATCH", suffix: "", scope: "task:log", body: { title: "cross-tenant update" } },
-      { method: "DELETE", suffix: "", scope: "task:cancel", body: undefined },
-      { method: "POST", suffix: "/review", scope: "task:review", body: { summary: "cross-tenant review" } },
-      { method: "POST", suffix: "/notes", scope: "task:log", body: { detail: "cross-tenant note" } },
-    ];
-    for (const operation of agentOperations) {
-      const url = `${resource}/tasks/${task.id}${operation.suffix}`;
-      const authority = await realmrootAgentAuthority({
-        agentId: "rr-cross-tenant-agent",
-        scope: operation.scope,
-        htu: url,
-        htm: operation.method,
-      });
+    for (const operation of [
+      { method: "PATCH", suffix: "", body: { title: "cross-tenant update" }, authority: agent },
+      { method: "DELETE", suffix: "", body: undefined, authority: leader },
+      { method: "POST", suffix: "/review", body: { summary: "cross-tenant review" }, authority: agent },
+      { method: "POST", suffix: "/notes", body: { detail: "cross-tenant note" }, authority: agent },
+    ]) {
       const response = await api.fetch(
-        new Request(url, {
+        new Request(`${resource}/tasks/${task.id}${operation.suffix}`, {
           method: operation.method,
-          headers: { authorization: `DPoP ${authority.accessToken}`, dpop: authority.proof, "content-type": "application/json" },
+          headers: { authorization: `Bearer ${await operation.authority.sign()}`, "content-type": "application/json" },
           ...(operation.body === undefined ? {} : { body: JSON.stringify(operation.body) }),
         }),
         env(),
@@ -349,16 +205,12 @@ describe("Realmroot Resource Server authorization", () => {
       env(),
     );
     expect(messageResponse.status).toBe(404);
-
     const sseResponse = await api.fetch(
-      new Request(`${resource}/tasks/${task.id}/stream`, {
-        headers: { cookie: human.cookie, "Last-Event-ID": "foreign-event-id" },
-      }),
+      new Request(`${resource}/tasks/${task.id}/stream`, { headers: { cookie: human.cookie, "Last-Event-ID": "foreign-event-id" } }),
       env(),
     );
     expect(sseResponse.status).toBe(404);
 
-    const { updateBoard } = await import("../apps/web/server/boardRepo");
     await updateBoard(db, board.id, "tenant-b", { labels: [{ name: "security", color: "#22D3EE", description: "" }] });
     for (const operation of [
       { method: "GET", suffix: "", body: undefined },
@@ -384,23 +236,67 @@ describe("Realmroot Resource Server authorization", () => {
     }
 
     const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const foreignRepository = await createRepository(db, "tenant-b", {
+    const repository = await createRepository(db, "tenant-b", {
       name: "Tenant B repository",
       url: "https://github.com/tenant-b/repository",
     });
-    const deleteRepositoryResponse = await api.fetch(
-      new Request(`${resource}/repositories/${foreignRepository.id}`, {
+    const deleteResponse = await api.fetch(
+      new Request(`${resource}/repositories/${repository.id}`, {
         method: "DELETE",
         headers: { cookie: human.cookie, "x-csrf-token": human.csrfToken },
       }),
       env(),
     );
-    expect(deleteRepositoryResponse.status).toBe(404);
-    expect(await db.prepare("SELECT id FROM repositories WHERE id = ?").bind(foreignRepository.id).first()).toEqual({ id: foreignRepository.id });
+    expect(deleteResponse.status).toBe(404);
+    expect(await db.prepare("SELECT id FROM repositories WHERE id = ?").bind(repository.id).first()).toEqual({ id: repository.id });
   });
 });
 
-async function realmrootAgentAuthority(input: { agentId?: string; clientId?: string; scope: string; htu: string; htm?: string }) {
+async function createAkAgentSession(ownerId: string, agentId: string, kind: "worker" | "leader") {
+  const existingOwner = await db.prepare("SELECT 1 FROM user WHERE id = ?").bind(ownerId).first();
+  if (!existingOwner) await seedUser(db, ownerId, `${ownerId}@example.test`);
+  const keys = await generateKeyPair("EdDSA", { extractable: true });
+  const publicJwk = await exportJWK(keys.publicKey);
+  if (!publicJwk.x) throw new Error("Agent test key has no x coordinate");
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO agents
+        (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, created_at, updated_at)
+       VALUES (?, ?, ?, 'codex', ?, '{}', ?, ?, ?, ?, ?)`,
+    )
+    .bind(agentId, ownerId, agentId, publicJwk.x, `fingerprint-${agentId}`, kind, agentId, now, now)
+    .run();
+  const { upsertMachine } = await import("../apps/web/server/machineRepo");
+  const machine = await upsertMachine(db, ownerId, {
+    name: `${agentId} machine`,
+    os: "test",
+    version: "1",
+    device_id: `device-${agentId}`,
+    runtimes: [],
+  });
+  const sessionId = `session-${agentId}`;
+  await db
+    .prepare(
+      `INSERT INTO agent_sessions (id, agent_id, machine_id, status, public_key, delegation_proof, created_at)
+       VALUES (?, ?, ?, 'active', ?, 'test-delegation', ?)`,
+    )
+    .bind(sessionId, agentId, machine.id, publicJwk.x, now)
+    .run();
+  return {
+    agentId,
+    sessionId,
+    sign: async (options: { extraClaims?: Record<string, unknown>; issuedAt?: number; expirationTime?: number } = {}) =>
+      new SignJWT({ sub: sessionId, aid: agentId, jti: randomUUID(), ...options.extraClaims })
+        .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+        .setAudience("https://ak.example.test")
+        .setIssuedAt(options.issuedAt)
+        .setExpirationTime(options.expirationTime ?? "1m")
+        .sign(keys.privateKey),
+  };
+}
+
+async function realmrootAgentAuthority(htu: string) {
   const issuerKeys = await issuerKeysPromise;
   const issuerPublicJwk = await exportJWK(issuerKeys.publicKey);
   issuerPublicJwk.kid = "realmroot-resource-test-key";
@@ -425,10 +321,10 @@ async function realmrootAgentAuthority(input: { agentId?: string; clientId?: str
   const dpopPublicJwk = await exportJWK(dpopKeys.publicKey);
   const thumbprint = await calculateJwkThumbprint(dpopPublicJwk);
   const accessToken = await new SignJWT({
-    scope: input.scope,
-    client_id: input.clientId ?? "realmroot-cli",
+    scope: "task:claim",
+    client_id: "realmroot-cli",
     cnf: { jkt: thumbprint },
-    act: { sub: input.agentId ?? "rr-agent-1", sub_profile: "ai_agent" },
+    act: { sub: "realmroot-agent", sub_profile: "ai_agent" },
     "urn:realmroot:params:oauth:org": "tenant-a",
   })
     .setProtectedHeader({ alg: "ES256", kid: issuerPublicJwk.kid, typ: "at+jwt" })
@@ -439,12 +335,12 @@ async function realmrootAgentAuthority(input: { agentId?: string; clientId?: str
     .setExpirationTime("5m")
     .sign(issuerKeys.privateKey);
   const proof = await new SignJWT({
-    htu: input.htu,
-    htm: input.htm ?? "POST",
+    htu,
+    htm: "POST",
     ath: createHash("sha256").update(accessToken).digest("base64url"),
   })
     .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopPublicJwk })
-    .setJti(crypto.randomUUID())
+    .setJti(randomUUID())
     .setIssuedAt()
     .sign(dpopKeys.privateKey);
   return { accessToken, proof };

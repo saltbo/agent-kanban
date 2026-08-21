@@ -1,29 +1,25 @@
 // @vitest-environment node
 
-import { createHash, randomUUID } from "node:crypto";
-import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from "jose";
+import { randomUUID } from "node:crypto";
+import { importJWK, SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { api } from "../apps/web/server/routes";
 import { createTestAgent, createTestEnv, createTestSubagent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 const tenantId = "tenant-router-regressions";
-const issuer = "https://id.realmroot.dev/api/auth";
 const resource = "http://localhost:8788/api";
-const jwksUri = `${issuer}/jwks`;
-const issuerKeysPromise = generateKeyPair("ES256", { extractable: true });
 const env = createTestEnv();
 let mf: Awaited<ReturnType<typeof setupMiniflare>>["mf"];
 let authority: Awaited<ReturnType<typeof createTestWebSession>>;
 let boardId: string;
 let machineId: string;
-let leaderRealmrootId: string;
-let issuerPublicJwk: JsonWebKey;
+let leaderAuthority: RouterAgentAuthority;
 
 async function request(
   method: string,
   path: string,
   body?: unknown,
-  options: { machineId?: string; headers?: HeadersInit; agent?: { realmrootId: string; scopes: string[] } } = {},
+  options: { machineId?: string; headers?: HeadersInit; agent?: RouterAgentAuthority } = {},
 ): Promise<Response> {
   const headers = new Headers({
     "content-type": "application/json",
@@ -32,8 +28,7 @@ async function request(
     ...options.headers,
   });
   if (options.agent) {
-    const agentHeaders = await realmrootAgentHeaders(method, path, options.agent);
-    for (const [name, value] of Object.entries(agentHeaders)) headers.set(name, value);
+    headers.set("authorization", `Bearer ${await signRouterAgentToken(options.agent)}`);
   } else {
     headers.set("cookie", authority.cookie);
     if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") headers.set("x-csrf-token", authority.csrfToken);
@@ -56,27 +51,6 @@ beforeAll(async () => {
   await seedUser(env.DB, tenantId, "router-regressions@example.test");
   authority = await createTestWebSession(env.DB, tenantId, { subjectId: "router-native-subject" });
 
-  const issuerKeys = await issuerKeysPromise;
-  issuerPublicJwk = await exportJWK(issuerKeys.publicKey);
-  issuerPublicJwk.kid = "router-regression-key";
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (target: RequestInfo | URL) => {
-      const url = target instanceof Request ? target.url : String(target);
-      if (url === `${issuer}/.well-known/openid-configuration`) {
-        return Response.json({
-          issuer,
-          authorization_endpoint: `${issuer}/oauth2/authorize`,
-          token_endpoint: `${issuer}/oauth2/token`,
-          jwks_uri: jwksUri,
-          id_token_signing_alg_values_supported: ["ES256"],
-        });
-      }
-      if (url === jwksUri) return Response.json({ keys: [issuerPublicJwk] });
-      throw new Error(`Unexpected router regression request: ${url}`);
-    }),
-  );
-
   const board = await request("POST", "/api/boards", { name: "Router regression board", type: "ops" });
   expect(board.status).toBe(201);
   boardId = ((await board.json()) as { id: string }).id;
@@ -96,7 +70,7 @@ beforeAll(async () => {
     runtime: "claude",
     kind: "leader",
   });
-  leaderRealmrootId = leader.realmroot_agent_id!;
+  leaderAuthority = await createRouterAgentAuthority(leader.id);
 });
 
 afterAll(async () => {
@@ -130,13 +104,11 @@ describe("Realmroot real-router Agent regressions", () => {
 
   it("lists only the latest snapshot for a versioned Agent username", async () => {
     const username = `router-version-${randomUUID().slice(0, 8)}`;
-    const realmrootAgentId = `rr:${username}`;
     const first = await request("POST", "/api/agents", {
       username,
       runtime: "codex",
       role: "implementation",
       soul: "historical soul",
-      realmroot_agent_id: realmrootAgentId,
     });
     expect(first.status, await first.clone().text()).toBe(201);
     const second = await request("POST", "/api/agents", {
@@ -144,7 +116,6 @@ describe("Realmroot real-router Agent regressions", () => {
       runtime: "codex",
       role: "implementation",
       soul: "latest soul",
-      realmroot_agent_id: realmrootAgentId,
     });
     expect(second.status, await second.clone().text()).toBe(201);
 
@@ -210,7 +181,7 @@ describe("Realmroot real-router Agent regressions", () => {
 
 describe("Realmroot real-router task and stream regressions", () => {
   it("preserves task CRUD, validation, and not-found behavior", async () => {
-    const agent = { realmrootId: leaderRealmrootId, scopes: ["task:log", "task:cancel"] };
+    const agent = leaderAuthority;
     const invalid = await request("POST", "/api/tasks", { board_id: boardId }, { agent });
     expect(invalid.status, await invalid.clone().text()).toBe(400);
 
@@ -255,7 +226,7 @@ describe("Realmroot real-router task and stream regressions", () => {
       `/api/tasks/${taskId}/notes`,
       { detail: "Realmroot note" },
       {
-        agent: { realmrootId: leaderRealmrootId, scopes: ["task:log"] },
+        agent: leaderAuthority,
       },
     );
     expect(note.status, await note.clone().text()).toBe(201);
@@ -374,19 +345,9 @@ describe("Realmroot real-router AMA regressions", () => {
   let triggerSequence = 0;
 
   beforeAll(async () => {
-    const { privateKey } = await generateKeyPair("ES256", { extractable: true });
-    const privateJwk = await exportJWK(privateKey);
-    const machineAccessToken = await new SignJWT({ scope: "projects:read projects:write" })
-      .setProtectedHeader({ alg: "ES256" })
-      .setExpirationTime("10m")
-      .sign(privateKey);
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.router.test",
       AMA_RESOURCE: "https://ama.router.test",
-      AMA_MACHINE_CLIENT_ID: "ak-router-maintainer",
-      AMA_MACHINE_CLIENT_SECRET: "router-secret",
-      AMA_MACHINE_SCOPES: "projects:read projects:write",
-      AMA_DPOP_PRIVATE_JWK: JSON.stringify(privateJwk),
       AK_API_URL: "https://ak.router.test",
     });
     await env.DB.prepare(
@@ -406,26 +367,11 @@ describe("Realmroot real-router AMA regressions", () => {
         const req = new Request(input, init);
         calls.push(req.clone());
         const url = new URL(req.url);
-        if (url.href === `${issuer}/.well-known/openid-configuration`) {
-          return Response.json({
-            issuer,
-            authorization_endpoint: `${issuer}/oauth2/authorize`,
-            token_endpoint: `${issuer}/oauth2/token`,
-            jwks_uri: jwksUri,
-            id_token_signing_alg_values_supported: ["ES256"],
-          });
-        }
-        if (url.href === jwksUri) return Response.json({ keys: [issuerPublicJwk] });
-        if (url.href === `${issuer}/oauth2/token`) {
-          return Response.json({ access_token: machineAccessToken, token_type: "DPoP", expires_in: 600 });
-        }
         if (url.origin !== "https://ama.router.test") throw new Error(`Unexpected maintainer request: ${url.href}`);
         const amaHeaders = Object.fromEntries(req.headers);
-        expect(amaHeaders).toMatchObject({
-          authorization: `DPoP ${machineAccessToken}`,
-          dpop: expect.any(String),
-          "x-ak-tenant-id": tenantId,
-        });
+        expect(amaHeaders.authorization).toBe(`Bearer test-access:${tenantId}`);
+        expect(amaHeaders).not.toHaveProperty("dpop");
+        expect(amaHeaders).not.toHaveProperty("x-ak-tenant-id");
         if (url.pathname !== "/api/v1/providers/models") {
           expect(amaHeaders["x-ama-project-id"]).toBe("project-router");
         }
@@ -596,7 +542,7 @@ describe("Realmroot real-router AMA regressions", () => {
       `/api/tasks/${dispatchTask}/assign`,
       { agent_id: maintainerAgent.id },
       {
-        agent: { realmrootId: leaderRealmrootId, scopes: ["task:assign"] },
+        agent: leaderAuthority,
       },
     );
     expect(assign.status, await assign.clone().text()).toBe(500);
@@ -678,39 +624,34 @@ async function createTaskInState(title: string, state: "todo" | "in_progress" | 
   return task.id;
 }
 
-async function realmrootAgentHeaders(
-  method: string,
-  path: string,
-  authorityInput: { realmrootId: string; scopes: string[] },
-): Promise<Record<string, string>> {
-  const issuerKeys = await issuerKeysPromise;
-  const dpopKeys = await generateKeyPair("ES256", { extractable: true });
-  const dpopPublicJwk = await exportJWK(dpopKeys.publicKey);
-  const thumbprint = await calculateJwkThumbprint(dpopPublicJwk);
-  const accessToken = await new SignJWT({
-    scope: authorityInput.scopes.join(" "),
-    client_id: "realmroot-cli",
-    cnf: { jkt: thumbprint },
-    act: { sub: authorityInput.realmrootId, sub_profile: "ai_agent" },
-    "urn:realmroot:params:oauth:org": tenantId,
-  })
-    .setProtectedHeader({ alg: "ES256", kid: "router-regression-key", typ: "at+jwt" })
-    .setIssuer(issuer)
-    .setAudience(resource)
-    .setSubject("router-controller")
+type RouterAgentAuthority = { agentId: string; sessionId: string; privateKey: CryptoKey };
+
+async function createRouterAgentAuthority(agentId: string): Promise<RouterAgentAuthority> {
+  const identity = await env.DB.prepare("SELECT public_key, private_key FROM agents WHERE id = ?")
+    .bind(agentId)
+    .first<{ public_key: string; private_key: string }>();
+  if (!identity) throw new Error(`Missing router Agent ${agentId}`);
+  const sessionId = `router-session-${agentId}`;
+  await env.DB.prepare(
+    `INSERT INTO agent_sessions (id, agent_id, machine_id, status, public_key, delegation_proof)
+       VALUES (?, ?, ?, 'active', ?, 'router-test-delegation')`,
+  )
+    .bind(sessionId, agentId, machineId, identity.public_key)
+    .run();
+  return {
+    agentId,
+    sessionId,
+    privateKey: await importJWK(JSON.parse(identity.private_key) as JsonWebKey, "EdDSA"),
+  };
+}
+
+function signRouterAgentToken(agent: RouterAgentAuthority): Promise<string> {
+  return new SignJWT({ sub: agent.sessionId, aid: agent.agentId, jti: randomUUID() })
+    .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+    .setAudience("http://localhost")
     .setIssuedAt()
-    .setExpirationTime("5m")
-    .sign(issuerKeys.privateKey);
-  const proof = await new SignJWT({
-    htu: `http://localhost${path}`,
-    htm: method.toUpperCase(),
-    ath: createHash("sha256").update(accessToken).digest("base64url"),
-  })
-    .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopPublicJwk })
-    .setJti(randomUUID())
-    .setIssuedAt()
-    .sign(dpopKeys.privateKey);
-  return { authorization: `DPoP ${accessToken}`, dpop: proof };
+    .setExpirationTime("1m")
+    .sign(agent.privateKey);
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

@@ -21,6 +21,7 @@ const realmrootRuntimeTables = [
 let mf: Miniflare;
 let migrationDb: D1Database;
 let contractDb: D1Database;
+let grantMigrationDb: D1Database;
 
 beforeAll(async () => {
   mf = new Miniflare({
@@ -29,11 +30,13 @@ beforeAll(async () => {
     d1Databases: {
       MIGRATION_DB: "realmroot-0041-cutover",
       CONTRACT_DB: "realmroot-contract-cutover",
+      GRANT_MIGRATION_DB: "realmroot-0042-user-grants",
     },
   });
   migrationDb = await mf.getD1Database("MIGRATION_DB");
   contractDb = await mf.getD1Database("CONTRACT_DB");
-  await Promise.all([prepare0040Database(migrationDb), prepare0040Database(contractDb)]);
+  grantMigrationDb = await mf.getD1Database("GRANT_MIGRATION_DB");
+  await Promise.all([prepare0040Database(migrationDb), prepare0040Database(contractDb), prepare0040Database(grantMigrationDb)]);
 });
 
 afterAll(async () => mf.dispose());
@@ -64,6 +67,25 @@ describe("Realmroot Native hard cutover data retention", () => {
     const agentColumns = await contractDb.prepare("PRAGMA table_info(agents)").all<{ name: string }>();
     expect(agentColumns.results.map(({ name }) => name)).not.toContain("gpg_subkey_id");
     expect(await contractDb.prepare("PRAGMA foreign_key_check").all()).toMatchObject({ results: [] });
+  });
+
+  it("applies 0042 without changing Better Auth data and removes only the mistaken Agent Realmroot columns", async () => {
+    await executeSqlFile(grantMigrationDb, join(migrationsDirectory, "0041_drop_realmroot_identity_mappings.sql"));
+    const betterAuthBefore = await snapshotTables(grantMigrationDb, betterAuthTables);
+    const retainedRuntimeTables = realmrootRuntimeTables.filter((table) => table !== "realmroot_web_sessions");
+    const runtimeBefore = await snapshotTables(grantMigrationDb, retainedRuntimeTables);
+    const columnsBefore = await grantMigrationDb.prepare("PRAGMA table_info(agents)").all<{ name: string }>();
+    expect(columnsBefore.results.map(({ name }) => name)).toEqual(expect.arrayContaining(["realmroot_agent_id", "realmroot_credential_ref"]));
+
+    await executeSqlFile(grantMigrationDb, join(migrationsDirectory, "0042_realmroot_user_ama_grants.sql"));
+
+    expect(await snapshotTables(grantMigrationDb, betterAuthTables)).toEqual(betterAuthBefore);
+    expect(await snapshotTables(grantMigrationDb, retainedRuntimeTables)).toEqual(runtimeBefore);
+    expect(await grantMigrationDb.prepare("SELECT COUNT(*) AS count FROM realmroot_web_sessions").first()).toEqual({ count: 0 });
+    const columnsAfter = await grantMigrationDb.prepare("PRAGMA table_info(agents)").all<{ name: string }>();
+    expect(columnsAfter.results.map(({ name }) => name)).not.toEqual(expect.arrayContaining(["realmroot_agent_id", "realmroot_credential_ref"]));
+    expect(await tableNames(grantMigrationDb)).toEqual(expect.arrayContaining(["realmroot_user_ama_grants", "ak_agent_jwt_replays"]));
+    expect(await grantMigrationDb.prepare("PRAGMA foreign_key_check").all()).toMatchObject({ results: [] });
   });
 });
 
@@ -242,6 +264,11 @@ async function snapshotTables(database: D1Database, tableNames: readonly string[
 
 async function expectTableMissing(database: D1Database, table: string): Promise<void> {
   expect(await database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").bind(table).first()).toBeNull();
+}
+
+async function tableNames(database: D1Database): Promise<string[]> {
+  const result = await database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>();
+  return result.results.map(({ name }) => name);
 }
 
 async function executeSqlFile(database: D1Database, path: string): Promise<void> {

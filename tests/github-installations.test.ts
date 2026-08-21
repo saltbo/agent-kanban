@@ -17,8 +17,8 @@
  * 13. recordInstallationFromSetup — fetch stubbed, upsert + replace exercised
  */
 
-import { createHash, randomUUID } from "node:crypto";
-import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from "jose";
+import { randomUUID } from "node:crypto";
+import { importJWK, SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
@@ -26,7 +26,6 @@ import { createTestAgent, createTestWebSession, seedUser, setupMiniflare } from 
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
 const REALMROOT_ISSUER = "https://github-installations.realmroot.test";
 const AK_RESOURCE = "http://localhost/api";
-const realmrootIssuerKeysPromise = generateKeyPair("ES256", { extractable: true });
 
 let db: D1Database;
 let mf: Miniflare;
@@ -124,63 +123,35 @@ async function createVerifiedUserToken(): Promise<{ token: string; userId: strin
   return { token: `${session.token}:csrf:${session.csrfToken}`, userId };
 }
 
-async function createRealmrootAgentAuthorization(ownerId: string, realmrootAgentId: string, path: string) {
-  const issuerKeys = await realmrootIssuerKeysPromise;
-  const issuerJwk = await exportJWK(issuerKeys.publicKey);
-  issuerJwk.kid = "github-installations-realmroot-key";
-  const dpopKeys = await generateKeyPair("ES256", { extractable: true });
-  const dpopJwk = await exportJWK(dpopKeys.publicKey);
-  const accessToken = await new SignJWT({
-    scope: "ak:write",
-    client_id: "realmroot-cli",
-    cnf: { jkt: await calculateJwkThumbprint(dpopJwk) },
-    act: { sub: realmrootAgentId, sub_profile: "ai_agent" },
-    "urn:realmroot:params:oauth:org": ownerId,
-  })
-    .setProtectedHeader({ alg: "ES256", kid: issuerJwk.kid, typ: "at+jwt" })
-    .setIssuer(REALMROOT_ISSUER)
-    .setAudience(AK_RESOURCE)
-    .setSubject("controller-test")
+async function createAkAgentAuthorization(ownerId: string, agentId: string, sessionId?: string) {
+  const resolvedSessionId = sessionId ?? (await createBoundAgentSession(ownerId, agentId));
+  const identity = await db.prepare("SELECT private_key FROM agents WHERE id = ? AND owner_id = ?").bind(agentId, ownerId).first<{
+    private_key: string;
+  }>();
+  if (!identity) throw new Error("Agent signing identity was not found");
+  const privateKey = await importJWK(JSON.parse(identity.private_key), "EdDSA");
+  const accessToken = await new SignJWT({ aid: agentId, jti: randomUUID() })
+    .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+    .setAudience("http://localhost")
+    .setSubject(resolvedSessionId)
     .setIssuedAt()
-    .setExpirationTime("5m")
-    .sign(issuerKeys.privateKey);
-  const dpopProof = await new SignJWT({
-    htu: `http://localhost${path}`,
-    htm: "POST",
-    ath: createHash("sha256").update(accessToken).digest("base64url"),
-  })
-    .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopJwk })
-    .setJti(randomUUID())
-    .setIssuedAt()
-    .sign(dpopKeys.privateKey);
-  return { accessToken, dpopProof, issuerJwk };
-}
-
-function realmrootFetch(issuerJwk: JsonWebKey, githubFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
-  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = input instanceof Request ? input.url : String(input);
-    if (url === `${REALMROOT_ISSUER}/.well-known/openid-configuration`) {
-      return Response.json({
-        issuer: REALMROOT_ISSUER,
-        authorization_endpoint: `${REALMROOT_ISSUER}/authorize`,
-        token_endpoint: `${REALMROOT_ISSUER}/token`,
-        jwks_uri: `${REALMROOT_ISSUER}/jwks`,
-        id_token_signing_alg_values_supported: ["ES256"],
-      });
-    }
-    if (url === `${REALMROOT_ISSUER}/jwks`) return Response.json({ keys: [issuerJwk] });
-    return githubFetch(input, init);
-  });
+    .setExpirationTime("1m")
+    .sign(privateKey);
+  return { accessToken, sessionId: resolvedSessionId };
 }
 
 async function createBoundAgentSession(ownerId: string, agentId: string): Promise<string> {
   const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
+  const agent = await db.prepare("SELECT public_key FROM agents WHERE id = ? AND owner_id = ?").bind(agentId, ownerId).first<{
+    public_key: string;
+  }>();
+  if (!agent) throw new Error("Agent public key was not found");
   const sessionId = randomUUID();
   await createAmaAgentSession(db, makeEnv(), {
     ownerId,
     agentId,
     sessionId,
-    sessionPublicKey: "realmroot-session-public-key",
+    sessionPublicKey: agent.public_key,
     amaSessionId: `ama-session-${sessionId}`,
   });
   return sessionId;
@@ -1562,10 +1533,10 @@ describe("recordInstallationFromSetup", () => {
       status: "active",
     });
     const path = `/api/repositories/${repo.id}/github-token`;
-    const authority = await createRealmrootAgentAuthorization(ownerId, agent.realmroot_agent_id!, path);
+    const authority = await createAkAgentAuthorization(ownerId, agent.id);
     vi.stubGlobal(
       "fetch",
-      realmrootFetch(authority.issuerJwk, async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input);
         if (url === "https://api.github.com/repos/maintainer-auth-org/maintainer-auth-repo/installation") {
           return new Response(JSON.stringify({ id: 8_001 }), { status: 200, headers: { "content-type": "application/json" } });
@@ -1589,7 +1560,7 @@ describe("recordInstallationFromSetup", () => {
       "POST",
       path,
       undefined,
-      { Authorization: `DPoP ${authority.accessToken}`, DPoP: authority.dpopProof },
+      { Authorization: `Bearer ${authority.accessToken}` },
       { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
     );
 
@@ -1628,17 +1599,17 @@ describe("recordInstallationFromSetup", () => {
       runtime: "claude",
     });
     const path = `/api/repositories/${repo.id}/github-token`;
-    const authority = await createRealmrootAgentAuthorization(ownerId, worker.realmroot_agent_id!, path);
+    const authority = await createAkAgentAuthorization(ownerId, worker.id);
     const githubFetch = vi.fn(async () => {
       throw new Error("GitHub must not be called for an unauthorized Agent");
     });
-    vi.stubGlobal("fetch", realmrootFetch(authority.issuerJwk, githubFetch));
+    vi.stubGlobal("fetch", githubFetch);
 
     const res = await apiRequest(
       "POST",
       path,
       undefined,
-      { Authorization: `DPoP ${authority.accessToken}`, DPoP: authority.dpopProof },
+      { Authorization: `Bearer ${authority.accessToken}` },
       { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
     );
 
@@ -1685,10 +1656,10 @@ describe("recordInstallationFromSetup", () => {
       skipRuntimeAvailability: true,
     });
     const path = `/api/repositories/${repo.id}/github-token`;
-    const authority = await createRealmrootAgentAuthorization(ownerId, worker.realmroot_agent_id!, path);
+    const authority = await createAkAgentAuthorization(ownerId, worker.id, sessionId);
     vi.stubGlobal(
       "fetch",
-      realmrootFetch(authority.issuerJwk, async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input);
         if (url === "https://api.github.com/repos/task-worker-org/task-worker-repo/installation") {
           return new Response(JSON.stringify({ id: 8_003 }), { status: 200, headers: { "content-type": "application/json" } });
@@ -1713,9 +1684,7 @@ describe("recordInstallationFromSetup", () => {
       path,
       undefined,
       {
-        Authorization: `DPoP ${authority.accessToken}`,
-        DPoP: authority.dpopProof,
-        "X-AK-Session-ID": sessionId,
+        Authorization: `Bearer ${authority.accessToken}`,
       },
       { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
     );
@@ -1779,20 +1748,18 @@ describe("recordInstallationFromSetup", () => {
         await db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").bind(scenario.status, new Date().toISOString(), task.id).run();
       }
       const path = `/api/repositories/${scenario.requestOtherRepo ? otherRepo.id : repo.id}/github-token`;
-      const authority = await createRealmrootAgentAuthorization(ownerId, worker.realmroot_agent_id!, path);
+      const authority = await createAkAgentAuthorization(ownerId, worker.id, sessionId);
       const githubFetch = vi.fn(async () => {
         throw new Error("GitHub must not be called for an unauthorized task Agent");
       });
-      vi.stubGlobal("fetch", realmrootFetch(authority.issuerJwk, githubFetch));
+      vi.stubGlobal("fetch", githubFetch);
 
       const res = await apiRequest(
         "POST",
         path,
         undefined,
         {
-          Authorization: `DPoP ${authority.accessToken}`,
-          DPoP: authority.dpopProof,
-          "X-AK-Session-ID": sessionId,
+          Authorization: `Bearer ${authority.accessToken}`,
         },
         { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
       );

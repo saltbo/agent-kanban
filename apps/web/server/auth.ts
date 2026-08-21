@@ -1,5 +1,5 @@
 import type { Context, Next } from "hono";
-import { errors as joseErrors } from "jose";
+import { decodeJwt, decodeProtectedHeader, importJWK, errors as joseErrors, jwtVerify } from "jose";
 import { AuthError, authenticateRealmrootToken, authenticateWebSession, CsrfError, type RealmrootPrincipal } from "./realmrootAuth";
 import type { Env } from "./types";
 
@@ -61,7 +61,7 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
   {
     method: "POST",
     pattern: /^\/api\/repositories\/[^/]+\/github-token$/,
-    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:write" },
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
   },
   { method: "POST", pattern: /^\/api\/machines$/, rule: { allow: ["user", "machine"], scope: "ak:write" } },
   { method: "POST", pattern: /^\/api\/machines\/[^/]+\/heartbeat$/, rule: { allow: ["user", "machine"], scope: "ak:write" } },
@@ -122,31 +122,30 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
 
 export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) {
   try {
+    const agentToken = localAgentToken(c.req.header("authorization"));
+    if (agentToken) return await authenticateAkAgent(c, agentToken, next);
+
     const principal = c.req.header("authorization") ? await authenticateRealmrootToken(c) : await authenticateWebSession(c);
     if (!principal) return c.json({ error: { code: "UNAUTHORIZED", message: "Authentication required" } }, 401);
+    if (principal.type === "agent") throw new AuthError("Realmroot Agent tokens are not accepted by AK");
     if (principal.source === "token") await ensureTokenPrincipal(c, principal);
     c.set("principal", principal);
-    if (principal.type === "agent") {
-      const denied = await bindAgent(c, principal);
-      if (denied) return denied;
-    } else {
-      c.set("ownerId", principal.tenantId);
-      c.set("identityType", principal.type === "human" ? "user" : principal.type);
-      if (principal.type === "machine") c.set("machineId", principal.subjectId);
-      if (principal.source === "token" && principal.type === "human") {
-        const machineId = c.req.header("x-ak-machine-id");
-        if (machineId) {
-          if (!/^[A-Za-z0-9_-]{1,160}$/.test(machineId)) return c.json({ error: { code: "FORBIDDEN", message: "Invalid AK machine context" } }, 403);
-          const binding = await c.env.DB.prepare(
-            `SELECT 1 FROM realmroot_native_machine_bindings
-             WHERE tenant_id = ? AND subject_id = ? AND machine_id = ?`,
-          )
-            .bind(principal.tenantId, principal.subjectId, machineId)
-            .first();
-          if (!binding) return c.json({ error: { code: "FORBIDDEN", message: "Native subject is not bound to this machine" } }, 403);
-          c.set("machineId", machineId);
-          c.set("identityType", "machine");
-        }
+    c.set("ownerId", principal.tenantId);
+    c.set("identityType", principal.type === "human" ? "user" : principal.type);
+    if (principal.type === "machine") c.set("machineId", principal.subjectId);
+    if (principal.source === "token" && principal.type === "human") {
+      const machineId = c.req.header("x-ak-machine-id");
+      if (machineId) {
+        if (!/^[A-Za-z0-9_-]{1,160}$/.test(machineId)) return c.json({ error: { code: "FORBIDDEN", message: "Invalid AK machine context" } }, 403);
+        const binding = await c.env.DB.prepare(
+          `SELECT 1 FROM realmroot_native_machine_bindings
+           WHERE tenant_id = ? AND subject_id = ? AND machine_id = ?`,
+        )
+          .bind(principal.tenantId, principal.subjectId, machineId)
+          .first();
+        if (!binding) return c.json({ error: { code: "FORBIDDEN", message: "Native subject is not bound to this machine" } }, 403);
+        c.set("machineId", machineId);
+        c.set("identityType", "machine");
       }
     }
     return enforceRouteRule(c, next);
@@ -158,6 +157,99 @@ export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) 
     }
     throw error;
   }
+}
+
+function localAgentToken(authorization: string | undefined): string | null {
+  if (!authorization?.startsWith("Bearer ")) return null;
+  const token = authorization.slice(7);
+  try {
+    return decodeProtectedHeader(token).typ === "agent+jwt" ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+async function authenticateAkAgent(c: Context<{ Bindings: Env }>, token: string, next: Next): Promise<Response> {
+  const unverified = decodeJwt(token) as { sub?: unknown; aid?: unknown };
+  if (typeof unverified.sub !== "string" || typeof unverified.aid !== "string") throw new AuthError("Invalid AK Agent token claims");
+
+  const row = await c.env.DB.prepare(
+    `SELECT s.id AS session_id, s.agent_id, s.machine_id, s.public_key, a.owner_id, a.kind, 'legacy' AS source
+     FROM agent_sessions s
+     JOIN agents a ON a.id = s.agent_id
+     WHERE s.id = ? AND s.agent_id = ? AND s.status = 'active' AND a.version = 'latest'
+     UNION ALL
+     SELECT s.id AS session_id, s.agent_id, NULL AS machine_id, s.public_key, s.owner_id, a.kind, 'ama' AS source
+     FROM ama_agent_sessions s
+     JOIN agents a ON a.id = s.agent_id AND a.owner_id = s.owner_id
+     WHERE s.id = ? AND s.agent_id = ? AND s.status = 'active' AND a.version = 'latest'
+     LIMIT 1`,
+  )
+    .bind(unverified.sub, unverified.aid, unverified.sub, unverified.aid)
+    .first<{
+      session_id: string;
+      agent_id: string;
+      machine_id: string | null;
+      public_key: string;
+      owner_id: string;
+      kind: string;
+      source: "legacy" | "ama";
+    }>();
+  if (!row) return c.json({ error: { code: "FORBIDDEN", message: "AK Agent session is not active" } }, 403);
+
+  const key = await importJWK({ kty: "OKP", crv: "Ed25519", x: row.public_key }, "EdDSA");
+  const { payload, protectedHeader } = await jwtVerify(token, key, {
+    algorithms: ["EdDSA"],
+    typ: "agent+jwt",
+    audience: new URL(c.req.url).origin,
+  });
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    protectedHeader.alg !== "EdDSA" ||
+    payload.sub !== row.session_id ||
+    payload.aid !== row.agent_id ||
+    typeof payload.iat !== "number" ||
+    typeof payload.exp !== "number" ||
+    payload.iat < now - 120 ||
+    payload.iat > now + 30 ||
+    payload.exp <= now ||
+    payload.exp > now + 150 ||
+    payload.exp - payload.iat > 120 ||
+    typeof payload.jti !== "string" ||
+    payload.jti.length === 0 ||
+    payload.jti.length > 160
+  ) {
+    throw new AuthError("Invalid AK Agent token claims");
+  }
+
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare("DELETE FROM ak_agent_jwt_replays WHERE expires_at <= ?").bind(new Date().toISOString()),
+      c.env.DB.prepare("INSERT INTO ak_agent_jwt_replays (session_id, jti, expires_at) VALUES (?, ?, ?)").bind(
+        row.session_id,
+        payload.jti,
+        new Date((payload.exp ?? Math.floor(Date.now() / 1000) + 60) * 1000).toISOString(),
+      ),
+    ]);
+  } catch (error) {
+    if (String(error).includes("UNIQUE") || String(error).includes("PRIMARY KEY")) throw new AuthError("Replayed AK Agent token");
+    throw error;
+  }
+
+  const leader = row.kind === "leader";
+  const scopes = leader
+    ? ["task:assign", "task:complete", "task:reject", "task:cancel", "task:log", "task:message", "agent:usage", "ak:read", "ak:write"]
+    : ["task:claim", "task:review", "task:log", "task:message", "agent:usage", "ak:read"];
+  c.set("principal", { source: "session", type: "agent", subjectId: row.agent_id, tenantId: row.owner_id, scopes });
+  c.set("ownerId", row.owner_id);
+  c.set("agentId", row.agent_id);
+  c.set("sessionId", row.session_id);
+  c.set("agentRuntimeSource", row.source);
+  c.set("agentCapabilities", scopes);
+  c.set("identityType", leader ? "agent:leader" : "agent:worker");
+  if (row.machine_id) c.set("machineId", row.machine_id);
+  const response = await enforceRouteRule(c, next);
+  return response ?? c.res;
 }
 
 async function ensureTokenPrincipal(c: Context<{ Bindings: Env }>, principal: RealmrootPrincipal): Promise<void> {
@@ -179,35 +271,6 @@ async function ensureTokenPrincipal(c: Context<{ Bindings: Env }>, principal: Re
   await c.env.DB.batch(statements);
 }
 
-async function bindAgent(c: Context<{ Bindings: Env }>, principal: RealmrootPrincipal): Promise<Response | null> {
-  const row = await c.env.DB.prepare("SELECT id, kind FROM agents WHERE owner_id = ? AND realmroot_agent_id = ? AND version = 'latest' LIMIT 1")
-    .bind(principal.tenantId, principal.realmrootAgentId)
-    .first<{ id: string; kind: string }>();
-  if (!row) return c.json({ error: { code: "FORBIDDEN", message: "Realmroot Agent is not bound to an AK Agent" } }, 403);
-  const leader = row.kind === "leader";
-  const sessionId = c.req.header("x-ak-session-id");
-  if (sessionId) {
-    const session = await c.env.DB.prepare(
-      `SELECT id FROM agent_sessions
-       WHERE id = ? AND agent_id = ? AND status = 'active'
-       UNION ALL
-       SELECT id FROM ama_agent_sessions
-       WHERE id = ? AND owner_id = ? AND agent_id = ? AND status = 'active'
-       LIMIT 1`,
-    )
-      .bind(sessionId, row.id, sessionId, principal.tenantId, row.id)
-      .first();
-    if (!session) return c.json({ error: { code: "FORBIDDEN", message: "AK Agent session context is invalid" } }, 403);
-    c.set("sessionId", sessionId);
-  }
-  c.set("ownerId", principal.tenantId);
-  c.set("agentId", row.id);
-  c.set("agentRuntimeSource", "ama");
-  c.set("agentCapabilities", principal.scopes);
-  c.set("identityType", leader ? "agent:leader" : "agent:worker");
-  return null;
-}
-
 function enforceRouteRule(c: Context<{ Bindings: Env }>, next: Next) {
   const identity = c.get("identityType") as IdentityType;
   const rule = ROUTE_RULES.find(({ method, pattern }) => method === c.req.method && pattern.test(c.req.path))?.rule;
@@ -216,7 +279,7 @@ function enforceRouteRule(c: Context<{ Bindings: Env }>, next: Next) {
   }
   if (!rule.allow.includes(identity)) return c.json({ error: { code: "FORBIDDEN", message: `${rule.allow.join(" or ")} required` } }, 403);
   const principal = c.get("principal");
-  if (rule.scope && principal.source === "token" && !principal.scopes.includes(rule.scope)) {
+  if (rule.scope && (principal.source === "token" || principal.type === "agent") && !principal.scopes.includes(rule.scope)) {
     return c.json({ error: { code: "FORBIDDEN", message: `Missing scope: ${rule.scope}` } }, 403);
   }
   return next();

@@ -23,14 +23,12 @@ AK_RESOURCE = "https://agent-kanban.dev/api"
 REALMROOT_CONSOLE_URL = "https://id.realmroot.dev"
 REALMROOT_WEB_CLIENT_ID = "01a02088-aac0-74a9-a5a9-ffca6cf338c0"
 REALMROOT_CLI_CLIENT_ID = "01a02088-7878-734d-94dc-de7c9ac081b3"
-AMA_MACHINE_CLIENT_ID = "01a02088-efb1-76e9-8c30-7260680eb11a"
-AMA_MACHINE_SCOPES = "projects:read projects:write agents:read agents:write environments:read environments:write sessions:read sessions:write triggers:read triggers:write vaults:read vaults:write memory-stores:read memory-stores:write providers:read runners:read usage-records:read"
 AMA_RUNNER_VERSION = "0.7.0"
 GITHUB_APP_ID = "4098405"
 GITHUB_APP_SLUG = "agent-kanban"
 
 # Secrets are set via `wrangler secret put`:
-# REALMROOT_WEB_CLIENT_SECRET, AMA_MACHINE_CLIENT_SECRET, AMA_DPOP_PRIVATE_JWK,
+# REALMROOT_WEB_CLIENT_SECRET, REALMROOT_SESSION_ENCRYPTION_KEY,
 # MAILS_ADMIN_TOKEN, CF_API_TOKEN, GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_PRIVATE_KEY
 # Local dev overrides are in .dev.vars
 
@@ -93,8 +91,6 @@ AK_RESOURCE = "TODO_STAGING_AK_API_URL/api"
 REALMROOT_CONSOLE_URL = "https://id.realmroot.dev"
 REALMROOT_WEB_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_WEB_CLIENT_ID"
 REALMROOT_CLI_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_CLI_CLIENT_ID"
-AMA_MACHINE_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_MACHINE_CLIENT_ID"
-AMA_MACHINE_SCOPES = "projects:read projects:write agents:read agents:write environments:read environments:write sessions:read sessions:write triggers:read triggers:write vaults:read vaults:write memory-stores:read memory-stores:write providers:read runners:read usage-records:read"
 AMA_RUNNER_VERSION = "0.7.0"
 GITHUB_APP_ID = "4153714"
 GITHUB_APP_SLUG = "agent-kanban-staging"

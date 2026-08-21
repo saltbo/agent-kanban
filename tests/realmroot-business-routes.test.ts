@@ -105,25 +105,23 @@ describe("Realmroot-authenticated business routes", () => {
     expect(response.status).toBe(401);
   });
 
-  it("keeps Realmroot Agent bindings immutable across profile upserts", async () => {
+  it("does not accept or expose deprecated Realmroot Agent binding fields", async () => {
     const agent = await createTestAgent(env.DB, "tenant-business", {
       username: "immutable-binding-agent",
       runtime: "claude",
-      realmroot_agent_id: "realmroot-agent-original",
-      realmroot_credential_ref: "ama://vaults/vault-business/credentials/original",
     });
 
     const response = await request("POST", "/api/agents", {
       username: agent.username,
       runtime: "claude",
-      realmroot_agent_id: "realmroot-agent-replacement",
-      realmroot_credential_ref: "ama://vaults/vault-business/credentials/replacement",
+      realmroot_agent_id: "deprecated-agent-id",
+      realmroot_credential_ref: "deprecated-credential-ref",
     });
 
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      error: { message: "Realmroot Agent bindings are immutable; create a new Agent identity instead" },
-    });
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("realmroot_agent_id");
+    expect(body).not.toHaveProperty("realmroot_credential_ref");
   });
 
   it("rejects Agent session operations across Realmroot tenant and Agent boundaries", async () => {
