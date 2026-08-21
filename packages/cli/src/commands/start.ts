@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -124,6 +125,12 @@ function maskApiUrl(url: string): string {
   }
 }
 
+function runnerContextLoginMarker(origin: string): string {
+  const canonicalOrigin = origin.replace(/\/$/, "");
+  const originHash = createHash("sha256").update(canonicalOrigin).digest("hex").slice(0, 32);
+  return join(STATE_DIR, `ama-runner-context-login-${originHash}-v1`);
+}
+
 function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   const args: string[] = [];
   const add = (flag: string, value: unknown) => {
@@ -245,6 +252,12 @@ function runnerLoginStatus(origin: string): "missing" | "valid" | "refresh" {
 // interactive step from the polling run mode. AK drives it once, foreground, so
 // the user can authorize; the saved refresh token keeps later starts silent.
 function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.ProcessEnv): void {
+  const contextLoginMarker = runnerContextLoginMarker(origin);
+  if (!existsSync(contextLoginMarker) && existsSync(AMA_RUNNER_CREDENTIALS_FILE)) {
+    const logout = spawnSync(runnerBin, ["auth", "logout", origin], { stdio: "ignore", env });
+    if (logout.error) throw new Error(`Failed to clear pre-Context ama-runner login: ${logout.error.message}`);
+    if (logout.status !== 0) throw new Error(`Failed to clear pre-Context ama-runner login (exit status ${logout.status})`);
+  }
   const status = runnerLoginStatus(origin);
   if (status === "valid") return;
   if (status === "refresh") {
@@ -260,6 +273,7 @@ function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.Proces
   const result = spawnSync(runnerBin, ["auth", "login", "--api-server", origin], { stdio: "inherit", env });
   if (result.error) throw new Error(`Failed to launch ama-runner login: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`ama-runner login did not complete (exit status ${result.status}); cannot start the machine runner`);
+  writeFileSync(contextLoginMarker, "authorization-code-pkce\n", { mode: 0o600 });
 }
 
 function machineRuntimes(): MachineRuntime[] {

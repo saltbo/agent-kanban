@@ -1,6 +1,7 @@
 // @vitest-environment node
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -44,6 +45,10 @@ vi.mock("../src/version.js", () => ({ getVersion: () => "9.9.9" }));
 const { registerLogsCommand, registerRestartCommand, registerStartCommand, registerStatusCommand, registerStopCommand } = await import(
   "../src/commands/start.js"
 );
+
+const runnerCredentialsFile = `${state.directory}/ama-runner-credentials.json`;
+const defaultAmaOrigin = "https://ama.example.test";
+const contextLoginMarker = runnerContextLoginMarker(defaultAmaOrigin);
 
 beforeEach(() => {
   rmSync(state.directory, { recursive: true, force: true });
@@ -117,9 +122,187 @@ describe("ak start Machine runner lifecycle", () => {
     });
   });
 
+  it("clears a pre-Context credential before login and writes a private migration marker", async () => {
+    writeRunnerCredentials({ accessToken: "old-access", expiresAt: futureExpiry() });
+    state.spawnSync.mockImplementation((_command, args) => {
+      if (args[1] === "logout") {
+        rmSync(runnerCredentialsFile);
+        return { status: 0 };
+      }
+      if (args[1] === "login") {
+        writeRunnerCredentials({ accessToken: "context-access", expiresAt: futureExpiry() });
+        return { status: 0 };
+      }
+      return { status: 1 };
+    });
+
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+
+    expect(state.spawnSync.mock.calls.map((call) => call[1])).toEqual([
+      ["auth", "logout", "https://ama.example.test"],
+      ["auth", "login", "--api-server", "https://ama.example.test"],
+    ]);
+    expect(readFileSync(contextLoginMarker, "utf8")).toBe("authorization-code-pkce\n");
+    expect(statSync(contextLoginMarker).mode & 0o777).toBe(0o600);
+  });
+
+  it("migrates Context login independently for canonicalized origins in one credential store", async () => {
+    const originA = "https://ama-a.example.test";
+    const originB = "https://ama-b.example.test";
+    writeRunnerCredentialStore({
+      active: `${originB}/#legacy-b`,
+      profiles: [
+        { accountId: "legacy-a", apiServer: `${originA}/`, accessToken: "old-a", expiresAt: futureExpiry() },
+        { accountId: "legacy-b", apiServer: `${originB}/`, accessToken: "old-b", expiresAt: futureExpiry() },
+      ],
+    });
+    state.registerMachine
+      .mockResolvedValueOnce(registeredMachine(`${originA}/`))
+      .mockResolvedValueOnce(registeredMachine(`${originB}/`))
+      .mockResolvedValueOnce(registeredMachine(`${originA}/`));
+    state.spawnSync.mockImplementation((_command, args) => {
+      const action = args[1];
+      if (action === "logout") {
+        const origin = String(args[2]);
+        const store = readRunnerCredentialStore();
+        const profiles = store.profiles.filter((profile) => canonicalOrigin(profile.apiServer) !== canonicalOrigin(origin));
+        writeRunnerCredentialStore({
+          active: profiles.length === 1 ? `${profiles[0].apiServer}#${profiles[0].accountId}` : store.active,
+          profiles,
+        });
+        return { status: 0 };
+      }
+      if (action === "login") {
+        const origin = canonicalOrigin(String(args[3]));
+        const accountId = origin === originA ? "context-a" : "context-b";
+        const store = readRunnerCredentialStore();
+        writeRunnerCredentialStore({
+          active: `${origin}#${accountId}`,
+          profiles: [...store.profiles, { accountId, apiServer: origin, accessToken: `access-${accountId}`, expiresAt: futureExpiry() }],
+        });
+        return { status: 0 };
+      }
+      return { status: 1 };
+    });
+
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+    expect(
+      readRunnerCredentialStore()
+        .profiles.map((profile) => canonicalOrigin(profile.apiServer))
+        .sort(),
+    ).toEqual([originA, originB]);
+    expect(readRunnerCredentialStore().profiles.find((profile) => canonicalOrigin(profile.apiServer) === originB)?.accessToken).toBe("old-b");
+
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+
+    expect(state.spawnSync.mock.calls.map((call) => call[1])).toEqual([
+      ["auth", "logout", originA],
+      ["auth", "login", "--api-server", originA],
+      ["auth", "logout", originB],
+      ["auth", "login", "--api-server", originB],
+    ]);
+    expect(
+      readRunnerCredentialStore()
+        .profiles.map((profile) => canonicalOrigin(profile.apiServer))
+        .sort(),
+    ).toEqual([originA, originB]);
+    expect(readRunnerCredentialStore().profiles.find((profile) => canonicalOrigin(profile.apiServer) === originA)?.accessToken).toBe(
+      "access-context-a",
+    );
+    const markers = [runnerContextLoginMarker(`${originA}/`), runnerContextLoginMarker(`${originB}/`)];
+    expect(
+      readdirSync(state.directory)
+        .filter((name) => name.startsWith("ama-runner-context-login-"))
+        .sort(),
+    ).toEqual(markers.map((marker) => marker.slice(state.directory.length + 1)).sort());
+    for (const marker of markers) {
+      expect(readFileSync(marker, "utf8")).toBe("authorization-code-pkce\n");
+      expect(statSync(marker).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("keeps a valid Context-login credential silent when the marker exists", async () => {
+    writeFileSync(contextLoginMarker, "authorization-code-pkce\n", { mode: 0o600 });
+    writeRunnerCredentials({ accessToken: "valid-access", expiresAt: futureExpiry() });
+
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+
+    expect(state.spawnSync).not.toHaveBeenCalled();
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Authenticating ama-runner"));
+  });
+
+  it("refreshes an expiring marked credential without starting interactive login", async () => {
+    writeFileSync(contextLoginMarker, "authorization-code-pkce\n", { mode: 0o600 });
+    writeRunnerCredentials({ accessToken: "expired-access", refreshToken: "refresh-token", expiresAt: new Date(0).toISOString() });
+
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+
+    expect(state.spawnSync.mock.calls.map((call) => call[1])).toEqual([["auth", "refresh"]]);
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Authenticating ama-runner"));
+  });
+
+  it.each([
+    { name: "non-zero status", result: { status: 19 }, message: "Failed to clear pre-Context ama-runner login (exit status 19)" },
+    {
+      name: "spawn error",
+      result: { status: null, error: new Error("logout unavailable") },
+      message: "Failed to clear pre-Context ama-runner login: logout unavailable",
+    },
+  ])("fails fast when pre-Context logout returns a $name", async ({ result, message }) => {
+    writeRunnerCredentials({ accessToken: "old-access", expiresAt: futureExpiry() });
+    state.spawnSync.mockReturnValue(result);
+
+    await expect(command(registerStartCommand).parseAsync(["start"], { from: "user" })).rejects.toThrow(message);
+
+    expect(state.spawnSync).toHaveBeenCalledTimes(1);
+    expect(state.spawnSync).toHaveBeenCalledWith(
+      `${state.directory}/ama-runner`,
+      ["auth", "logout", "https://ama.example.test"],
+      expect.objectContaining({ stdio: "ignore" }),
+    );
+    expect(state.spawnSync).not.toHaveBeenCalledWith(expect.anything(), expect.arrayContaining(["login"]), expect.anything());
+    expect(() => statSync(contextLoginMarker)).toThrow();
+  });
+
+  it("does not write the migration marker when Context login fails", async () => {
+    state.spawnSync.mockReturnValue({ status: 7 });
+
+    await expect(command(registerStartCommand).parseAsync(["start"], { from: "user" })).rejects.toThrow(
+      "ama-runner login did not complete (exit status 7); cannot start the machine runner",
+    );
+
+    expect(state.spawnSync).toHaveBeenCalledWith(
+      `${state.directory}/ama-runner`,
+      ["auth", "login", "--api-server", "https://ama.example.test"],
+      expect.objectContaining({ stdio: "inherit" }),
+    );
+    expect(() => statSync(contextLoginMarker)).toThrow();
+  });
+
+  it("performs Context login once and keeps the next start silent", async () => {
+    state.spawnSync.mockImplementation((_command, args) => {
+      if (args[1] === "login") {
+        writeRunnerCredentials({ accessToken: "context-access", expiresAt: futureExpiry() });
+        return { status: 0 };
+      }
+      return { status: 1 };
+    });
+
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+    expect(state.spawnSync.mock.calls.map((call) => call[1])).toEqual([["auth", "login", "--api-server", "https://ama.example.test"]]);
+
+    vi.mocked(console.log).mockClear();
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+
+    expect(state.spawnSync).toHaveBeenCalledTimes(1);
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Authenticating ama-runner"));
+  });
+
   it("logs out and re-runs runner login when refresh fails", async () => {
+    writeFileSync(contextLoginMarker, "authorization-code-pkce\n", { mode: 0o600 });
     writeFileSync(
-      `${state.directory}/ama-runner-credentials.json`,
+      runnerCredentialsFile,
       JSON.stringify({
         active: "https://ama.example.test#account-1",
         profiles: [
@@ -212,4 +395,53 @@ function writeRuntimeState(pid: number, maxConcurrent: number): void {
       machineId: "machine-1",
     }),
   );
+}
+
+function futureExpiry(): string {
+  return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+}
+
+function writeRunnerCredentials(profile: { accessToken: string; refreshToken?: string; expiresAt: string }): void {
+  writeRunnerCredentialStore({
+    active: `${defaultAmaOrigin}#account-1`,
+    profiles: [{ accountId: "account-1", apiServer: defaultAmaOrigin, ...profile }],
+  });
+}
+
+interface TestRunnerCredentialProfile {
+  accountId: string;
+  apiServer: string;
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: string;
+}
+
+interface TestRunnerCredentialStore {
+  active: string;
+  profiles: TestRunnerCredentialProfile[];
+}
+
+function writeRunnerCredentialStore(store: TestRunnerCredentialStore): void {
+  writeFileSync(runnerCredentialsFile, JSON.stringify(store), { mode: 0o600 });
+}
+
+function readRunnerCredentialStore(): TestRunnerCredentialStore {
+  return JSON.parse(readFileSync(runnerCredentialsFile, "utf8"));
+}
+
+function canonicalOrigin(origin: string): string {
+  return origin.replace(/\/$/, "");
+}
+
+function runnerContextLoginMarker(origin: string): string {
+  const hash = createHash("sha256").update(canonicalOrigin(origin)).digest("hex").slice(0, 32);
+  return `${state.directory}/ama-runner-context-login-${hash}-v1`;
+}
+
+function registeredMachine(origin: string) {
+  return {
+    id: "machine-1",
+    name: "test-machine",
+    runner: { origin, projectId: "project-1", environmentId: "environment-1" },
+  };
 }
