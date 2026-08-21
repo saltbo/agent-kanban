@@ -85,6 +85,7 @@ export async function resumeSession(session: SessionFile, message: string, clien
       cleanupGnupgHome(gnupgHome);
     },
     model: session.model,
+    reasoningEffort: session.reasoningEffort,
   });
 
   await sessions.applyEvent(session.sessionId, { type: "resume_started" });

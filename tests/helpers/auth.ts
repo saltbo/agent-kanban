@@ -27,18 +27,27 @@ export async function signUpAndGetBoard(page: Page, email: string, name = "Test 
   if (!res.ok) throw new Error(`Sign up failed: ${res.status} ${await res.text()}`);
 
   markEmailVerified(email);
-  const signInRes = await fetch(`${origin}/api/auth/sign-in/email`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      origin,
-    },
-    body: JSON.stringify({ email, password: "password123" }),
-  });
-  if (!signInRes.ok) throw new Error(`Sign in failed: ${signInRes.status} ${await signInRes.text()}`);
+  // Retry transient 5xx from the local dev server: under parallel workers the D1 SQLite
+  // file can be briefly locked (e.g. by the markEmailVerified UPDATE above or by another
+  // worker's sign-up), and wrangler/miniflare surfaces that as a bare 500 from sign-in.
+  let signInRes: Response | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    signInRes = await fetch(`${origin}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+      },
+      body: JSON.stringify({ email, password: "password123" }),
+    });
+    if (signInRes.ok || signInRes.status < 500) break;
+    await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+  }
+  const finalSignIn = signInRes!;
+  if (!finalSignIn.ok) throw new Error(`Sign in failed: ${finalSignIn.status} ${await finalSignIn.text()}`);
 
-  const token = signInRes.headers.get("set-auth-token");
-  const cookie = sessionCookie(signInRes);
+  const token = finalSignIn.headers.get("set-auth-token");
+  const cookie = sessionCookie(finalSignIn);
   if (!token || !cookie) throw new Error("Sign in did not return a session");
 
   await page.context().addCookies([{ name: cookie.name, value: cookie.value, url: origin }]);

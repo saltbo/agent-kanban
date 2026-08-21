@@ -1,5 +1,5 @@
 /**
- * Agents → 配额 tab — CC-Switch-style quota cards for the owner's configured
+ * Agents → Relay tab — CC-Switch-style quota cards for the owner's configured
  * Kimi/DeepSeek relays. Each card live-probes its relay through the server
  * (GET /api/relays/:id/usage), auto-refreshing every 60s, with a manual
  * refresh button and per-card config/delete actions.
@@ -7,12 +7,13 @@
 import type { RelayEndpointConfig, RelayUsageResponse } from "@agent-kanban/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
-import { Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
+import { FileJson, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
 import { RelayEndpointDialog } from "./RelayEndpointDialog";
+import { RelayImportDialog } from "./RelayImportDialog";
 import { formatResetCountdown, isPendingReset, UsageWindowsList } from "./UsageBars";
 import { Button } from "./ui/button";
 
@@ -30,6 +31,7 @@ function updatedAgo(fetchedAt: string, now: number = Date.now()): string {
 export function RelayQuotaPanel() {
   const { data: relays = [], isLoading } = useQuery({ queryKey: ["relays"], queryFn: () => api.relays.list() });
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<RelayEndpointConfig | undefined>(undefined);
 
   function openCreate() {
@@ -43,10 +45,16 @@ export function RelayQuotaPanel() {
         <p className="text-xs text-content-tertiary">
           Live quota for Claude Code relay endpoints (Kimi / DeepSeek). Probes run server-side; tokens never leave it.
         </p>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="size-3.5" />
-          Add relay
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+            <FileJson className="size-3.5" />
+            Import JSON
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-3.5" />
+            Add relay
+          </Button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -78,6 +86,7 @@ export function RelayQuotaPanel() {
       )}
 
       <RelayEndpointDialog open={dialogOpen} onOpenChange={setDialogOpen} endpoint={editing} />
+      <RelayImportDialog open={importOpen} onOpenChange={setImportOpen} />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 /**
  * Shared usage-window rendering — extracted from MachineRuntimes so the
- * Agents → 配额 relay cards and the machine availability views render quota
+ * Agents → Relay cards and the machine availability views render quota
  * bars with identical thresholds and styling.
  */
 import type { UsageWindow } from "@agent-kanban/shared";

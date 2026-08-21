@@ -1396,6 +1396,39 @@ describe("claudeProvider.execute — handle shape", () => {
   });
 });
 
+describe("claudeProvider.execute — reasoning effort", () => {
+  async function lastQueryOptions(): Promise<Record<string, unknown>> {
+    const { query: mockQuery } = await import("@anthropic-ai/claude-agent-sdk");
+    const calls = vi.mocked(mockQuery).mock.calls;
+    return (calls.at(-1)?.[0] as { options: Record<string, unknown> }).options;
+  }
+
+  it.each(["low", "medium", "high", "max"] as const)("passes effort=%s through to the SDK query options", async (effort) => {
+    await claudeProvider.execute({ sessionId: "s1", cwd: "/tmp", env: {}, taskContext: "ctx", reasoningEffort: effort });
+
+    expect((await lastQueryOptions()).effort).toBe(effort);
+  });
+
+  it("omits effort for an unrecognized reasoningEffort value", async () => {
+    await claudeProvider.execute({ sessionId: "s1", cwd: "/tmp", env: {}, taskContext: "ctx", reasoningEffort: "extreme" });
+
+    expect(await lastQueryOptions()).not.toHaveProperty("effort");
+  });
+
+  // minimal/xhigh are codex-only effort levels — the claude provider must drop them.
+  it.each(["minimal", "xhigh"])("omits effort for codex-only value %s", async (effort) => {
+    await claudeProvider.execute({ sessionId: "s1", cwd: "/tmp", env: {}, taskContext: "ctx", reasoningEffort: effort });
+
+    expect(await lastQueryOptions()).not.toHaveProperty("effort");
+  });
+
+  it("omits effort when reasoningEffort is not provided", async () => {
+    await claudeProvider.execute({ sessionId: "s1", cwd: "/tmp", env: {}, taskContext: "ctx" });
+
+    expect(await lastQueryOptions()).not.toHaveProperty("effort");
+  });
+});
+
 describe("claudeProvider.listModels", () => {
   it("normalizes SDK supported models and closes the query", async () => {
     const { query: mockQuery } = await import("@anthropic-ai/claude-agent-sdk");

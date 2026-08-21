@@ -34,6 +34,7 @@ export interface SessionFile {
   workspace?: WorkspaceInfo;
   status?: SessionStatus;
   model?: string;
+  reasoningEffort?: string;
   providerResumeToken?: string;
   gpgSubkeyId?: string | null;
   agentUsername?: string;

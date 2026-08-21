@@ -7,6 +7,7 @@ import type {
   RelayEndpointInput,
   RelayUsageResponse,
   Repository,
+  RuntimeModel,
   SchedulingSettings,
 } from "@agent-kanban/shared";
 import { getAuthToken, refreshAuthToken } from "./auth-client";
@@ -197,6 +198,9 @@ export const api = {
     update: (id: string, input: RelayEndpointInput) => request<RelayEndpointConfig>("PUT", `/relays/${id}`, input),
     delete: (id: string) => request<void>("DELETE", `/relays/${id}`),
     usage: (id: string) => request<RelayUsageResponse>("GET", `/relays/${id}/usage`),
+  },
+  models: {
+    list: (runtime: AgentRuntime) => request<RuntimeModel[]>("GET", `/models?runtime=${encodeURIComponent(runtime)}`),
   },
   admin: {
     getStats: () => request<any>("GET", "/admin/stats"),

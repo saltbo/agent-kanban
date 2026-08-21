@@ -7,6 +7,8 @@ export interface PendingTaskRuntimeBinding {
   assignedTo: string;
   runtime: string;
   model: string | null;
+  /** Relay agents bypass the runner model list for availability. */
+  relayId: string | null;
   current: TaskRuntimeSource | null;
   hasAmaBinding: boolean;
 }
@@ -20,6 +22,7 @@ export async function listPendingTaskRuntimeBindings(db: D1): Promise<PendingTas
         t.assigned_to,
         a.runtime,
         a.model,
+        a.relay_id,
         json_extract(t.metadata, '$.annotations."${TASK_RUNTIME_SOURCE_ANNOTATION}"') AS current_source,
         CASE WHEN
           (
@@ -43,6 +46,7 @@ export async function listPendingTaskRuntimeBindings(db: D1): Promise<PendingTas
       assigned_to: string;
       runtime: string;
       model: string | null;
+      relay_id: string | null;
       current_source: string | null;
       has_ama_binding: number;
     }>();
@@ -52,6 +56,7 @@ export async function listPendingTaskRuntimeBindings(db: D1): Promise<PendingTas
     assignedTo: row.assigned_to,
     runtime: row.runtime,
     model: row.model,
+    relayId: row.relay_id,
     current: row.current_source === "ama" || row.current_source === "legacy" ? row.current_source : null,
     hasAmaBinding: row.has_ama_binding === 1,
   }));

@@ -20,13 +20,18 @@ test.describe("Agents Page", () => {
     const fingerprintButton = page.getByRole("button", { name: /^[0-9a-f:]+$/ }).first();
     await fingerprintButton.click();
 
-    // expect: Identity modal is displayed
+    // expect: Identity modal is displayed.
+    // Scope all modal interactions to the dialog itself (base-ui Dialog.Popup has role "dialog"
+    // and is named by its title) so the bare "Close" name can't collide with other page controls.
+    const dialog = page.getByRole("dialog", { name: "Cryptographic Identity" });
+    await expect(dialog).toBeVisible();
     await expect(page.getByRole("heading", { name: "Cryptographic Identity" })).toBeVisible();
 
     // 2. Click the close button in the modal header
-    await page.getByRole("button", { name: "Close" }).click();
+    await dialog.getByRole("button", { name: "Close" }).click();
 
     // expect: The modal closes
+    await expect(dialog).not.toBeVisible();
     await expect(page.getByRole("heading", { name: "Cryptographic Identity" })).not.toBeVisible();
 
     // expect: The agent detail page is visible behind it

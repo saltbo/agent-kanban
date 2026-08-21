@@ -5,6 +5,10 @@ import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskFormDialog } from "../apps/web/src/components/TaskFormDialog";
 
+// Heavy jsdom + Base UI select interactions: default 5s timeout flakes under
+// full-suite parallel load. Give every test in this file a generous budget.
+vi.setConfig({ testTimeout: 20000 });
+
 const tasksCreate = vi.fn();
 const tasksUpdate = vi.fn();
 const tasksAssign = vi.fn();

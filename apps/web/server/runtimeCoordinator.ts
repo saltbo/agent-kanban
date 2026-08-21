@@ -32,7 +32,9 @@ export async function resolveAssignableWorkerRuntimeSource(
   }
 
   const runtime = agent.runtime as AgentRuntime;
-  const source = selectRuntimeSource(await resolveRuntimeSourceAvailability(db, env, ownerId, runtime, agent.model));
+  // Relay agents terminate the model at the relay — the machine model catalog
+  // is irrelevant, so bypass the runner model gate.
+  const source = selectRuntimeSource(await resolveRuntimeSourceAvailability(db, env, ownerId, runtime, agent.relay_id ? null : agent.model));
   if (!source) {
     throw new HTTPException(409, {
       message: `Runtime "${runtime}" is not available on any AMA runner or online local machine.`,
@@ -67,10 +69,12 @@ export async function routePendingTasks(db: D1, env: Env): Promise<void> {
     }
 
     const runtime = row.runtime as AgentRuntime;
-    const cacheKey = JSON.stringify([row.ownerId, runtime, row.model]);
+    // Relay agents bypass the runner model gate (the relay owns the model).
+    const model = row.relayId ? null : row.model;
+    const cacheKey = JSON.stringify([row.ownerId, runtime, model]);
     let availability = availabilityByRuntime.get(cacheKey);
     if (!availability) {
-      availability = await resolveRuntimeSourceAvailability(db, env, row.ownerId, runtime, row.model);
+      availability = await resolveRuntimeSourceAvailability(db, env, row.ownerId, runtime, model);
       availabilityByRuntime.set(cacheKey, availability);
     }
 

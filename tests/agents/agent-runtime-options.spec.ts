@@ -87,7 +87,12 @@ test.describe("Agent runtime options", () => {
     await expect(page).toHaveURL(`/agents/${workerId}/edit`);
     await expect(page.getByRole("heading", { name: "Edit agent" })).toBeVisible();
 
-    const workerRuntime = page.getByRole("group", { name: "Runtime" }).locator('[data-slot="select-trigger"]');
+    // The Runtime fieldset now contains several selects (Runtime, Model, Relay, Thinking effort).
+    // Target the runtime select specifically by excluding the other triggers, which all carry
+    // stable ids. (The runtime trigger itself currently has no id in AgentEditPage.tsx.)
+    const workerRuntime = page
+      .getByRole("group", { name: "Runtime" })
+      .locator('[data-slot="select-trigger"]:not(#edit-agent-model):not(#edit-agent-relay):not(#edit-agent-reasoning)');
     await workerRuntime.click();
     await expect(page.getByRole("option")).toHaveText(WORKER_RUNTIME_LABELS);
   });

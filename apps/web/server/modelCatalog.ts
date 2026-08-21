@@ -1,15 +1,10 @@
-import { type AgentRuntime, isCloudAgentRuntime } from "@agent-kanban/shared";
+import { type AgentRuntime, isCloudAgentRuntime, MACHINE_STALE_TIMEOUT_MS, type RuntimeModel } from "@agent-kanban/shared";
 import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { type AmaCatalogModel, isAmaTaskDispatchConfigured, listAmaCatalogModels, listAmaRunners } from "./amaRuntime";
 import type { D1 } from "./db";
-import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
+import { listMachineEnvironmentCandidatesForRuntime, listMachinesForRuntimeRouting } from "./machineRepo";
 import { amaRunnerHeartbeatFresh, amaRuntimeName } from "./runtimeRouter";
 import type { Env } from "./types";
-
-export interface RuntimeModel {
-  id: string;
-  name?: string;
-}
 
 // AK's preferred cloud models, most-preferred first; the rest follow in catalog
 // order. Anthropic Haiku is first because smoke and default cloud agents require
@@ -21,7 +16,7 @@ const PREFERRED_CLOUD_MODELS = ["anthropic/claude-haiku-4-5", "@cf/openai/gpt-os
 // (the authority — fetched, never hardcoded here); self-hosted runtimes get the
 // models declared by the owner's live AMA runners.
 export async function listRuntimeModels(db: D1, env: Env, ownerId: string, runtime: AgentRuntime): Promise<RuntimeModel[]> {
-  if (!isAmaTaskDispatchConfigured(env)) return [];
+  if (!isAmaTaskDispatchConfigured(env)) return listLocalRuntimeModels(db, ownerId, runtime);
   if (isCloudAgentRuntime(runtime)) {
     const catalog = (await listAmaCatalogModels(env, ownerId)).filter((model) => model.availability === "available");
     return orderCloudModels(catalog).map((model) => ({ id: model.modelId, ...(model.displayName ? { name: model.displayName } : {}) }));
@@ -46,6 +41,31 @@ export async function listRuntimeModels(db: D1, env: Env, ownerId: string, runti
     }
   }
   return [...modelIds].map((id) => ({ id }));
+}
+
+async function listLocalRuntimeModels(db: D1, ownerId: string, runtime: AgentRuntime): Promise<RuntimeModel[]> {
+  const cutoff = Date.now() - MACHINE_STALE_TIMEOUT_MS;
+  const machines = await listMachinesForRuntimeRouting(db, ownerId);
+  const models = new Map<string, RuntimeModel>();
+  for (const machine of machines) {
+    if (machine.status !== "online" || !machine.last_heartbeat_at || Date.parse(machine.last_heartbeat_at) < cutoff) continue;
+    const runtimeState = machine.runtimes.find((entry) => entry.name === runtime);
+    if (!runtimeState || (runtimeState.status !== "ready" && runtimeState.status !== "limited")) continue;
+    for (const model of runtimeState.models ?? []) {
+      const existing = models.get(model.id);
+      models.set(model.id, existing ? mergeRuntimeModel(existing, model) : model);
+    }
+  }
+  return [...models.values()];
+}
+
+function mergeRuntimeModel(existing: RuntimeModel, incoming: RuntimeModel): RuntimeModel {
+  return {
+    ...existing,
+    ...incoming,
+    supports: { ...existing.supports, ...incoming.supports },
+    supported_reasoning_efforts: [...new Set([...(existing.supported_reasoning_efforts ?? []), ...(incoming.supported_reasoning_efforts ?? [])])],
+  };
 }
 
 // Sorts the preferred cloud models to the front, preserving catalog order for

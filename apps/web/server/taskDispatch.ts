@@ -35,6 +35,7 @@ import type { D1 } from "./db";
 import { isGithubAppConfigured, mintGithubInstallationToken } from "./githubApp";
 import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
+import { getRelayEndpoint, relayRuntimeEnv } from "./relayEndpointRepo";
 import { githubRepoRef } from "./repositoryRepo";
 import { taskRuntimeSource } from "./runtimeBinding";
 import { amaRunnerCanScheduleRuntime, amaRuntimeName } from "./runtimeRouter";
@@ -93,6 +94,14 @@ export async function dispatchTaskToAma(
   const amaProjectId = await requireAmaProjectId(db, ownerId);
   const akAgent = await getAgent(db, assignedTo, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
+  // An agent pinned to a relay runs its claude through the relay endpoint. The
+  // relay row supplies the base URL/model env and its token (delivered via the
+  // session secret below); a dangling relay_id is a config error, not a silent
+  // fallback to the default provider.
+  const relay = akAgent.relay_id ? await getRelayEndpoint(db, akAgent.relay_id, ownerId) : null;
+  if (akAgent.relay_id && !relay) {
+    throw new HTTPException(409, { message: `Agent "${akAgent.username}" is pinned to a relay that no longer exists` });
+  }
   const amaRuntime = amaRuntimeName(akAgent.runtime);
   // The AMA agent is created eagerly when the AK agent is created; dispatch
   // reads the stored id and never creates one.
@@ -140,7 +149,9 @@ export async function dispatchTaskToAma(
   if (cloudCandidate) {
     amaEnvironmentId = cloudCandidate.environmentId;
   } else {
-    const machineRuntime = await firstRunnableCandidate(env, ownerId, amaProjectId, candidates, amaRuntime, akAgent.model);
+    // Relay agents bypass the runner's model list — the relay terminates the
+    // request, so the machine's own model catalog is irrelevant.
+    const machineRuntime = await firstRunnableCandidate(env, ownerId, amaProjectId, candidates, amaRuntime, relay ? null : akAgent.model);
     // Capable machines exist but every runner is busy or offline: leave the task
     // queued and let the dispatch sweep retry when capacity frees up.
     if (!machineRuntime) {
@@ -169,6 +180,9 @@ export async function dispatchTaskToAma(
       name: sessionCredentialName(sessionIdentity.sessionId),
       secretData: {
         [AK_AGENT_KEY_DATA_KEY]: JSON.stringify(sessionIdentity.privateKeyJwk),
+        // Relay token rides the same vault credential as the agent key — never
+        // appears in plaintext env.
+        ...(relay ? { ANTHROPIC_AUTH_TOKEN: relay.token } : {}),
         ...(githubCloneCredential?.secretData ?? {}),
       },
       metadata: { akSessionId: sessionIdentity.sessionId, ...(githubCloneCredential?.metadata ?? {}) },
@@ -194,6 +208,10 @@ export async function dispatchTaskToAma(
           }
         : null,
       runtimeEnv: {
+        // Non-secret ANTHROPIC_* env from the relay (base URL, models, extras);
+        // the token arrives via the vault credential in runtimeSecretEnv.
+        // Spread first: extra_env must never override the AK-owned keys below.
+        ...(relay ? relayRuntimeEnv(relay) : {}),
         AK_WORKER: "1",
         AK_AGENT_ID: assignedTo,
         AK_SESSION_ID: sessionIdentity.sessionId,
@@ -204,6 +222,7 @@ export async function dispatchTaskToAma(
       runtimeSecretEnv: [
         ...boardRuntimeSecretEnv,
         { name: AK_AGENT_KEY_DATA_KEY, vaultId, credentialId: secret.credentialId, key: AK_AGENT_KEY_DATA_KEY },
+        ...(relay ? [{ name: "ANTHROPIC_AUTH_TOKEN", vaultId, credentialId: secret.credentialId, key: "ANTHROPIC_AUTH_TOKEN" }] : []),
       ],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);

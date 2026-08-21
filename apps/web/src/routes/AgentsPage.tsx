@@ -69,8 +69,8 @@ export function AgentsPage() {
               Sub-agents
               <span className="text-content-tertiary">{subagents.length}</span>
             </TabsTrigger>
-            <TabsTrigger value="quota" className="px-3 font-mono text-xs">
-              配额
+            <TabsTrigger value="relay" className="px-3 font-mono text-xs">
+              Relay
             </TabsTrigger>
           </TabsList>
 
@@ -102,7 +102,7 @@ export function AgentsPage() {
             )}
           </TabsContent>
 
-          <TabsContent value="quota">
+          <TabsContent value="relay">
             <RelayQuotaPanel />
           </TabsContent>
         </Tabs>

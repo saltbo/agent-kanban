@@ -3,6 +3,7 @@ export * from "./crypto.js";
 export * from "./datetime.js";
 export * from "./peakWindows.js";
 export * from "./relayEndpoints.js";
+export * from "./relayImport.js";
 export * from "./relayUsage.js";
 export * from "./schedulingSettings.js";
 export * from "./semver.js";

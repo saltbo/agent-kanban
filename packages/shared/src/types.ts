@@ -124,11 +124,24 @@ export interface UsageInfo {
 
 export type MachineRuntimeStatus = "missing" | "unauthorized" | "unhealthy" | "limited" | "ready";
 
+export interface RuntimeModel {
+  id: string;
+  name?: string;
+  description?: string;
+  context_window?: number;
+  input_token_limit?: number;
+  output_token_limit?: number;
+  supports?: Record<string, boolean>;
+  supported_reasoning_efforts?: string[];
+  default_reasoning_effort?: string;
+}
+
 export interface MachineRuntime {
   name: AgentRuntime;
   status: MachineRuntimeStatus;
   detail?: string;
   reset_at?: string;
+  models?: RuntimeModel[];
   checked_at: string;
 }
 
@@ -295,6 +308,9 @@ export interface Agent {
   handoff_to: string[] | null;
   runtime: AnyAgentRuntime;
   model: string | null;
+  reasoning_effort: string | null;
+  /** Relay endpoint (relay_endpoints.id) the agent runs through; null = default provider. */
+  relay_id: string | null;
   skills: string[] | null;
   subagents: string[] | null;
   taints?: AgentTaint[] | null;
@@ -497,6 +513,9 @@ export interface CreateAgentInput {
   handoff_to?: string[];
   runtime: AnyAgentRuntime;
   model?: string;
+  reasoning_effort?: string | null;
+  /** Relay endpoint id; null clears the agent's relay. */
+  relay_id?: string | null;
   skills?: string[];
   subagents?: string[];
   taints?: AgentTaint[];

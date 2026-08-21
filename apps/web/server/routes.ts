@@ -279,6 +279,15 @@ function assertModels(models: unknown) {
   }
 }
 
+const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function assertReasoningEffort(effort: unknown): void {
+  if (effort === undefined || effort === null) return;
+  if (typeof effort !== "string" || !REASONING_EFFORTS.has(effort)) {
+    throw new HTTPException(400, { message: `reasoning_effort must be one of: ${[...REASONING_EFFORTS].join(", ")}` });
+  }
+}
+
 function assertValidAgentRole(role: unknown): void {
   if (role === undefined || role === null) return;
   if (typeof role !== "string" || !isValidAgentRole(role)) {
@@ -1487,9 +1496,11 @@ api.post("/api/agents", async (c) => {
     handoff_to?: string[];
     runtime: string;
     model?: string;
+    reasoning_effort?: string | null;
     skills?: string[];
     subagents?: string[];
     taints?: AgentTaint[];
+    relay_id?: string | null;
   }>();
   assertJsonObject(body, "agent");
   if (!body.username) throw new HTTPException(400, { message: "username is required" });
@@ -1499,6 +1510,7 @@ api.post("/api/agents", async (c) => {
   assertValidAgentRole(body.role);
   assertValidHandoffRoles(body.handoff_to);
   assertValidAgentRuntime(body.runtime, body.kind ?? "worker");
+  assertReasoningEffort(body.reasoning_effort);
   if (body.role && RESERVED_ROLES.has(body.role)) {
     throw new HTTPException(403, { message: `Role "${body.role}" is reserved for built-in agents` });
   }
@@ -1507,6 +1519,11 @@ api.post("/api/agents", async (c) => {
   assertSubagentList(body.subagents);
   assertSubagentRuntime(body.runtime, body.subagents);
   const ownerId = c.get("ownerId");
+  if (body.relay_id != null) {
+    if (body.runtime !== "claude") throw new HTTPException(400, { message: "Relay endpoints are only available for claude agents" });
+    const relay = await getRelayEndpoint(c.env.DB, body.relay_id, ownerId);
+    if (!relay) throw new HTTPException(400, { message: "Relay endpoint does not exist for this owner" });
+  }
   const isWorker = (body.kind ?? "worker") === "worker";
 
   const existingUsername = await c.env.DB.prepare("SELECT owner_id FROM agents WHERE username = ? LIMIT 1")
@@ -1564,7 +1581,7 @@ api.post("/api/agents", async (c) => {
     const amaAgent = await createAmaAgentForAkProfile(c.env.DB, c.env, ownerId, body as CreateAgentInput, amaProjectId, amaRuntimeName(body.runtime));
     amaAgentId = amaAgent.id;
   }
-  const prepared = await prepareAgent(c.env.DB, ownerId, body as CreateAgentInput, identity, false, amaAgentId);
+  const prepared = await prepareAgent(ownerId, body as CreateAgentInput, identity, false, amaAgentId);
 
   // External service — create mailbox (skip if MAILS_ADMIN_TOKEN not configured)
   const mailboxToken = c.env.MAILS_ADMIN_TOKEN && !existingUsername ? await createMailbox(c.env.MAILS_ADMIN_TOKEN, email) : undefined;
@@ -1607,6 +1624,7 @@ api.patch("/api/agents/:id", async (c) => {
   assertValidAgentRole(updates.role);
   assertValidHandoffRoles(updates.handoff_to);
   assertValidAgentRuntime(updates.runtime, existing.kind);
+  assertReasoningEffort(updates.reasoning_effort);
   assertValidSkillRefs(updates.skills);
   assertValidAgentTaints(updates.taints);
   assertSubagentList(updates.subagents);
@@ -1614,6 +1632,16 @@ api.patch("/api/agents/:id", async (c) => {
   const subagents = updates.subagents ?? existing.subagents;
   assertSubagentRuntime(runtime, subagents);
   await assertRegisteredSubagents(c.env.DB, ownerId, subagents, existing.id);
+  const nextRelayId = updates.relay_id !== undefined ? updates.relay_id : existing.relay_id;
+  // Only validate when the update touches the runtime/relay pair — an
+  // unrelated PATCH must not be wedged by a pre-existing dangling relay_id.
+  if ((updates.relay_id !== undefined || updates.runtime !== undefined) && nextRelayId != null) {
+    // Validate the post-update combination: relay pinning is claude-only, so
+    // switching runtime to a non-claude runtime must clear relay_id too.
+    if (runtime !== "claude") throw new HTTPException(400, { message: "Relay endpoints are only available for claude agents" });
+    const relay = await getRelayEndpoint(c.env.DB, nextRelayId, ownerId);
+    if (!relay) throw new HTTPException(400, { message: "Relay endpoint does not exist for this owner" });
+  }
   if (existing.kind === "worker" && isAmaTaskDispatchConfigured(c.env)) {
     await requireAmaConnected(c.env.DB, c.env, ownerId);
     const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);

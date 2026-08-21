@@ -145,6 +145,86 @@ describe("fetchRelayUsage — kimi", () => {
   });
 });
 
+describe("fetchRelayUsage — kimi used-based utilization", () => {
+  it("derives the 5-Hour window from used when remaining is absent", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ limits: [{ detail: { limit: 100, used: 30, resetTime: "2026-08-19T07:30:00Z" } }] }));
+
+    const info = await fetchRelayUsage(endpoint("kimi"), NOW);
+    expect(info.windows).toEqual([{ runtime: "claude", label: "5-Hour", utilization: 30, resets_at: "2026-08-19T07:30:00.000Z" }]);
+  });
+
+  it("derives the 7-Day window from used when remaining is absent", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ usage: { limit: 200, used: 150, resetTime: "2026-08-25T00:00:00Z" } }));
+
+    const info = await fetchRelayUsage(endpoint("kimi"), NOW);
+    expect(info.windows).toEqual([{ runtime: "claude", label: "7-Day", utilization: 75, resets_at: "2026-08-25T00:00:00.000Z" }]);
+  });
+
+  it("accepts string-typed limit/used values", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        limits: [{ detail: { limit: "100", used: "25", resetTime: "2026-08-19T07:30:00Z" } }],
+        usage: { limit: "400", used: "100", resetTime: "2026-08-25T00:00:00Z" },
+      }),
+    );
+
+    const info = await fetchRelayUsage(endpoint("kimi"), NOW);
+    expect(info.windows).toEqual([
+      { runtime: "claude", label: "5-Hour", utilization: 25, resets_at: "2026-08-19T07:30:00.000Z" },
+      { runtime: "claude", label: "7-Day", utilization: 25, resets_at: "2026-08-25T00:00:00.000Z" },
+    ]);
+  });
+
+  it("prefers remaining over used when both are present", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        limits: [{ detail: { limit: 100, remaining: 40, used: 90, resetTime: "2026-08-19T07:30:00Z" } }],
+        usage: { limit: 200, remaining: 150, used: 190, resetTime: "2026-08-25T00:00:00Z" },
+      }),
+    );
+
+    const info = await fetchRelayUsage(endpoint("kimi"), NOW);
+    // remaining wins: (100-40)/100 = 60 and (200-150)/200 = 25 — not 90/95 from used.
+    expect(info.windows).toEqual([
+      { runtime: "claude", label: "5-Hour", utilization: 60, resets_at: "2026-08-19T07:30:00.000Z" },
+      { runtime: "claude", label: "7-Day", utilization: 25, resets_at: "2026-08-25T00:00:00.000Z" },
+    ]);
+  });
+
+  it("clamps used-based utilization to [0, 100]", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        limits: [{ detail: { limit: 100, used: 250, resetTime: "2026-08-19T07:30:00Z" } }],
+        usage: { limit: 200, used: -5, resetTime: "2026-08-25T00:00:00Z" },
+      }),
+    );
+
+    const info = await fetchRelayUsage(endpoint("kimi"), NOW);
+    expect(info.windows[0].utilization).toBe(100);
+    expect(info.windows[1].utilization).toBe(0);
+  });
+
+  it("omits windows whose used value is unparseable", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        limits: [{ detail: { limit: 100, used: "abc" } }],
+        usage: { limit: 200, used: 50, resetTime: "2026-08-25T00:00:00Z" },
+      }),
+    );
+
+    const info = await fetchRelayUsage(endpoint("kimi"), NOW);
+    expect(info.windows).toEqual([{ runtime: "claude", label: "7-Day", utilization: 25, resets_at: "2026-08-25T00:00:00.000Z" }]);
+  });
+
+  it("applies the synthetic reset fallback when a used-based window has no usable resetTime", async () => {
+    const fallback = new Date(NOW.getTime() + 60 * 60_000).toISOString();
+    fetchMock.mockResolvedValue(jsonResponse({ usage: { limit: 200, used: 100, resetTime: "garbage" } }));
+
+    const info = await fetchRelayUsage(endpoint("kimi"), NOW);
+    expect(info.windows).toEqual([{ runtime: "claude", label: "7-Day", utilization: 50, resets_at: fallback }]);
+  });
+});
+
 describe("fetchRelayUsage — deepseek", () => {
   it("reports a 100% Balance window when is_available is false", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ is_available: false, balance_infos: [{ currency: "CNY", total_balance: "5.00" }] }));
@@ -315,5 +395,32 @@ describe("probeRelayQuota (shared)", () => {
     });
     // Balance detail is still populated from the parseable entries.
     expect(probe.balance).toEqual({ available: false, total: 5, currency: "CNY" });
+  });
+
+  it("does not warn when limits[0].detail parses via used instead of remaining", async () => {
+    const warn = vi.fn();
+    fetchMock.mockResolvedValue(jsonResponse({ limits: [{ detail: { limit: 100, used: 30, resetTime: "2026-08-19T07:30:00Z" } }] }));
+
+    const probe = await probeRelayQuota(endpoint("kimi"), { now: NOW, warn });
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(probe.usage.windows).toEqual([{ runtime: "claude", label: "5-Hour", utilization: 30, resets_at: "2026-08-19T07:30:00.000Z" }]);
+  });
+
+  it("warns when limits[0].detail has neither a parseable remaining nor used", async () => {
+    const warn = vi.fn();
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        limits: [{ detail: { limit: 100, used: "abc" } }],
+        usage: { limit: 200, used: 50, resetTime: "2026-08-25T00:00:00Z" },
+      }),
+    );
+
+    const probe = await probeRelayQuota(endpoint("kimi"), { now: NOW, warn });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("limits[0].detail");
+    // The 7-Day window still parses from the top-level usage used value.
+    expect(probe.usage.windows).toEqual([{ runtime: "claude", label: "7-Day", utilization: 25, resets_at: "2026-08-25T00:00:00.000Z" }]);
   });
 });

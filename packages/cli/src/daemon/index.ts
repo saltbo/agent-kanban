@@ -214,12 +214,20 @@ async function buildRuntimeStates(
   const checked_at = new Date().toISOString();
   return Promise.all(
     providers.map(async (provider) => {
+      const models =
+        provider.name === "codex" && provider.listModels
+          ? await provider.listModels().catch((err) => {
+              logger.warn(`Could not read ${provider.label} model catalog: ${(err as Error).message}`);
+              return [];
+            })
+          : [];
+      const modelCatalog = models.length > 0 ? { models } : {};
       if (isRuntimeLimitIgnored(provider.name)) {
-        return { name: provider.name, status: "ready", detail: "runtime limit ignored by AK_IGNORE_RUNTIME_LIMITS", checked_at };
+        return { name: provider.name, status: "ready", detail: "runtime limit ignored by AK_IGNORE_RUNTIME_LIMITS", ...modelCatalog, checked_at };
       }
       const reset_at = rateLimiter.pauseResetAt(provider.name);
       if (reset_at) {
-        return { name: provider.name, status: "limited", detail: "runtime paused by rate limiter", reset_at, checked_at };
+        return { name: provider.name, status: "limited", detail: "runtime paused by rate limiter", reset_at, ...modelCatalog, checked_at };
       }
       if (circuitBreaker.isRuntimePaused(provider.name)) {
         return {
@@ -227,11 +235,12 @@ async function buildRuntimeStates(
           status: "limited",
           detail: "runtime paused by circuit breaker",
           reset_at: circuitBreaker.pauseResetAt(provider.name) ?? undefined,
+          ...modelCatalog,
           checked_at,
         };
       }
       const availability = (await provider.checkAvailability?.()) ?? { status: "ready" };
-      return { name: provider.name, ...availability, checked_at };
+      return { name: provider.name, ...availability, ...modelCatalog, checked_at };
     }),
   );
 }

@@ -4,6 +4,7 @@ import {
   type ContentBlock,
   type MachineRuntimeStatus,
   parseRetryAfterMs,
+  type RuntimeModel,
   UsageFetchError,
   type UsageInfo,
   type UsageWindow,
@@ -25,17 +26,7 @@ export interface RuntimeAvailability {
   reset_at?: string;
 }
 
-export interface RuntimeModel {
-  id: string;
-  name?: string;
-  description?: string;
-  context_window?: number;
-  input_token_limit?: number;
-  output_token_limit?: number;
-  supports?: Record<string, boolean>;
-  supported_reasoning_efforts?: string[];
-  default_reasoning_effort?: string;
-}
+export type { RuntimeModel };
 
 /** Normalized history entry returned by provider history readers. */
 export interface HistoryEvent {
@@ -52,6 +43,7 @@ export interface ExecuteOpts {
   taskContext: string;
   systemPromptFile?: string;
   model?: string;
+  reasoningEffort?: string;
   resume?: boolean;
 }
 

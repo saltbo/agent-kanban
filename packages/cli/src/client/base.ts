@@ -224,7 +224,7 @@ export abstract class ApiClient {
 
   // Models
   listModels(runtime: string) {
-    return this.request<{ id: string; name?: string; description?: string }[]>("GET", `/api/models?runtime=${encodeURIComponent(runtime)}`);
+    return this.request<import("@agent-kanban/shared").RuntimeModel[]>("GET", `/api/models?runtime=${encodeURIComponent(runtime)}`);
   }
 
   // Boards

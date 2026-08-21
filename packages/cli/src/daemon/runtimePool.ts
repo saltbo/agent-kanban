@@ -72,6 +72,7 @@ export interface SpawnRequest {
   resume?: boolean;
   onCleanup?: () => void;
   model?: string;
+  reasoningEffort?: string;
 }
 
 export interface PoolCallbacks {
@@ -158,6 +159,7 @@ export class RuntimePool {
         taskContext: req.taskContext,
         systemPromptFile: req.systemPromptFile,
         model: req.model,
+        reasoningEffort: req.reasoningEffort,
         resume: req.resume,
       }),
     );

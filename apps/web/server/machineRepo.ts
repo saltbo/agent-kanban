@@ -1,4 +1,13 @@
-import type { AgentRuntime, Machine, MachineHosting, MachineRuntime, MachineRuntimeStatus, MachineWithAgents, UsageInfo } from "@agent-kanban/shared";
+import type {
+  AgentRuntime,
+  Machine,
+  MachineHosting,
+  MachineRuntime,
+  MachineRuntimeStatus,
+  MachineWithAgents,
+  RuntimeModel,
+  UsageInfo,
+} from "@agent-kanban/shared";
 import { AGENT_RUNTIMES, MACHINE_STALE_TIMEOUT_MS, normalizeRuntime, RUNTIME_LABELS } from "@agent-kanban/shared";
 import { type D1, newId, parseJsonFields } from "./db";
 
@@ -281,9 +290,34 @@ export function normalizeMachineRuntimes(runtimes: MachineRuntime[] | string[], 
       status: runtime.status,
       ...(runtime.detail ? { detail: runtime.detail } : {}),
       ...(runtime.reset_at ? { reset_at: runtime.reset_at } : {}),
+      ...(Array.isArray(runtime.models) ? { models: normalizeRuntimeModels(runtime.models) } : {}),
       checked_at: runtime.checked_at || checkedAt,
     };
   });
+}
+
+function normalizeRuntimeModels(models: RuntimeModel[]): RuntimeModel[] {
+  const normalized: RuntimeModel[] = [];
+  const seen = new Set<string>();
+  for (const raw of models) {
+    if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !raw.id.trim() || seen.has(raw.id)) continue;
+    seen.add(raw.id);
+    const efforts = Array.isArray(raw.supported_reasoning_efforts)
+      ? raw.supported_reasoning_efforts.filter((effort): effort is string => typeof effort === "string" && effort.length > 0)
+      : undefined;
+    normalized.push({
+      id: raw.id,
+      ...(typeof raw.name === "string" ? { name: raw.name } : {}),
+      ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+      ...(typeof raw.context_window === "number" ? { context_window: raw.context_window } : {}),
+      ...(typeof raw.input_token_limit === "number" ? { input_token_limit: raw.input_token_limit } : {}),
+      ...(typeof raw.output_token_limit === "number" ? { output_token_limit: raw.output_token_limit } : {}),
+      ...(raw.supports && typeof raw.supports === "object" && !Array.isArray(raw.supports) ? { supports: raw.supports } : {}),
+      ...(efforts?.length ? { supported_reasoning_efforts: efforts } : {}),
+      ...(typeof raw.default_reasoning_effort === "string" ? { default_reasoning_effort: raw.default_reasoning_effort } : {}),
+    });
+  }
+  return normalized;
 }
 
 function normalizeMachineRuntimeName(runtime: string): AgentRuntime {

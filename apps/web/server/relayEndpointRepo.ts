@@ -136,3 +136,42 @@ export async function deleteRelayEndpoint(db: D1, id: string, ownerId: string): 
   const result = await db.prepare("DELETE FROM relay_endpoints WHERE id = ? AND owner_id = ?").bind(id, ownerId).run();
   return result.meta.changes > 0;
 }
+
+/** Env keys a relay's structured fields own — extra_env must never shadow them. */
+const RELAY_RESERVED_ENV_KEYS = new Set([
+  "ANTHROPIC_AUTH_TOKEN",
+  // claude also honors ANTHROPIC_API_KEY as a credential — it must arrive via
+  // the vault secret too, never as plaintext extra_env.
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+]);
+
+/**
+ * Non-secret ANTHROPIC_* env for a relay — base URL, model mappings and extra
+ * env. The token is NEVER included here: it is delivered out-of-band via the
+ * session vault secret at dispatch. extra_env cannot shadow the structured
+ * fields above.
+ */
+export function relayRuntimeEnv(relay: RelayEndpointRow): Record<string, string> {
+  const env: Record<string, string> = { ANTHROPIC_BASE_URL: relay.base_url };
+  if (relay.model) env.ANTHROPIC_MODEL = relay.model;
+  for (const [tier, mapping] of Object.entries(relay.model_map)) {
+    const prefix = `ANTHROPIC_DEFAULT_${tier.toUpperCase()}_MODEL`;
+    if (mapping.model) env[prefix] = mapping.model;
+    if (mapping.model_name) env[`${prefix}_NAME`] = mapping.model_name;
+  }
+  for (const [key, value] of Object.entries(relay.extra_env)) {
+    if (RELAY_RESERVED_ENV_KEYS.has(key)) continue;
+    env[key] = value;
+  }
+  return env;
+}

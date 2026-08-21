@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BashArgs, ReadArgs } from "@agent-kanban/shared";
 import { ToolName } from "@agent-kanban/shared";
-import type { ThreadEvent } from "@openai/codex-sdk";
+import type { ModelReasoningEffort, ThreadEvent } from "@openai/codex-sdk";
 import { resolveExecutable } from "../executable.js";
 import type {
   AgentEvent,
@@ -81,15 +81,16 @@ function resolveCodexPath(): string | undefined {
 }
 
 function resolveCodexModel(opts: ExecuteOpts): string | undefined {
-  if (!opts.model) {
-    return readAccessToken() ? undefined : "o3";
-  }
-  if (readAccessToken() && !opts.env.OPENAI_API_KEY) {
-    // ChatGPT-backed Codex accounts reject explicit model overrides like "o3".
-    // Let the CLI choose the account-compatible default model.
-    return undefined;
-  }
+  if (!opts.model) return readAccessToken() ? undefined : "o3";
+  // ChatGPT-backed Codex accounts choose an account-compatible model. The
+  // catalog remains useful in the UI, but explicit overrides require an API
+  // key-backed Codex process.
+  if (readAccessToken() && !opts.env.OPENAI_API_KEY) return undefined;
   return opts.model;
+}
+
+function codexReasoningEffort(value: string | undefined): ModelReasoningEffort | undefined {
+  return value && ["minimal", "low", "medium", "high", "xhigh"].includes(value) ? (value as ModelReasoningEffort) : undefined;
 }
 
 type CodexCachedModel = {
@@ -278,11 +279,13 @@ export const codexProvider: AgentProvider = {
 
     const { Codex } = await sdk();
     const codex = new Codex({ env: opts.env, codexPathOverride: resolveCodexPath() });
+    const reasoningEffort = codexReasoningEffort(opts.reasoningEffort);
     const threadOpts = {
       model: resolveCodexModel(opts),
       workingDirectory: opts.cwd,
       sandboxMode: "danger-full-access" as const,
       approvalPolicy: "never" as const,
+      ...(reasoningEffort ? { modelReasoningEffort: reasoningEffort } : {}),
     };
     const thread = opts.resume ? codex.resumeThread(opts.resumeToken ?? opts.sessionId, threadOpts) : codex.startThread(threadOpts);
 

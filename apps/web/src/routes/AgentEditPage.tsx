@@ -1,5 +1,13 @@
-import { AGENT_RUNTIMES, type AnyAgentRuntime, findInvalidSkillRef, RUNTIME_LABELS } from "@agent-kanban/shared";
-import React, { useEffect, useRef, useState } from "react";
+import {
+  AGENT_RUNTIMES,
+  type AnyAgentRuntime,
+  findInvalidSkillRef,
+  type RelayEndpointConfig,
+  RUNTIME_LABELS,
+  type RuntimeModel,
+} from "@agent-kanban/shared";
+import { useQuery } from "@tanstack/react-query";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
@@ -10,22 +18,48 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Textarea } from "../components/ui/textarea";
 import { useAgent, useUpdateAgent } from "../hooks/useAgents";
 import { agentColor } from "../lib/agentIdentity";
+import { api } from "../lib/api";
 
 export function AgentEditPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { agent, loading } = useAgent(id);
   const updateAgent = useUpdateAgent();
+  const { data: relays = [] } = useQuery({ queryKey: ["relays"], queryFn: () => api.relays.list() });
 
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");
   const [soul, setSoul] = useState("");
   const [role, setRole] = useState("");
   const [runtime, setRuntime] = useState<AnyAgentRuntime>("claude");
+  const [relayId, setRelayId] = useState("");
   const [model, setModel] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const {
+    data: codexModels = [],
+    isLoading: codexModelsLoading,
+    isError: codexModelsError,
+  } = useQuery({
+    queryKey: ["models", "codex"],
+    queryFn: () => api.models.list("codex"),
+    enabled: runtime === "codex" && !relayId,
+    staleTime: 30_000,
+  });
+
+  const selectedRelay = relayId ? relays.find((relay) => relay.id === relayId) : undefined;
+  const relayModelOptions = useMemo(() => relayModels(selectedRelay), [selectedRelay]);
+  const reportedModelOptions = useMemo(
+    () => (runtime === "codex" && !selectedRelay ? codexModels : relayModelOptions.map((id) => ({ id }))),
+    [runtime, selectedRelay, codexModels, relayModelOptions],
+  );
+  const modelOptions = useMemo(() => includeCurrentModel(reportedModelOptions, model), [reportedModelOptions, model]);
+  const reasoningOptions = useMemo(
+    () => reasoningEfforts(runtime, selectedRelay, model, reportedModelOptions),
+    [runtime, selectedRelay, model, reportedModelOptions],
+  );
 
   useEffect(() => {
     if (agent && !initialized) {
@@ -34,11 +68,21 @@ export function AgentEditPage() {
       setSoul(agent.soul ?? "");
       setRole(agent.role ?? "");
       setRuntime(agent.runtime ?? "claude");
+      setRelayId(agent.relay_id ?? "");
       setModel(agent.model ?? "");
+      setReasoningEffort(agent.reasoning_effort ?? "");
       setSkills(agent.skills ?? []);
       setInitialized(true);
     }
   }, [agent, initialized]);
+
+  useEffect(() => {
+    if (runtime === "codex" && !model && codexModels.length > 0) setModel(codexModels[0].id);
+  }, [runtime, model, codexModels]);
+
+  useEffect(() => {
+    if (reasoningEffort && !reasoningOptions.includes(reasoningEffort)) setReasoningEffort("");
+  }, [reasoningEffort, reasoningOptions]);
 
   if (loading) {
     return (
@@ -85,7 +129,12 @@ export function AgentEditPage() {
           soul: soul.trim() || undefined,
           role: role.trim() || undefined,
           runtime,
-          model: model.trim() || undefined,
+          relay_id: relayId || null,
+          // null (not undefined) so clearing the model actually persists —
+          // undefined keys are dropped from the JSON body and the server
+          // would keep the stale model.
+          model: model.trim() || null,
+          reasoning_effort: reasoningEffort || null,
           skills: skills.length ? skills : undefined,
         },
       });
@@ -169,7 +218,12 @@ export function AgentEditPage() {
                   <Select
                     value={runtime}
                     onValueChange={(v) => {
-                      if (v) setRuntime(v as AnyAgentRuntime);
+                      if (!v) return;
+                      const nextRuntime = v as AnyAgentRuntime;
+                      setRuntime(nextRuntime);
+                      setRelayId("");
+                      setModel("");
+                      setReasoningEffort("");
                     }}
                   >
                     <SelectTrigger>
@@ -186,9 +240,115 @@ export function AgentEditPage() {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="edit-agent-model">Model</Label>
-                  <Input id="edit-agent-model" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. claude-sonnet-4-6" />
+                  {modelOptions.length > 0 || codexModelsLoading ? (
+                    <Select
+                      value={model}
+                      disabled={codexModelsLoading && modelOptions.length === 0}
+                      onValueChange={(v) => {
+                        if (!v) return;
+                        setModel(v);
+                        setReasoningEffort("");
+                      }}
+                    >
+                      <SelectTrigger id="edit-agent-model" className="w-full">
+                        <SelectValue>
+                          {(v: string) =>
+                            codexModelsLoading && !v
+                              ? "Reading local models…"
+                              : modelOptions.find((option) => option.id === v)?.name || v || "Select a model…"
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {modelOptions.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>
+                            <span>{option.name || option.id}</span>
+                            {option.name && option.name !== option.id ? (
+                              <span className="ml-2 font-mono text-[10px] text-content-tertiary">{option.id}</span>
+                            ) : null}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <>
+                      <Input id="edit-agent-model" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. claude-sonnet-4-6" />
+                      {runtime === "codex" && codexModelsError ? (
+                        <p className="text-[11px] text-content-tertiary">The local Codex catalog is unavailable; enter a model ID manually.</p>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-agent-relay">Relay</Label>
+                  <Select
+                    value={relayId || "__default__"}
+                    disabled={runtime !== "claude"}
+                    onValueChange={(v) => {
+                      if (v === undefined || v === null) return;
+                      const nextId = v === "__default__" ? "" : v;
+                      setRelayId(nextId);
+                      // Switching relays re-defaults the model to the relay's primary model.
+                      const next = relays.find((relay) => relay.id === nextId);
+                      setModel(next?.model ?? "");
+                      setReasoningEffort("");
+                    }}
+                  >
+                    <SelectTrigger id="edit-agent-relay" className="w-full">
+                      <SelectValue>
+                        {(v: string) => {
+                          if (v === "__default__") return "Default provider";
+                          const relay = relays.find((relay) => relay.id === v);
+                          return relay ? relay.name : `Missing relay (${v})`;
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">Default provider</SelectItem>
+                      {relays.map((relay) => (
+                        <SelectItem key={relay.id} value={relay.id}>
+                          {relay.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {reasoningOptions.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="edit-agent-reasoning">Thinking effort</Label>
+                    <Select value={reasoningEffort || "__default__"} onValueChange={(v) => setReasoningEffort(v === "__default__" ? "" : (v ?? ""))}>
+                      <SelectTrigger id="edit-agent-reasoning" className="w-full">
+                        <SelectValue>{(v: string) => (v === "__default__" ? "Provider default" : effortLabel(v))}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__default__">Provider default</SelectItem>
+                        {reasoningOptions.map((effort) => (
+                          <SelectItem key={effort} value={effort}>
+                            {effortLabel(effort)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : (
+                  <div className="min-w-0 space-y-1.5">
+                    <p className="text-xs text-content-tertiary">
+                      {runtime !== "claude"
+                        ? "Relay endpoints are available for Claude workers."
+                        : relayId && !selectedRelay
+                          ? "The pinned relay no longer exists — choose another relay or Default provider."
+                          : "The agent runs through the runtime's default provider."}
+                    </p>
+                  </div>
+                )}
+              </div>
+              {selectedRelay ? (
+                <p className="font-mono text-[11px] text-content-tertiary">
+                  {selectedRelay.kind} · {hostOf(selectedRelay.base_url)}
+                </p>
+              ) : null}
             </fieldset>
 
             {/* Workflow */}
@@ -234,6 +394,44 @@ export function AgentEditPage() {
       </div>
     </div>
   );
+}
+
+function hostOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
+}
+
+/** Model choices a relay exposes: its primary model plus every tier mapping. */
+function relayModels(relay: RelayEndpointConfig | undefined): string[] {
+  if (!relay) return [];
+  const options = new Set<string>();
+  if (relay.model) options.add(relay.model);
+  for (const tier of ["opus", "sonnet", "haiku", "fable"] as const) {
+    const model = relay.model_map[tier]?.model;
+    if (model) options.add(model);
+  }
+  return [...options];
+}
+
+function includeCurrentModel(models: RuntimeModel[], current: string): RuntimeModel[] {
+  if (!current || models.some((model) => model.id === current)) return models;
+  return [{ id: current, name: `${current} (current)` }, ...models];
+}
+
+function reasoningEfforts(runtime: AnyAgentRuntime, relay: RelayEndpointConfig | undefined, modelId: string, models: RuntimeModel[]): string[] {
+  if (runtime === "codex" && !relay) {
+    const selected = models.find((model) => model.id === modelId);
+    return selected?.supported_reasoning_efforts?.length ? selected.supported_reasoning_efforts : ["minimal", "low", "medium", "high", "xhigh"];
+  }
+  if (runtime === "claude" && relay && (relay.kind === "kimi" || relay.kind === "deepseek")) return ["low", "medium", "high", "max"];
+  return [];
+}
+
+function effortLabel(effort: string): string {
+  return effort === "xhigh" ? "Extra high" : `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
 }
 
 function formatTokens(n: number): string {

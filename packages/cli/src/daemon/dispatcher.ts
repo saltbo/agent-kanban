@@ -364,6 +364,7 @@ async function dispatchOne(
     workspace: workspace.info,
     status: "active",
     model: agentDetails.model ?? undefined,
+    reasoningEffort: agentDetails.reasoning_effort ?? undefined,
     gpgSubkeyId,
     agentUsername: (agentDetails as any).username ?? agentId,
     agentName: agentDetails.name,
@@ -385,6 +386,7 @@ async function dispatchOne(
         cleanupGnupgHome(gnupgHome);
       },
       model: agentDetails.model ?? undefined,
+      reasoningEffort: agentDetails.reasoning_effort ?? undefined,
     });
   } catch (err) {
     // Spawn failed after the workspace (and direct-mode slot) were created —

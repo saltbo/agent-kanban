@@ -30,6 +30,10 @@ async function sdk() {
 
 const SUBTASK_STATUSES: readonly SubtaskStatus[] = ["completed", "failed", "stopped"] as const;
 
+function claudeReasoningEffort(value: string | undefined): "low" | "medium" | "high" | "max" | undefined {
+  return value && ["low", "medium", "high", "max"].includes(value) ? (value as "low" | "medium" | "high" | "max") : undefined;
+}
+
 function coerceSubtaskStatus(raw: unknown): SubtaskStatus {
   return (SUBTASK_STATUSES as readonly string[]).includes(raw as string) ? (raw as SubtaskStatus) : "stopped";
 }
@@ -525,6 +529,7 @@ export const claudeProvider: AgentProvider = {
     const { query } = await sdk();
     const systemPrompt = opts.systemPromptFile ? readFileSync(opts.systemPromptFile, "utf-8") : undefined;
     const abortController = new AbortController();
+    const reasoningEffort = claudeReasoningEffort(opts.reasoningEffort);
 
     const q = query({
       prompt: opts.taskContext,
@@ -535,6 +540,7 @@ export const claudeProvider: AgentProvider = {
         env: opts.env,
         systemPrompt,
         model: opts.model,
+        ...(reasoningEffort ? { effort: reasoningEffort } : {}),
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         abortController,

@@ -138,6 +138,14 @@ function utilizationOf(limit: unknown, remaining: unknown): number | null {
   return Math.min(100, Math.max(0, ((lim - rem) / lim) * 100));
 }
 
+/** Kimi's top-level `usage` reports `used` rather than `remaining` — derive utilization from it. */
+function utilizationFromUsed(limit: unknown, used: unknown): number | null {
+  const lim = Number(limit);
+  const usd = Number(used);
+  if (!Number.isFinite(lim) || !Number.isFinite(usd) || lim <= 0) return null;
+  return Math.min(100, Math.max(0, (usd / lim) * 100));
+}
+
 async function fetchJson(url: string, token: string, label: string): Promise<unknown> {
   let res: Response;
   try {
@@ -160,8 +168,10 @@ async function fetchJson(url: string, token: string, label: string): Promise<unk
 // ---- Kimi ----
 
 interface KimiQuotaDetail {
-  limit?: number;
-  remaining?: number;
+  limit?: number | string;
+  remaining?: number | string;
+  /** Weekly window reports consumption as `used` instead of `remaining`. */
+  used?: number | string;
   resetTime?: string | number;
 }
 
@@ -176,7 +186,7 @@ async function probeKimiQuota(endpoint: RelayEndpoint, now: Date, warn?: (messag
   const fallback = syntheticReset(now);
 
   const fiveHour = data.limits?.[0]?.detail;
-  const fiveHourUtil = utilizationOf(fiveHour?.limit, fiveHour?.remaining);
+  const fiveHourUtil = utilizationOf(fiveHour?.limit, fiveHour?.remaining) ?? utilizationFromUsed(fiveHour?.limit, fiveHour?.used);
   if (fiveHour && fiveHourUtil !== null) {
     windows.push({ runtime: "claude", label: "5-Hour", utilization: fiveHourUtil, resets_at: normalizeResetTime(fiveHour.resetTime, fallback) });
   } else if (data.limits !== undefined && data.limits.length > 0 && fiveHourUtil === null) {
@@ -187,7 +197,7 @@ async function probeKimiQuota(endpoint: RelayEndpoint, now: Date, warn?: (messag
     warn?.("kimi usages response shape deviates from expected limits[0].detail — 5-hour window not parsed");
   }
 
-  const sevenDayUtil = utilizationOf(data.usage?.limit, data.usage?.remaining);
+  const sevenDayUtil = utilizationOf(data.usage?.limit, data.usage?.remaining) ?? utilizationFromUsed(data.usage?.limit, data.usage?.used);
   if (data.usage && sevenDayUtil !== null) {
     windows.push({ runtime: "claude", label: "7-Day", utilization: sevenDayUtil, resets_at: normalizeResetTime(data.usage.resetTime, fallback) });
   }
