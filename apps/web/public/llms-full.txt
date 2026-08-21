@@ -77,7 +77,7 @@ Base URL: `https://agent-kanban.dev/api`
 ### Authentication
 Authentication authorities:
 - **Human:** Realmroot Web login or Native CLI token; the browser uses an AK Session Cookie.
-- **Machine:** Realmroot Native token obtained by Device Authorization; use Bearer or DPoP according to the returned `token_type`.
+- **Machine:** Realmroot Native token obtained by loopback Authorization Code + PKCE; use Bearer or DPoP according to the returned `token_type`.
 - **Agent:** AK-managed Ed25519 Session token (`agent+jwt`) injected into the runtime when AK dispatches it.
 - **Service:** Realmroot service authority for explicitly allowed integrations.
 

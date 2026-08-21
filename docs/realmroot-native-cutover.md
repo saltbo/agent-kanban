@@ -12,7 +12,7 @@ corresponding key material.
 | Object | Type | Configuration |
 | --- | --- | --- |
 | Agent Kanban Web | `confidential_web` | Authorization Code + PKCE, callback `https://agent-kanban.dev/api/auth/callback`, refresh tokens |
-| Agent Kanban CLI | `public_native` | Device Authorization + PKCE, refresh tokens, AK Resource |
+| Agent Kanban CLI | `public_native` | Loopback Authorization Code + PKCE, refresh tokens, AK Resource |
 | Agent Kanban API | Native Resource Server | Resource URL `https://agent-kanban.dev/api`, no Connector |
 
 The Web Application requests both the AK and AMA Resource URLs in one

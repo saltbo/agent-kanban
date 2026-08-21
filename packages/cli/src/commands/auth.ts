@@ -21,7 +21,7 @@ export function registerAuthCommand(program: Command) {
 
   authCmd
     .command("login")
-    .description("Authenticate this CLI through Realmroot Device Authorization")
+    .description("Authenticate this CLI through Realmroot loopback PKCE")
     .requiredOption("--api-url <url>", "AK API server URL")
     .option("--client-id <id>", "Realmroot AK CLI Application id", process.env.AK_REALMROOT_CLIENT_ID)
     .option("--issuer <url>", "Realmroot issuer", "https://id.realmroot.dev/api/auth")

@@ -93,7 +93,7 @@ from resume to restart (teardown + release) when the session is already dead.
 - AK resolves AMA project, environment, structured runtime support, and runner federation
   server-side
 - AK creates/refreshes the generic AMA external project binding
-- the CLI ensures `ama-runner` has a valid AMA device-login credential for the
+- the CLI ensures `ama-runner` has a valid AMA Context-login credential for the
   onboarding AMA origin
 - the CLI starts `ama-runner`
 

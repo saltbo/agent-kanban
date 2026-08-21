@@ -30,7 +30,7 @@ import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
 const DEFAULT_MAX_CONCURRENT = 5;
-// Where ama-runner persists device-login credentials. AK pins this so the login
+// Where ama-runner persists Context-login credentials. AK pins this so the login
 // store is deterministic, kept under AK's own state, and isolated from a
 // standalone ama-runner install that may target a different origin.
 const AMA_RUNNER_CREDENTIALS_FILE = join(STATE_DIR, "ama-runner-credentials.json");
@@ -210,7 +210,7 @@ function migrateLegacyRunnerLogin(): void {
 // Mirror ama-runner's own token-validity rules: a saved login is usable when it
 // targets this origin and can still produce a token (refreshable, or an
 // unexpired access token). Anything else means the runner would exit demanding a
-// fresh login, so AK re-runs the device flow instead.
+// fresh login, so AK re-runs the interactive login instead.
 function runnerLoginStatus(origin: string): "missing" | "valid" | "refresh" {
   migrateLegacyRunnerLogin();
   if (!existsSync(AMA_RUNNER_CREDENTIALS_FILE)) return "missing";
@@ -241,7 +241,7 @@ function runnerLoginStatus(origin: string): "missing" | "valid" | "refresh" {
   return "valid";
 }
 
-// ama-runner authenticates with AMA via its own OAuth device login, a separate
+// ama-runner authenticates with AMA via its own OAuth Context login, a separate
 // interactive step from the polling run mode. AK drives it once, foreground, so
 // the user can authorize; the saved refresh token keeps later starts silent.
 function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.ProcessEnv): void {
@@ -259,8 +259,7 @@ function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.Proces
   console.log(`Authenticating ama-runner with AMA (${maskApiUrl(origin)})…`);
   const result = spawnSync(runnerBin, ["auth", "login", "--api-server", origin], { stdio: "inherit", env });
   if (result.error) throw new Error(`Failed to launch ama-runner login: ${result.error.message}`);
-  if (result.status !== 0)
-    throw new Error(`ama-runner device login did not complete (exit status ${result.status}); cannot start the machine runner`);
+  if (result.status !== 0) throw new Error(`ama-runner login did not complete (exit status ${result.status}); cannot start the machine runner`);
 }
 
 function machineRuntimes(): MachineRuntime[] {

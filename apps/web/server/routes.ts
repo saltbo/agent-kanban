@@ -696,7 +696,7 @@ async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, ma
   return environment.id;
 }
 
-// The self-hosted runner authenticates itself (device login against AMA); AK no
+// The self-hosted runner authenticates itself (Realmroot Context login against AMA); AK no
 // longer mints a federated runner token. Onboarding just hands the runner the
 // AMA origin and the project/environment it should join.
 async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, ownerId: string) {

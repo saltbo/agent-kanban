@@ -74,8 +74,13 @@ afterEach(() => {
 });
 
 describe("ak auth Realmroot commands", () => {
-  it("starts native Device Authorization with the selected AK Resource client", async () => {
-    await program().parseAsync(
+  it("starts loopback Authorization Code + PKCE with the selected AK Resource client", async () => {
+    const cli = program();
+    const login = cli.commands.find((command) => command.name() === "auth")?.commands.find((command) => command.name() === "login");
+
+    expect(login?.description()).toBe("Authenticate this CLI through Realmroot loopback PKCE");
+
+    await cli.parseAsync(
       ["auth", "login", "--api-url", "https://ak.example.test/", "--client-id", "ak-cli", "--issuer", "https://id.realmroot.dev/api/auth"],
       { from: "user" },
     );

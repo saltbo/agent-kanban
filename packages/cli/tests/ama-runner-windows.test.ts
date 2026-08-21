@@ -19,7 +19,7 @@ function spawnSyncImplementation(command: string, args: string[]): SpawnResult {
     return { status: 0, stdout: "", stderr: "" };
   }
   if (args[0] === "version") {
-    return { status: 0, stdout: JSON.stringify({ name: "ama-runner", version: "0.7.0", commit: "windows-test" }), stderr: "" };
+    return { status: 0, stdout: JSON.stringify({ name: "ama-runner", version: "0.8.0", commit: "windows-test" }), stderr: "" };
   }
   return { status: 1, stdout: "", stderr: `unexpected command: ${command}` };
 }
@@ -82,7 +82,7 @@ describe("resolveAmaRunnerBinary on Windows", () => {
         "-NonInteractive",
         "-Command",
         "& { Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force -ErrorAction Stop }",
-        expect.stringMatching(/ama-runner-v0\.7\.0-windows-amd64\.zip$/),
+        expect.stringMatching(/ama-runner-v0\.8\.0-windows-amd64\.zip$/),
       ]),
       expect.objectContaining({ encoding: "utf-8", windowsHide: true }),
     );

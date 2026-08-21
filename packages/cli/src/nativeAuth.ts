@@ -1,9 +1,12 @@
+import { createServer } from "node:http";
 import { Entry } from "@napi-rs/keyring";
 import { decodeJwt, exportJWK, generateKeyPair, importJWK, type JWK, SignJWT } from "jose";
 import { getCredentials, saveEnvironment } from "./config.js";
 
 const KEYCHAIN_SERVICE = "agent-kanban.realmroot";
 const DEFAULT_ISSUER = "https://id.realmroot.dev/api/auth";
+const LOOPBACK_REDIRECT_URI = "http://127.0.0.1:49173/oauth/callback";
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const AK_NATIVE_SCOPES =
   "openid profile email offline_access ak:read ak:write task:claim task:assign task:release task:review task:complete task:reject task:cancel task:log task:message agent:usage";
 
@@ -18,8 +21,8 @@ type StoredAuthority = {
 
 type Discovery = {
   issuer: string;
+  authorization_endpoint?: string;
   token_endpoint: string;
-  device_authorization_endpoint?: string;
 };
 
 const refreshInFlight = new Map<string, Promise<StoredAuthority>>();
@@ -34,60 +37,46 @@ export async function loginWithRealmroot(input: { apiUrl: string; clientId: stri
   if (!resourceMetadata.authorization_servers?.includes(issuer)) throw new Error("AK does not advertise the selected Realmroot issuer");
 
   const discovery = await discover(issuer);
-  if (!discovery.device_authorization_endpoint) throw new Error("Realmroot does not advertise device authorization");
+  if (!discovery.authorization_endpoint) throw new Error("Realmroot does not advertise authorization code login");
   const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
   const privateJwk = await exportJWK(privateKey);
   const publicJwk = await exportJWK(publicKey);
-  const deviceProof = await dpopProof(discovery.device_authorization_endpoint, "POST", privateKey, publicJwk);
-  const deviceResponse = await fetch(discovery.device_authorization_endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", dpop: deviceProof },
-    body: new URLSearchParams({ client_id: input.clientId, scope: AK_NATIVE_SCOPES, resource: resourceMetadata.resource }),
-  });
-  const device = (await deviceResponse.json().catch(() => null)) as {
-    device_code?: string;
-    user_code?: string;
-    verification_uri?: string;
-    verification_uri_complete?: string;
-    expires_in?: number;
-    interval?: number;
-  } | null;
-  if (!deviceResponse.ok || !device?.device_code || !device.verification_uri || !device.user_code) {
-    throw new Error(`Realmroot device authorization failed with HTTP ${deviceResponse.status}`);
-  }
+  const state = randomBase64Url();
+  const verifier = randomBase64Url();
+  const challenge = await sha256Base64Url(verifier);
+  const authorizationUrl = new URL(discovery.authorization_endpoint);
+  authorizationUrl.search = new URLSearchParams({
+    response_type: "code",
+    client_id: input.clientId,
+    redirect_uri: LOOPBACK_REDIRECT_URI,
+    scope: AK_NATIVE_SCOPES,
+    resource: resourceMetadata.resource,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    state,
+  }).toString();
 
-  console.log(`Open ${device.verification_uri_complete ?? device.verification_uri}`);
-  console.log(`Enter code: ${device.user_code}`);
-  const deadline = Date.now() + (device.expires_in ?? 600) * 1000;
-  let interval = Math.max(device.interval ?? 5, 1) * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, interval));
-    const proof = await dpopProof(discovery.token_endpoint, "POST", privateKey, publicJwk);
-    const response = await fetch(discovery.token_endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", dpop: proof },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: device.device_code,
-        client_id: input.clientId,
-        resource: resourceMetadata.resource,
-      }),
-    });
-    const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-    if (response.ok) {
-      const authority = tokenAuthority(body, privateJwk, publicJwk);
-      storeAuthority(new URL(apiUrl).host, authority);
-      saveEnvironment({ apiUrl, issuer, resource: resourceMetadata.resource, clientId: input.clientId });
-      return;
-    }
-    if (body?.error === "authorization_pending") continue;
-    if (body?.error === "slow_down") {
-      interval += 5000;
-      continue;
-    }
-    throw new Error(`Realmroot device authorization failed: ${String(body?.error ?? response.status)}`);
-  }
-  throw new Error("Realmroot device authorization expired");
+  const codePromise = receiveAuthorizationCode(state);
+  console.log(`Open ${authorizationUrl}`);
+  const code = await codePromise;
+  const tokenProof = await dpopProof(discovery.token_endpoint, "POST", privateKey, publicJwk);
+  const response = await fetch(discovery.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", dpop: tokenProof },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: LOOPBACK_REDIRECT_URI,
+      client_id: input.clientId,
+      code_verifier: verifier,
+      resource: resourceMetadata.resource,
+    }),
+  });
+  const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!response.ok) throw new Error(`Realmroot authorization code exchange failed: ${String(body?.error ?? response.status)}`);
+  const authority = tokenAuthority(body, privateJwk, publicJwk);
+  storeAuthority(new URL(apiUrl).host, authority);
+  saveEnvironment({ apiUrl, issuer, resource: resourceMetadata.resource, clientId: input.clientId });
 }
 
 export async function realmrootRequestHeaders(method: string, url: string): Promise<Record<string, string>> {
@@ -179,6 +168,53 @@ async function discover(issuer: string): Promise<Discovery> {
   const discovery = (await response.json()) as Discovery;
   if (discovery.issuer !== issuer.replace(/\/$/, "") || !discovery.token_endpoint) throw new Error("Invalid Realmroot discovery metadata");
   return discovery;
+}
+
+function receiveAuthorizationCode(expectedState: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (result: { code: string } | { error: Error }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      server.close();
+      if ("code" in result) resolve(result.code);
+      else reject(result.error);
+    };
+    const server = createServer((request, response) => {
+      const requestUrl = new URL(request.url ?? "/", LOOPBACK_REDIRECT_URI);
+      if (request.method !== "GET" || requestUrl.pathname !== "/oauth/callback") {
+        response.writeHead(404).end("Not found");
+        return;
+      }
+      const error = requestUrl.searchParams.get("error");
+      const state = requestUrl.searchParams.get("state");
+      const code = requestUrl.searchParams.get("code");
+      if (state !== expectedState) {
+        response.writeHead(400, { "content-type": "text/plain; charset=utf-8" }).end("Invalid authorization state.");
+        return;
+      }
+      if (error) {
+        response.writeHead(400, { "content-type": "text/plain; charset=utf-8" }).end("Realmroot authorization was not completed.");
+        finish({ error: new Error(`Realmroot authorization failed: ${error}`) });
+        return;
+      }
+      if (!code) {
+        response.writeHead(400, { "content-type": "text/plain; charset=utf-8" }).end("Missing authorization code.");
+        finish({ error: new Error("Realmroot authorization returned no code") });
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("Authentication complete. Return to the terminal.");
+      finish({ code });
+    });
+    server.once("error", (error) => finish({ error: new Error(`Unable to start the Realmroot login callback: ${error.message}`) }));
+    server.listen(Number(new URL(LOOPBACK_REDIRECT_URI).port), "127.0.0.1");
+    const timeout = setTimeout(() => finish({ error: new Error("Realmroot authorization expired") }), LOGIN_TIMEOUT_MS);
+  });
+}
+
+function randomBase64Url(): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
 }
 
 async function dpopProof(url: string, method: string, privateKey: CryptoKey, publicJwk: JWK, accessToken?: string): Promise<string> {
