@@ -491,7 +491,14 @@ export async function sendTaskMessageToAma(env: Env, ownerId: string, task: Task
   return task;
 }
 
-export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, task: Task, reason: string | undefined): Promise<Task> {
+export async function sendTaskRejectToAma(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  task: Task,
+  reason: string | undefined,
+  waitForRetry: (delayMs: number) => Promise<void> = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+): Promise<Task> {
   const sessionId = amaSessionId(task);
   const projectId = amaProjectId(task);
   if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
@@ -517,7 +524,7 @@ export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, tas
     } catch (error) {
       if ((error as { status?: unknown }).status !== 409 || attempt >= REJECT_RESUME_MAX_ATTEMPTS) throw error;
       const delayMs = Math.min(REJECT_RESUME_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), REJECT_RESUME_RETRY_MAX_DELAY_MS);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await waitForRetry(delayMs);
     }
   }
   return await annotateTask(db, task, {

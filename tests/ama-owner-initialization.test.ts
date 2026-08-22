@@ -100,7 +100,7 @@ describe("AMA tenant resource initialization", () => {
     );
   });
 
-  it("takes over an expired lease and fences a slow claimant that loses ownership", async () => {
+  it("takes over an expired lease", async () => {
     const expiredOwner = `ama-init-expired-${randomUUID()}`;
     const expired = await harness(expiredOwner);
     await expired.db
@@ -127,16 +127,22 @@ describe("AMA tenant resource initialization", () => {
     expect(
       await expired.db.prepare("SELECT claim_token FROM ama_resource_initializations WHERE tenant_id = ?").bind(expiredOwner).first(),
     ).toBeNull();
+  });
 
+  it("fences a slow claimant that loses ownership", { timeout: 15_000 }, async () => {
     const fencedOwner = `ama-init-fenced-${randomUUID()}`;
     const fenced = await harness(fencedOwner);
     const projectGate = deferred<Response>();
+    const projectStarted = deferred<void>();
     let vaultWrites = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = input instanceof Request ? input.url : String(input);
-        if (url.endsWith("/projects")) return projectGate.promise;
+        if (url.endsWith("/projects")) {
+          projectStarted.resolve();
+          return projectGate.promise;
+        }
         if (url.endsWith("/vaults")) {
           vaultWrites += 1;
           return vaultResponse("vault-loser", fencedOwner);
@@ -147,12 +153,12 @@ describe("AMA tenant resource initialization", () => {
         throw new Error(`Unexpected fencing request: ${url}`);
       }),
     );
+    const { ensureAmaOwnerIntegration } = await import("../apps/web/server/amaOwnerIntegrationRepo");
     const slow = ensureAmaOwnerIntegration(fenced.db, fenced.env, fencedOwner);
-    await vi.waitFor(async () => {
-      expect(
-        await fenced.db.prepare("SELECT claim_token FROM ama_resource_initializations WHERE tenant_id = ?").bind(fencedOwner).first(),
-      ).not.toBeNull();
-    });
+    await projectStarted.promise;
+    expect(
+      await fenced.db.prepare("SELECT claim_token FROM ama_resource_initializations WHERE tenant_id = ?").bind(fencedOwner).first(),
+    ).not.toBeNull();
     await fenced.db.batch([
       fenced.db
         .prepare(

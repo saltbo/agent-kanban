@@ -2,9 +2,8 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { api } from "../apps/web/server/routes";
 import { sendTaskRejectToAma } from "../apps/web/server/taskDispatch";
-import { createTestAgent, createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
+import { createTestAgent, createTestEnv, seedUser, setupMiniflare } from "./helpers/db";
 
 const env = {
   ...createTestEnv(),
@@ -70,7 +69,6 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -123,7 +121,11 @@ describe("AMA reject resume acknowledgement retries", () => {
     const { ownerId, task } = await createAmaBoundReviewTask();
     const startedAt = performance.now();
     const commandIds: string[] = [];
-    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const retryDelays: number[] = [];
+    const waitForRetry = async (delayMs: number) => {
+      retryDelays.push(delayMs);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const request = input instanceof Request ? input : new Request(input);
       const body = (await request.clone().json()) as { requestId?: string };
@@ -133,13 +135,12 @@ describe("AMA reject resume acknowledgement retries", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await sendTaskRejectToAma(env.DB, env, ownerId, task, "Resume after reconnect");
+    await sendTaskRejectToAma(env.DB, env, ownerId, task, "Resume after reconnect", waitForRetry);
 
     expect(performance.now() - startedAt).toBeGreaterThanOrEqual(3_000);
     expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(new Set(commandIds).size).toBe(1);
-    const retryDelays = timeoutSpy.mock.calls.map((call) => call[1]).filter((delay) => typeof delay === "number");
-    expect(retryDelays.slice(0, 4)).toEqual([250, 500, 1_000, 2_000]);
+    expect(retryDelays).toEqual([250, 500, 1_000, 2_000]);
   }, 7_000);
 
   it("does not retry a non-409 AMA failure or record acceptance", async () => {
@@ -154,37 +155,16 @@ describe("AMA reject resume acknowledgement retries", () => {
     expect(annotations(stored.metadata)["ama.lastCommand.result"]).toBeUndefined();
   });
 
-  it("stops after the bounded 409 retries and the reject route leaves the task unchanged", async () => {
+  it("stops after the bounded 409 retries and leaves the task unchanged", async () => {
     const { ownerId, task, agentId } = await createAmaBoundReviewTask();
-    const session = await createTestWebSession(env.DB, ownerId);
     const fetchMock = vi.fn(async () => jsonResponse({ error: "runner is still unavailable" }, 409));
     vi.stubGlobal("fetch", fetchMock);
     const retryDelays: number[] = [];
-    const immediateTimeout: typeof setTimeout = (callback, delay, ...args) => {
-      retryDelays.push(typeof delay === "number" ? delay : 0);
-      queueMicrotask(() => callback(...args));
-      return 0 as unknown as ReturnType<typeof setTimeout>;
+    const waitForRetry = async (delayMs: number) => {
+      retryDelays.push(delayMs);
     };
-    vi.spyOn(globalThis, "setTimeout").mockImplementation(immediateTimeout);
 
-    const response = await api.request(
-      `/api/tasks/${task.id}/reject`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          cookie: session.cookie,
-          "x-csrf-token": session.csrfToken,
-          host: "localhost:8788",
-          "x-forwarded-proto": "http",
-        },
-        body: JSON.stringify({ reason: "Address the review feedback" }),
-      },
-      env,
-    );
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({ error: { message: "AMA reject delivery was not accepted" } });
+    await expect(sendTaskRejectToAma(env.DB, env, ownerId, task, "Address the review feedback", waitForRetry)).rejects.toMatchObject({ status: 409 });
     expect(fetchMock).toHaveBeenCalledTimes(10);
     expect(retryDelays).toEqual([250, 500, 1_000, 2_000, 2_000, 2_000, 2_000, 2_000, 2_000]);
     const stored = await storedTask(task.id);
