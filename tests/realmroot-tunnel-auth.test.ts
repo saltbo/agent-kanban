@@ -147,6 +147,24 @@ describe("Realmroot tunnel authorization", () => {
     await expect(correct.json()).resolves.toMatchObject({ error: { message: "AMA project is not configured" } });
   });
 
+  it("accepts Native human authority before resolving the AMA project", async () => {
+    const url = "https://ak-tunnel.example.test/api/ama/sessions/session-1/socket";
+    const websocketHeaders = { origin: "https://ak-tunnel.example.test", upgrade: "websocket" };
+    const bearer = await bearerAccessToken("tunnel-human");
+    const bearerResponse = await api.fetch(new Request(url, { headers: { ...websocketHeaders, authorization: `Bearer ${bearer}` } }), env);
+    expect(bearerResponse.status, await bearerResponse.clone().text()).toBe(404);
+    await expect(bearerResponse.json()).resolves.toMatchObject({
+      error: { message: "AMA project is not configured" },
+    });
+
+    const dpop = await nativeAuthority("tunnel-human", url);
+    const dpopResponse = await tunnelRequest(url, dpop, websocketHeaders);
+    expect(dpopResponse.status, await dpopResponse.clone().text()).toBe(404);
+    await expect(dpopResponse.json()).resolves.toMatchObject({
+      error: { message: "AMA project is not configured" },
+    });
+  });
+
   it("default-denies the removed authenticated Agent GPG-key route", async () => {
     const response = await api.fetch(
       new Request(`https://ak-tunnel.example.test/api/agents/${ownerAgentId}/gpg-key`, {
@@ -181,26 +199,7 @@ async function tunnelRequest(url: string, authority: { accessToken: string; proo
 }
 
 async function nativeAuthority(subjectId: string, url: string) {
-  const issuerKeys = await issuerKeysPromise;
-  const issuerJwk = await exportJWK(issuerKeys.publicKey);
-  issuerJwk.kid = "tunnel-issuer-key";
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const requestUrl = input instanceof Request ? input.url : String(input);
-      if (requestUrl === `${issuer}/.well-known/openid-configuration`) {
-        return Response.json({
-          issuer,
-          authorization_endpoint: `${issuer}/authorize`,
-          token_endpoint: `${issuer}/token`,
-          jwks_uri: `${issuer}/jwks`,
-          id_token_signing_alg_values_supported: ["ES256"],
-        });
-      }
-      if (requestUrl === `${issuer}/jwks`) return Response.json({ keys: [issuerJwk] });
-      throw new Error(`Unexpected request: ${requestUrl}`);
-    }),
-  );
+  const { issuerKeys, issuerJwk } = await issuerAuthority();
   const dpopKeys = await generateKeyPair("ES256", { extractable: true });
   const dpopJwk = await exportJWK(dpopKeys.publicKey);
   const accessToken = await new SignJWT({
@@ -226,4 +225,44 @@ async function nativeAuthority(subjectId: string, url: string) {
     .setIssuedAt()
     .sign(dpopKeys.privateKey);
   return { accessToken, proof };
+}
+
+async function bearerAccessToken(subjectId: string): Promise<string> {
+  const { issuerKeys, issuerJwk } = await issuerAuthority();
+  return new SignJWT({
+    scope: "ak:read",
+    client_id: "ak-tunnel-test",
+    "urn:realmroot:params:oauth:org": "tunnel-tenant",
+  })
+    .setProtectedHeader({ alg: "ES256", kid: issuerJwk.kid, typ: "at+jwt" })
+    .setIssuer(issuer)
+    .setAudience(resource)
+    .setSubject(subjectId)
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(issuerKeys.privateKey);
+}
+
+async function issuerAuthority() {
+  const issuerKeys = await issuerKeysPromise;
+  const issuerJwk = await exportJWK(issuerKeys.publicKey);
+  issuerJwk.kid = "tunnel-issuer-key";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl = input instanceof Request ? input.url : String(input);
+      if (requestUrl === `${issuer}/.well-known/openid-configuration`) {
+        return Response.json({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: `${issuer}/token`,
+          jwks_uri: `${issuer}/jwks`,
+          id_token_signing_alg_values_supported: ["ES256"],
+        });
+      }
+      if (requestUrl === `${issuer}/jwks`) return Response.json({ keys: [issuerJwk] });
+      throw new Error(`Unexpected request: ${requestUrl}`);
+    }),
+  );
+  return { issuerKeys, issuerJwk };
 }

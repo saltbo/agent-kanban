@@ -344,6 +344,7 @@ describe("Realmroot Web application", () => {
             "x-token-types": ["Bearer", "DPoP"],
           },
           agentSession: { type: "http", scheme: "bearer", bearerFormat: "agent+jwt" },
+          webSession: { type: "apiKey", in: "cookie", name: "ak_session" },
         },
       },
     });
@@ -362,6 +363,27 @@ describe("Realmroot Web application", () => {
     expect(document.paths["/repositories/{repositoryId}/github-token"].post).toMatchObject({
       security: [{ realmroot: ["ak:read"] }, { agentSession: [] }],
     });
+    const amaSocket = document.paths["/ama/sessions/{sessionId}/socket"] as {
+      parameters: Array<{ name: string; in: string; required: boolean; schema: Record<string, unknown> }>;
+      get: { security: Record<string, string[]>[]; responses: Record<string, { description: string }> };
+    };
+    expect(amaSocket.parameters).toContainEqual({
+      name: "projectId",
+      in: "query",
+      required: false,
+      description: expect.any(String),
+      schema: {
+        type: "string",
+        minLength: 1,
+        maxLength: 160,
+        pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$",
+      },
+    });
+    expect(amaSocket.get).toMatchObject({
+      security: [{ webSession: [] }, { realmroot: ["ak:read"] }, { agentSession: [] }],
+      responses: { "101": { description: "WebSocket connection established" } },
+    });
+    expect(amaSocket.get.security).toEqual([{ webSession: [] }, { realmroot: ["ak:read"] }, { agentSession: [] }]);
 
     for (const [path, item] of Object.entries(document.paths)) {
       for (const [method, operation] of Object.entries(item)) {
@@ -371,8 +393,9 @@ describe("Realmroot Web application", () => {
         expect(security?.length, `${method.toUpperCase()} ${path}`).toBeGreaterThan(0);
         for (const requirement of security ?? []) {
           expect(Object.keys(requirement), `${method.toUpperCase()} ${path}`).toHaveLength(1);
-          expect(["realmroot", "agentSession"]).toContain(Object.keys(requirement)[0]);
+          expect(["realmroot", "agentSession", "webSession"]).toContain(Object.keys(requirement)[0]);
           if ("agentSession" in requirement) expect(requirement.agentSession, `${method.toUpperCase()} ${path}`).toEqual([]);
+          if ("webSession" in requirement) expect(requirement.webSession, `${method.toUpperCase()} ${path}`).toEqual([]);
         }
       }
     }

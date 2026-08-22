@@ -2,12 +2,16 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const nativeAuth = vi.hoisted(() => ({
+  headers: vi.fn(async () => ({ authorization: "DPoP native-token", dpop: "native-proof" })),
+}));
+
 vi.mock("../src/config.js", () => ({
   getCredentials: () => ({ apiUrl: "https://ak.example.test" }),
 }));
 
 vi.mock("../src/nativeAuth.js", () => ({
-  realmrootRequestHeaders: vi.fn(async () => ({ authorization: "DPoP native-token", dpop: "native-proof" })),
+  realmrootRequestHeaders: nativeAuth.headers,
 }));
 
 const { MachineClient } = await import("../src/client/machine.js");
@@ -15,6 +19,7 @@ const { MachineClient } = await import("../src/client/machine.js");
 let requests: Request[];
 
 beforeEach(() => {
+  nativeAuth.headers.mockReset().mockResolvedValue({ authorization: "DPoP native-token", dpop: "native-proof" });
   requests = [];
   vi.stubGlobal(
     "fetch",
@@ -45,6 +50,19 @@ describe("MachineClient Realmroot binding", () => {
     await client.listTasks();
 
     expect(requests[0].headers.get("x-ak-machine-id")).toBeNull();
+  });
+
+  it.each([
+    ["Bearer", { authorization: "Bearer native-token" }],
+    ["DPoP", { authorization: "DPoP native-token", dpop: "native-proof" }],
+  ] as const)("uses %s Native authority for a WebSocket event stream and signs the HTTPS target", async (_tokenType, authority) => {
+    nativeAuth.headers.mockResolvedValueOnce(authority);
+    const client = new MachineClient();
+
+    await expect(client.sessionSocketHeaders("wss://ak.example.test/api/ama/sessions/session-1/socket?projectId=project-1")).resolves.toEqual(
+      authority,
+    );
+    expect(nativeAuth.headers).toHaveBeenCalledWith("GET", "https://ak.example.test/api/ama/sessions/session-1/socket?projectId=project-1");
   });
 
   it("rejects a malformed machine id before sending requests", () => {

@@ -63,6 +63,20 @@ describe("AgentClient internal Agent session transport", () => {
     });
   });
 
+  it("signs a WebSocket event stream with the internal Agent session", async () => {
+    const identity = await agentIdentity();
+    const client = new AgentClient("https://ak.example.test", "agent-1", "session-1", identity.privateKey);
+
+    const headers = await client.sessionSocketHeaders("wss://ak.example.test/api/ama/sessions/ama-session/socket?projectId=project-1");
+    const token = headers.authorization.replace(/^Bearer /, "");
+
+    expect(headers).toEqual({ authorization: expect.stringMatching(/^Bearer /) });
+    expect(decodeProtectedHeader(token)).toMatchObject({ alg: "EdDSA", typ: "agent+jwt" });
+    await expect(jwtVerify(token, identity.publicKey, { audience: "https://ak.example.test" })).resolves.toMatchObject({
+      payload: { sub: "session-1", aid: "agent-1", jti: expect.any(String) },
+    });
+  });
+
   it("sends JSON writes over HTTP and uses a fresh replay identifier for every request", async () => {
     const identity = await agentIdentity();
     const requests: Request[] = [];

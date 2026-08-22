@@ -25,6 +25,11 @@ export abstract class ApiClient {
 
   protected abstract authorizationHeaders(method: string, url: string): Promise<Record<string, string>>;
 
+  sessionSocketHeaders(url: string): Promise<Record<string, string>> {
+    const httpUrl = url.replace(/^ws:/, "http:").replace(/^wss:/, "https:");
+    return this.authorizationHeaders("GET", httpUrl);
+  }
+
   protected async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const doFetch = async () =>

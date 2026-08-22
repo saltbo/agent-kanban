@@ -29,7 +29,7 @@ test.describe("Realmroot authentication", () => {
     expect(loginRequests).toBe(1);
   });
 
-  test("requests AK and AMA resources and their browser scopes in one authorization", async ({ request }) => {
+  test("requests AK and AMA resources and their browser scopes in one authorization", async ({ request }, testInfo) => {
     const metadataResponse = await request.get("/.well-known/oauth-protected-resource/api");
     expect(metadataResponse.ok()).toBe(true);
     const metadata = (await metadataResponse.json()) as { resource: string };
@@ -38,7 +38,7 @@ test.describe("Realmroot authentication", () => {
     expect(login.status()).toBe(302);
     const authorizationUrl = new URL(login.headers().location);
     expect(authorizationUrl.origin + authorizationUrl.pathname).toBe("https://id.realmroot.dev/api/auth/oauth2/authorize");
-    expect(authorizationUrl.searchParams.getAll("resource")).toEqual([metadata.resource, "https://ama.tftt.cc/api"]);
+    expect(authorizationUrl.searchParams.getAll("resource")).toEqual([metadata.resource, testInfo.config.metadata.e2eAmaResource]);
 
     const scopes = new Set(authorizationUrl.searchParams.get("scope")?.split(" "));
     for (const scope of [

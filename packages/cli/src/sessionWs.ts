@@ -17,6 +17,7 @@ export interface ReadSessionEventsOptions {
   recentLimit?: number;
   onEvent?: (event: SessionEvent) => void;
   backfillTimeoutMs?: number;
+  headers?: Record<string, string>;
 }
 
 function eventSequence(event: SessionEvent): number {
@@ -202,17 +203,17 @@ function websocketConstructor(): any {
   return WsWebSocket;
 }
 
-function connect(url: string): { ws: any; abort: () => void } {
+function connect(url: string, headers?: Record<string, string>): { ws: any; abort: () => void } {
   const WebSocketCtor = websocketConstructor();
   if (!WebSocketCtor) throw new Error("WebSocket is not available in this Node runtime");
   const controller = typeof AbortController === "undefined" ? null : new AbortController();
   try {
     return {
-      ws: new WebSocketCtor(url, [], controller ? { signal: controller.signal } : undefined),
+      ws: new WebSocketCtor(url, [], { ...(controller ? { signal: controller.signal } : {}), ...(headers ? { headers } : {}) }),
       abort: () => controller?.abort(),
     };
   } catch {
-    return { ws: new WebSocketCtor(url), abort: () => controller?.abort() };
+    return { ws: new WebSocketCtor(url, headers ? { headers } : undefined), abort: () => controller?.abort() };
   }
 }
 
@@ -233,7 +234,7 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
     let settled = false;
     let initialBackfillComplete = false;
     let backfillSeq = 0;
-    const connection = connect(url);
+    const connection = connect(url, options.headers);
     const { ws } = connection;
     let timeout: ReturnType<typeof setTimeout> | null = null;
 

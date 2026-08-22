@@ -1,14 +1,16 @@
 // @vitest-environment node
 
-import { randomUUID } from "node:crypto";
-import { importJWK, SignJWT } from "jose";
+import { createHash, randomUUID } from "node:crypto";
+import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { api } from "../apps/web/server/routes";
+import { installCloudflareWebSocketTestGlobals, TestWebSocket } from "./helpers/cloudflareWebSocket";
 import { createTestAgent, createTestEnv, createTestSubagent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 const tenantId = "tenant-router-regressions";
 const resource = "http://localhost:8788/api";
 const env = createTestEnv();
+const routerRealmrootIssuerKeysPromise = generateKeyPair("ES256", { extractable: true });
 let mf: Awaited<ReturnType<typeof setupMiniflare>>["mf"];
 let authority: Awaited<ReturnType<typeof createTestWebSession>>;
 let boardId: string;
@@ -342,19 +344,40 @@ describe("Realmroot real-router AMA regressions", () => {
   let maintainerAgent: Awaited<ReturnType<typeof createTestAgent>>;
   const calls: Request[] = [];
   const triggers = new Map<string, Record<string, unknown>>();
+  const historicalProjectId = "project-historical-router";
+  const upstreamWebSocket = new TestWebSocket();
+  const upstreamSocket = { status: 101, webSocket: upstreamWebSocket } as unknown as Response;
   let triggerSequence = 0;
+  let descriptorTaskId: string;
 
   beforeAll(async () => {
+    installCloudflareWebSocketTestGlobals(vi.stubGlobal);
+    const issuerKeys = await routerRealmrootIssuerKeysPromise;
+    const issuerJwk = await exportJWK(issuerKeys.publicKey);
+    issuerJwk.kid = "router-realmroot-issuer-key";
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.router.test",
       AMA_RESOURCE: "https://ama.router.test",
       AK_API_URL: "https://ak.router.test",
+      AK_RESOURCE: "https://ak.router.test/api",
+      ALLOWED_HOSTS: "localhost:8788,ak.router.test",
     });
     await env.DB.prepare(
       `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
        VALUES (?, 'project-router', 'session-vault-router', '{}')`,
     )
       .bind(tenantId)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO realmroot_user_ama_grants
+         (tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce,
+          access_token_ciphertext, access_token_nonce, access_token_expires_at)
+       SELECT tenant_id, 'router-native-subject', refresh_token_ciphertext, refresh_token_nonce,
+              access_token_ciphertext, access_token_nonce, access_token_expires_at
+       FROM realmroot_user_ama_grants
+       WHERE tenant_id = ? AND subject_id = ?`,
+    )
+      .bind(tenantId, `legacy:${tenantId}`)
       .run();
     maintainerAgent = await createTestAgent(env.DB, tenantId, {
       username: `router-maintainer-${randomUUID().slice(0, 8)}`,
@@ -365,14 +388,32 @@ describe("Realmroot real-router AMA regressions", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const req = new Request(input, init);
-        calls.push(req.clone());
         const url = new URL(req.url);
+        if (url.href === `${env.REALMROOT_ISSUER}/.well-known/openid-configuration`) {
+          return Response.json({
+            issuer: env.REALMROOT_ISSUER,
+            authorization_endpoint: `${env.REALMROOT_ISSUER}/oauth2/authorize`,
+            token_endpoint: `${env.REALMROOT_ISSUER}/oauth2/token`,
+            jwks_uri: `${env.REALMROOT_ISSUER}/jwks`,
+          });
+        }
+        if (url.href === `${env.REALMROOT_ISSUER}/jwks`) return Response.json({ keys: [issuerJwk] });
+        calls.push(req.clone());
         if (url.origin !== "https://ama.router.test") throw new Error(`Unexpected maintainer request: ${url.href}`);
         const amaHeaders = Object.fromEntries(req.headers);
         expect(amaHeaders.authorization).toBe(`Bearer test-access:${tenantId}`);
         expect(amaHeaders).not.toHaveProperty("dpop");
         expect(amaHeaders).not.toHaveProperty("x-ak-tenant-id");
-        if (url.pathname !== "/api/v1/providers/models") {
+        const projectHeader = amaHeaders["x-ama-project-id"];
+        const descriptorPath = url.pathname === "/api/v1/sessions/session-descriptor-router";
+        const descriptorSocketPath = url.pathname === "/api/v1/sessions/session-descriptor-router/socket";
+        if (descriptorPath || descriptorSocketPath) {
+          expect([historicalProjectId, "project-router"]).toContain(projectHeader);
+        } else if (url.pathname === "/api/v1/sessions/current-session-router" || url.pathname === "/api/v1/sessions/current-session-router/socket") {
+          expect(projectHeader).toBe("project-router");
+        } else if (url.pathname === "/api/v1/sessions/foreign-session-router") {
+          expect(projectHeader).toBe("foreign-project-router");
+        } else if (url.pathname !== "/api/v1/providers/models") {
           expect(amaHeaders["x-ama-project-id"]).toBe("project-router");
         }
         if (url.pathname === "/api/v1/projects/project-router" && req.method === "GET") {
@@ -414,7 +455,19 @@ describe("Realmroot real-router AMA regressions", () => {
           return jsonResponse({ data: [amaSessionResponse("session-descriptor-router")], pagination: {} });
         }
         if (url.pathname === "/api/v1/sessions/session-descriptor-router" && req.method === "GET") {
-          return jsonResponse(amaSessionResponse("session-descriptor-router"));
+          return jsonResponse(amaSessionResponse("session-descriptor-router", projectHeader ?? "project-router"));
+        }
+        if (url.pathname === "/api/v1/sessions/session-descriptor-router/socket" && req.method === "GET") {
+          return upstreamSocket;
+        }
+        if (url.pathname === "/api/v1/sessions/current-session-router" && req.method === "GET") {
+          return jsonResponse(amaSessionResponse("current-session-router"));
+        }
+        if (url.pathname === "/api/v1/sessions/current-session-router/socket" && req.method === "GET") {
+          return upstreamSocket;
+        }
+        if (url.pathname === "/api/v1/sessions/foreign-session-router" && req.method === "GET") {
+          return jsonResponse({ error: "not found" }, 404);
         }
         if (url.pathname === `/api/v1/agents/ama-agent-${maintainerAgent.id}`) {
           const body = req.method === "PATCH" ? await requestJson(req) : {};
@@ -502,6 +555,10 @@ describe("Realmroot real-router AMA regressions", () => {
         throw new Error(`Unexpected maintainer request: ${req.method} ${url.href}`);
       }),
     );
+    descriptorTaskId = await createTaskInState("Router AMA session descriptors", "todo");
+    await env.DB.prepare("UPDATE tasks SET metadata = ? WHERE id = ?")
+      .bind(JSON.stringify({ annotations: { "ama.sessionId": "session-descriptor-router", "ama.projectId": historicalProjectId } }), descriptorTaskId)
+      .run();
   });
 
   it("discovers the AMA model catalog and merges live runner runtime state", async () => {
@@ -561,28 +618,135 @@ describe("Realmroot real-router AMA regressions", () => {
   });
 
   it("returns task and tenant AMA session and WebSocket descriptors", async () => {
-    const descriptorTaskId = await createTaskInState("Router AMA session descriptors", "todo");
-    await env.DB.prepare("UPDATE tasks SET metadata = ? WHERE id = ?")
-      .bind(JSON.stringify({ annotations: { "ama.sessionId": "session-descriptor-router", "ama.projectId": "project-router" } }), descriptorTaskId)
-      .run();
     const taskSession = await request("GET", `/api/tasks/${descriptorTaskId}/session`);
     expect(taskSession.status, await taskSession.clone().text()).toBe(200);
     await expect(taskSession.json()).resolves.toMatchObject({
       task_id: descriptorTaskId,
       session_id: "session-descriptor-router",
-      project_id: "project-router",
+      project_id: historicalProjectId,
       session: { id: "session-descriptor-router", status: "idle" },
     });
     const taskSocket = await request("GET", `/api/tasks/${descriptorTaskId}/session/ws`);
     expect(taskSocket.status).toBe(200);
-    await expect(taskSocket.json()).resolves.toEqual({ url: "wss://ak.router.test/api/ama/sessions/session-descriptor-router/socket" });
+    await expect(taskSocket.json()).resolves.toEqual({
+      url: "wss://ak.router.test/api/ama/sessions/session-descriptor-router/socket?projectId=project-historical-router",
+    });
     const sessions = await request("GET", "/api/sessions?labelSelector=kind%3Drouter");
     expect(sessions.status).toBe(200);
     await expect(sessions.json()).resolves.toMatchObject({ data: [expect.objectContaining({ id: "session-descriptor-router" })] });
     expect((await request("GET", "/api/sessions/session-descriptor-router")).status).toBe(200);
     const sessionSocket = await request("GET", "/api/sessions/session-descriptor-router/ws");
     expect(sessionSocket.status).toBe(200);
-    await expect(sessionSocket.json()).resolves.toEqual({ url: "wss://ak.router.test/api/ama/sessions/session-descriptor-router/socket" });
+    await expect(sessionSocket.json()).resolves.toEqual({
+      url: "wss://ak.router.test/api/ama/sessions/session-descriptor-router/socket?projectId=project-router",
+    });
+  });
+
+  it("proxies historical AMA projects and validates project context at the upstream boundary", async () => {
+    const taskSocket = await request("GET", `/api/tasks/${descriptorTaskId}/session/ws`);
+    const { url } = (await taskSocket.json()) as { url: string };
+    const socketHeaders = {
+      cookie: authority.cookie,
+      origin: "https://ak.router.test",
+      upgrade: "websocket",
+    };
+    const historicalCallsStart = calls.length;
+    const historical = await api.fetch(new Request(url.replace(/^wss:/, "https:"), { headers: socketHeaders }), env);
+    expect(historical.status).toBe(101);
+    expect(historical.webSocket).toBeInstanceOf(TestWebSocket);
+    expect(historical.webSocket).not.toBe(upstreamWebSocket);
+    expect(upstreamWebSocket.accepted).toBe(true);
+    const historicalCalls = calls.slice(historicalCallsStart);
+    expect(historicalCalls.map((call) => ({ pathname: new URL(call.url).pathname, projectId: call.headers.get("x-ama-project-id") }))).toEqual([
+      { pathname: "/api/v1/sessions/session-descriptor-router", projectId: historicalProjectId },
+      { pathname: "/api/v1/sessions/session-descriptor-router/socket", projectId: historicalProjectId },
+    ]);
+
+    const currentCallsStart = calls.length;
+    const current = await api.fetch(
+      new Request("https://ak.router.test/api/ama/sessions/current-session-router/socket", { headers: socketHeaders }),
+      env,
+    );
+    expect(current.status).toBe(101);
+    expect(
+      calls.slice(currentCallsStart).map((call) => ({ pathname: new URL(call.url).pathname, projectId: call.headers.get("x-ama-project-id") })),
+    ).toEqual([
+      { pathname: "/api/v1/sessions/current-session-router", projectId: "project-router" },
+      { pathname: "/api/v1/sessions/current-session-router/socket", projectId: "project-router" },
+    ]);
+
+    for (const { label, projectId } of [
+      { label: "empty", projectId: "" },
+      { label: "oversized", projectId: "x".repeat(161) },
+      { label: "whitespace", projectId: "project id" },
+      { label: "CRLF", projectId: "project\r\nheader" },
+      { label: "Unicode", projectId: "project-项目" },
+    ]) {
+      const before = calls.length;
+      const invalidUrl = new URL("https://ak.router.test/api/ama/sessions/current-session-router/socket");
+      invalidUrl.searchParams.set("projectId", projectId);
+      const invalid = await api.fetch(new Request(invalidUrl, { headers: socketHeaders }), env);
+      expect(invalid.status, label).toBe(400);
+      await expect(invalid.json(), label).resolves.toMatchObject({ error: { message: "Invalid AMA project ID" } });
+      expect(calls).toHaveLength(before);
+    }
+
+    const foreignCallsStart = calls.length;
+    const foreign = await api.fetch(
+      new Request("https://ak.router.test/api/ama/sessions/foreign-session-router/socket?projectId=foreign-project-router", {
+        headers: socketHeaders,
+      }),
+      env,
+    );
+    expect(foreign.status).toBe(404);
+    expect(
+      calls.slice(foreignCallsStart).map((call) => ({ pathname: new URL(call.url).pathname, projectId: call.headers.get("x-ama-project-id") })),
+    ).toEqual([{ pathname: "/api/v1/sessions/foreign-session-router", projectId: "foreign-project-router" }]);
+  });
+
+  it("accepts user and internal Agent socket authorities while rejecting non-user Realmroot principals and missing subject grants", async () => {
+    const socketUrl = "https://ak.router.test/api/ama/sessions/current-session-router/socket?projectId=project-router";
+    const upgrade = { upgrade: "websocket" };
+    const acceptedAuthorities: HeadersInit[] = [
+      { ...upgrade, cookie: authority.cookie, origin: "https://ak.router.test" },
+      { ...upgrade, ...(await routerRealmrootSocketHeaders(socketUrl, "human", "router-native-subject", "Bearer")) },
+      { ...upgrade, ...(await routerRealmrootSocketHeaders(socketUrl, "human", "router-native-subject", "DPoP")) },
+      {
+        ...upgrade,
+        authorization: `Bearer ${await signRouterAgentToken(leaderAuthority, "https://ak.router.test")}`,
+      },
+    ];
+    for (const headers of acceptedAuthorities) {
+      const before = calls.length;
+      const response = await api.fetch(new Request(socketUrl, { headers }), env);
+      expect(response.status).toBe(101);
+      expect(response.webSocket).toBeInstanceOf(TestWebSocket);
+      expect(calls).toHaveLength(before + 2);
+    }
+
+    const deniedAuthorities = [
+      {
+        label: "Realmroot machine",
+        status: 403,
+        headers: await routerRealmrootSocketHeaders(socketUrl, "machine", "router-machine", "Bearer"),
+      },
+      {
+        label: "Realmroot Agent",
+        status: 401,
+        headers: await routerRealmrootSocketHeaders(socketUrl, "agent", "router-agent-controller", "DPoP"),
+      },
+      {
+        label: "same-tenant human without an AMA grant",
+        status: 401,
+        headers: await routerRealmrootSocketHeaders(socketUrl, "human", "router-ungranted-subject", "Bearer"),
+      },
+    ];
+    for (const denied of deniedAuthorities) {
+      const before = calls.length;
+      const response = await api.fetch(new Request(socketUrl, { headers: { ...upgrade, ...denied.headers } }), env);
+      expect(response.status, `${denied.label}: ${await response.clone().text()}`).toBe(denied.status);
+      expect(calls, denied.label).toHaveLength(before);
+    }
   });
 
   it("creates, lists, updates, and deletes a maintainer with tenant and project context", async () => {
@@ -645,13 +809,53 @@ async function createRouterAgentAuthority(agentId: string): Promise<RouterAgentA
   };
 }
 
-function signRouterAgentToken(agent: RouterAgentAuthority): Promise<string> {
+function signRouterAgentToken(agent: RouterAgentAuthority, audience = "http://localhost"): Promise<string> {
   return new SignJWT({ sub: agent.sessionId, aid: agent.agentId, jti: randomUUID() })
     .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
-    .setAudience("http://localhost")
+    .setAudience(audience)
     .setIssuedAt()
     .setExpirationTime("1m")
     .sign(agent.privateKey);
+}
+
+async function routerRealmrootSocketHeaders(
+  url: string,
+  profile: "human" | "machine" | "agent",
+  subjectId: string,
+  tokenType: "Bearer" | "DPoP",
+): Promise<Record<string, string>> {
+  const issuerKeys = await routerRealmrootIssuerKeysPromise;
+  const issuerJwk = await exportJWK(issuerKeys.publicKey);
+  issuerJwk.kid = "router-realmroot-issuer-key";
+  const dpopKeys = tokenType === "DPoP" ? await generateKeyPair("ES256", { extractable: true }) : null;
+  const dpopJwk = dpopKeys ? await exportJWK(dpopKeys.publicKey) : null;
+  const accessToken = await new SignJWT({
+    scope: "ak:read",
+    client_id: profile === "agent" ? "realmroot-cli" : "ak-cli-test",
+    "urn:realmroot:params:oauth:org": tenantId,
+    ...(profile === "machine" ? { sub_profile: "machine" } : {}),
+    ...(profile === "agent" ? { act: { sub: "router-realmroot-agent", sub_profile: "ai_agent" } } : {}),
+    ...(dpopJwk ? { cnf: { jkt: await calculateJwkThumbprint(dpopJwk) } } : {}),
+  })
+    .setProtectedHeader({ alg: "ES256", kid: issuerJwk.kid, typ: "at+jwt" })
+    .setIssuer(env.REALMROOT_ISSUER)
+    .setAudience("https://ak.router.test/api")
+    .setSubject(subjectId)
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(issuerKeys.privateKey);
+  if (!dpopKeys || !dpopJwk) return { authorization: `Bearer ${accessToken}` };
+  const target = new URL(url);
+  const proof = await new SignJWT({
+    htu: `${target.origin}${target.pathname}`,
+    htm: "GET",
+    ath: createHash("sha256").update(accessToken).digest("base64url"),
+  })
+    .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopJwk })
+    .setJti(randomUUID())
+    .setIssuedAt()
+    .sign(dpopKeys.privateKey);
+  return { authorization: `DPoP ${accessToken}`, dpop: proof };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -662,12 +866,12 @@ async function requestJson(requestValue: Request): Promise<Record<string, unknow
   return JSON.parse(await requestValue.clone().text()) as Record<string, unknown>;
 }
 
-function amaSessionResponse(id: string) {
+function amaSessionResponse(id: string, projectId = "project-router") {
   const now = new Date().toISOString();
   return {
     metadata: {
       uid: id,
-      projectId: "project-router",
+      projectId,
       name: id,
       labels: { kind: "router" },
       annotations: {},

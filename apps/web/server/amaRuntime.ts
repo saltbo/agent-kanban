@@ -853,8 +853,14 @@ export async function sendAmaSessionMessage(
   return { accepted: true };
 }
 
-export async function readAmaSession(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {
-  const client = await createAmaClient(env, ownerId, projectId);
+export async function readAmaSession(
+  env: Env,
+  ownerId: string,
+  sessionId: string,
+  projectId?: string,
+  subjectId?: string,
+): Promise<Record<string, unknown> | null> {
+  const client = await createAmaClient(env, ownerId, projectId, {}, subjectId);
   try {
     return normalizeSession(await withAmaAuthRetry(env, true, () => client.sessions.get(sessionId)));
   } catch (error) {
@@ -1231,9 +1237,9 @@ function isAmaUnauthorizedError(error: unknown): boolean {
   return /\bHTTP 401\b/.test(detail) || /unauthorized|authentication required|invalid[_ -]?token/i.test(detail);
 }
 
-async function createAmaClient(env: Env, ownerId: string, projectId?: string, requestHeaders: Record<string, string> = {}) {
+async function createAmaClient(env: Env, ownerId: string, projectId?: string, requestHeaders: Record<string, string> = {}, subjectId?: string) {
   const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
-  const accessToken = await requiredAmaBearerToken(env, ownerId);
+  const accessToken = await requiredAmaBearerToken(env, ownerId, false, subjectId);
   const client = createSdkClient({
     baseUrl,
     projectId,
@@ -1242,10 +1248,10 @@ async function createAmaClient(env: Env, ownerId: string, projectId?: string, re
   const authenticatedFetch: typeof fetch = async (input, init) => {
     const request = new Request(input, init);
     const headers = new Headers(request.headers);
-    headers.set("authorization", `Bearer ${await requiredAmaBearerToken(env, ownerId)}`);
+    headers.set("authorization", `Bearer ${await requiredAmaBearerToken(env, ownerId, false, subjectId)}`);
     let response = await fetch(new Request(request, { headers }));
     if (response.status === 401) {
-      const refreshed = await requiredAmaBearerToken(env, ownerId, true);
+      const refreshed = await requiredAmaBearerToken(env, ownerId, true, subjectId);
       if (request.method === "GET" || request.method === "HEAD") {
         headers.set("authorization", `Bearer ${refreshed}`);
         response = await fetch(new Request(request, { headers }));
@@ -1257,21 +1263,23 @@ async function createAmaClient(env: Env, ownerId: string, projectId?: string, re
   return client;
 }
 
-// Browsers connect only to AK. AK validates the Session Cookie and tenant-owned
+// Clients connect only to AK. AK validates their AK authority and tenant-owned
 // session before opening a user-authorized upstream socket to AMA.
-export async function getAmaSessionSocketUrl(env: Env, _ownerId: string, sessionId: string, _projectId?: string): Promise<string> {
+export async function getAmaSessionSocketUrl(env: Env, _ownerId: string, sessionId: string, projectId?: string): Promise<string> {
   const baseUrl = requireEnv(env.AK_API_URL ?? env.AK_RESOURCE, "AK_API_URL");
   const wsBase = baseUrl.replace(/^http(s?):\/\//i, (_match, secure) => `ws${secure}://`).replace(/\/api\/?$/, "");
-  return `${wsBase}/api/ama/sessions/${encodeURIComponent(sessionId)}/socket`;
+  const socketUrl = new URL(`/api/ama/sessions/${encodeURIComponent(sessionId)}/socket`, wsBase);
+  if (projectId) socketUrl.searchParams.set("projectId", projectId);
+  return socketUrl.toString();
 }
 
-export async function proxyAmaSessionSocket(env: Env, ownerId: string, sessionId: string, projectId: string): Promise<Response> {
+export async function proxyAmaSessionSocket(env: Env, ownerId: string, sessionId: string, projectId: string, subjectId?: string): Promise<Response> {
   const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
   const upstreamUrl = new URL(`/api/v1/sessions/${encodeURIComponent(sessionId)}/socket`, baseUrl).toString();
   const connect = async (forceRefresh = false) => {
     return fetch(upstreamUrl, {
       headers: {
-        authorization: `Bearer ${await requiredAmaBearerToken(env, ownerId, forceRefresh)}`,
+        authorization: `Bearer ${await requiredAmaBearerToken(env, ownerId, forceRefresh, subjectId)}`,
         upgrade: "websocket",
         "x-ama-project-id": projectId,
       },
@@ -1281,14 +1289,66 @@ export async function proxyAmaSessionSocket(env: Env, ownerId: string, sessionId
   if (response.status === 401) {
     response = await connect(true);
   }
-  if (response.status === 101 && response.webSocket) return response;
+  if (response.status === 101 && response.webSocket) return relayAmaSessionSocket(response.webSocket, sessionId, projectId);
   console.error("AMA WebSocket handshake failed", { status: response.status, sessionId, projectId });
   throw new Error("AMA WebSocket handshake failed");
 }
 
-async function requiredAmaBearerToken(env: Env, ownerId: string, forceRefresh = false): Promise<string> {
+function relayAmaSessionSocket(upstream: WebSocket, sessionId: string, projectId: string): Response {
+  const pair = new WebSocketPair();
+  const browser = pair[1];
+  let closed = false;
+
+  const closePeer = (peer: WebSocket, event: CloseEvent) => {
+    if (closed) return;
+    closed = true;
+    try {
+      if ([1004, 1005, 1006, 1015].includes(event.code)) peer.close();
+      else peer.close(event.code, event.reason);
+    } catch (error) {
+      console.error("AMA WebSocket relay close failed", { sessionId, projectId, error });
+    }
+  };
+  const failRelay = (direction: string, error?: unknown) => {
+    if (closed) return;
+    closed = true;
+    console.error("AMA WebSocket relay failed", { sessionId, projectId, direction, error });
+    for (const socket of [browser, upstream]) {
+      try {
+        socket.close(1011, "WebSocket relay failed");
+      } catch {
+        // A socket may already be closed after a send failure.
+      }
+    }
+  };
+
+  browser.addEventListener("message", (event) => {
+    try {
+      upstream.send(event.data);
+    } catch (error) {
+      failRelay("browser-to-ama", error);
+    }
+  });
+  upstream.addEventListener("message", (event) => {
+    try {
+      browser.send(event.data);
+    } catch (error) {
+      failRelay("ama-to-browser", error);
+    }
+  });
+  browser.addEventListener("close", (event) => closePeer(upstream, event));
+  upstream.addEventListener("close", (event) => closePeer(browser, event));
+  browser.addEventListener("error", () => failRelay("browser"));
+  upstream.addEventListener("error", () => failRelay("ama"));
+
+  browser.accept();
+  upstream.accept();
+  return new Response(null, { status: 101, webSocket: pair[0] });
+}
+
+async function requiredAmaBearerToken(env: Env, ownerId: string, forceRefresh = false, subjectId?: string): Promise<string> {
   try {
-    return await amaBearerToken(env, ownerId, forceRefresh);
+    return await amaBearerToken(env, ownerId, forceRefresh, subjectId);
   } catch (error) {
     if (error instanceof AmaUserGrantRequired) throw new AmaUserAuthError(error.message);
     throw error;

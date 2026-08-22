@@ -63,6 +63,39 @@ describe("Realmroot AMA user grants", () => {
     expect(tokenRequests).toHaveLength(1);
   });
 
+  it("coalesces refreshes per subject without sharing grants across subjects in one tenant", async () => {
+    const issuer = "https://subjects.realmroot.test";
+    await seedGrant("tenant-subjects", "subject-a", "refresh-a", "expired-a", Date.now() - 1_000);
+    await seedGrant("tenant-subjects", "subject-b", "refresh-b", "expired-b", Date.now() - 1_000);
+    const tokenRequests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/.well-known/openid-configuration")) return discovery(issuer);
+        tokenRequests.push(request);
+        const refreshToken = new URLSearchParams(await request.clone().text()).get("refresh_token");
+        await Promise.resolve();
+        return Response.json({
+          access_token: refreshToken === "refresh-a" ? "access-a" : "access-b",
+          refresh_token: refreshToken === "refresh-a" ? "rotated-a" : "rotated-b",
+          expires_in: 600,
+        });
+      }),
+    );
+
+    await expect(
+      Promise.all([
+        ...Array.from({ length: 3 }, () => amaBearerToken(env(issuer), "tenant-subjects", false, "subject-a")),
+        ...Array.from({ length: 3 }, () => amaBearerToken(env(issuer), "tenant-subjects", false, "subject-b")),
+      ]),
+    ).resolves.toEqual(["access-a", "access-a", "access-a", "access-b", "access-b", "access-b"]);
+    expect(tokenRequests).toHaveLength(2);
+    await expect(
+      Promise.all(tokenRequests.map(async (request) => new URLSearchParams(await request.clone().text()).get("refresh_token"))),
+    ).resolves.toEqual(expect.arrayContaining(["refresh-a", "refresh-b"]));
+  });
+
   it("runs a forced refresh after an overlapping non-forced refresh completes", async () => {
     const issuer = "https://force-after-shared.realmroot.test";
     await seedGrant("tenant-force-after-shared", "subject-force-after-shared", "initial-refresh", "expired-access", Date.now() - 1_000);
@@ -204,7 +237,7 @@ function discovery(issuer: string): Response {
 }
 
 async function seedGrant(tenantId: string, subjectId: string, refresh: string, access: string, expiresAt: number): Promise<void> {
-  await db.prepare("INSERT INTO realmroot_tenants (id) VALUES (?)").bind(tenantId).run();
+  await db.prepare("INSERT OR IGNORE INTO realmroot_tenants (id) VALUES (?)").bind(tenantId).run();
   const encryptedRefresh = await encrypt(refresh);
   const encryptedAccess = await encrypt(access);
   await db

@@ -851,6 +851,7 @@ api.get("/api", (c) =>
 );
 
 type OpenApiAuth = "realmroot" | "agent" | "either";
+const AMA_PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/;
 
 function taskActionOpenApi(operationId: string, scope: string, auth: OpenApiAuth) {
   return {
@@ -888,6 +889,12 @@ api.get("/api/openapi.json", (c) =>
           scheme: "bearer",
           bearerFormat: "agent+jwt",
           description: "Short-lived Ed25519 AK Agent Session token issued for an active AK Agent runtime session.",
+        },
+        webSession: {
+          type: "apiKey",
+          in: "cookie",
+          name: "ak_session",
+          description: "Opaque AK Web Session cookie. Browser WebSocket clients must also send the canonical AK Origin.",
         },
       },
       schemas: {
@@ -1023,8 +1030,27 @@ api.get("/api/openapi.json", (c) =>
       "/machines/cloud": { post: openApiOperation("createCloudMachine", "ak:write", "Cloud machine created", "201") },
       "/ama/provision": { post: openApiOperation("initializeAmaResources", "ak:write", "AMA resources initialized") },
       "/ama/sessions/{sessionId}/socket": {
-        parameters: [openApiPathParameter("sessionId")],
-        get: openApiOperation("proxyAmaSessionSocket", "ak:read", "Authenticated AMA WebSocket proxy"),
+        parameters: [
+          openApiPathParameter("sessionId"),
+          {
+            name: "projectId",
+            in: "query",
+            required: false,
+            description: "AMA project that owns the session. Omit only for sessions in the tenant's current AMA project.",
+            schema: { type: "string", minLength: 1, maxLength: 160, pattern: AMA_PROJECT_ID_PATTERN.source },
+          },
+        ],
+        get: {
+          operationId: "proxyAmaSessionSocket",
+          security: [{ webSession: [] }, { realmroot: ["ak:read"] }, { agentSession: [] }],
+          responses: {
+            "101": { description: "WebSocket connection established" },
+            "400": { description: "Invalid AMA project ID" },
+            "403": { description: "AK user or Agent authority required; browser Sessions also require the canonical Origin" },
+            "404": { description: "AMA session not found in the requested project" },
+            "426": { description: "WebSocket upgrade required" },
+          },
+        },
       },
       "/models": { get: openApiOperation("listModels", "ak:read", "Runtime models", "200", "either") },
       "/boards": {
@@ -1935,6 +1961,15 @@ async function ownerAmaProjectId(c: { env: Env; get: (key: "ownerId") => string 
   return projectId;
 }
 
+async function amaSocketProjectId(c: Context<{ Bindings: Env }>): Promise<string> {
+  const projectId = c.req.query("projectId");
+  if (projectId === undefined) return ownerAmaProjectId(c);
+  if (!AMA_PROJECT_ID_PATTERN.test(projectId)) {
+    throw new HTTPException(400, { message: "Invalid AMA project ID" });
+  }
+  return projectId;
+}
+
 api.get("/api/sessions", async (c) => {
   const projectId = await ownerAmaProjectId(c);
   const limit = Number.parseInt(c.req.query("limit") ?? "50", 10);
@@ -1966,12 +2001,20 @@ api.get("/api/sessions/:sessionId/ws", async (c) => {
 
 api.get("/api/ama/sessions/:sessionId/socket", async (c) => {
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket") throw new HTTPException(426, { message: "WebSocket upgrade required" });
-  assertWebSocketOrigin(c);
-  const projectId = await ownerAmaProjectId(c);
+  const principal = c.get("principal");
+  const isWebSession = c.get("identityType") === "user" && principal.source === "session";
+  const isNativeHuman = c.get("identityType") === "user" && principal.source === "token" && principal.type === "human";
+  const isAkAgent = principal.source === "session" && principal.type === "agent";
+  if (!isWebSession && !isNativeHuman && !isAkAgent) {
+    throw new HTTPException(403, { message: "AK user or Agent authority is required for the AMA session socket" });
+  }
+  if (isWebSession) assertWebSocketOrigin(c);
+  const amaGrantSubjectId = isWebSession || isNativeHuman ? principal.subjectId : undefined;
+  const projectId = await amaSocketProjectId(c);
   const sessionId = c.req.param("sessionId");
-  const session = await readAmaSession(c.env, c.get("ownerId"), sessionId, projectId);
+  const session = await readAmaSession(c.env, c.get("ownerId"), sessionId, projectId, amaGrantSubjectId);
   if (!session) throw new HTTPException(404, { message: "Session not found" });
-  return proxyAmaSessionSocket(c.env, c.get("ownerId"), sessionId, projectId);
+  return proxyAmaSessionSocket(c.env, c.get("ownerId"), sessionId, projectId, amaGrantSubjectId);
 });
 
 // Chat and CLI receive an AK WebSocket URL; AMA authority never reaches them.

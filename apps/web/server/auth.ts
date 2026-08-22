@@ -39,7 +39,11 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
     pattern: /^\/api\/sessions(?:\/[^/]+(?:\/ws)?)?$/,
     rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
   },
-  { method: "GET", pattern: /^\/api\/ama\/sessions\/[^/]+\/socket$/, rule: { allow: ["user"], scope: "ak:read" } },
+  {
+    method: "GET",
+    pattern: /^\/api\/ama\/sessions\/[^/]+\/socket$/,
+    rule: { allow: ["user", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
   { method: "GET", pattern: /^\/api\/tunnel\/ws$/, rule: { allow: ["user", "machine"], scope: "ak:read" } },
   {
     method: "GET",

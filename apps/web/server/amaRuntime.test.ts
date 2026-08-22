@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { installCloudflareWebSocketTestGlobals, TestWebSocket, TestWebSocketPair } from "../../../tests/helpers/cloudflareWebSocket";
 
 const sdk = vi.hoisted(() => ({
   config: undefined as { fetch?: typeof fetch } | undefined,
@@ -80,7 +81,7 @@ describe("AMA Realmroot user-grant integration", () => {
       "session/1",
       "project-a",
     );
-    expect(url).toBe("wss://ak.example.test/api/ama/sessions/session%2F1/socket");
+    expect(url).toBe("wss://ak.example.test/api/ama/sessions/session%2F1/socket?projectId=project-a");
     expect(url).not.toContain("access_token");
   });
 
@@ -134,7 +135,7 @@ describe("AMA Realmroot user-grant integration", () => {
       code: "AMA_USER_AUTH_REQUIRED",
     });
     expect(fetch).toHaveBeenCalledOnce();
-    expect(sdk.bearerToken).toHaveBeenLastCalledWith(expect.anything(), "tenant-a", true);
+    expect(sdk.bearerToken).toHaveBeenLastCalledWith(expect.anything(), "tenant-a", true, undefined);
   });
 
   it("does not expose an AMA error response body in the public error message", async () => {
@@ -149,13 +150,26 @@ describe("AMA Realmroot user-grant integration", () => {
     expect(error.message).not.toContain("upstream-internal-token");
   });
 
-  it("returns only a successful AMA 101 response that carries a WebSocket", async () => {
-    const webSocket = { accept: vi.fn() };
-    const upstream = { status: 101, webSocket } as unknown as Response;
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => upstream);
-    vi.stubGlobal("fetch", fetchMock);
+  it("returns a new browser-facing 101 socket and forwards text and binary frames in both directions", async () => {
+    const { browserClient, browserServer, response, upstream, upstreamResponse, fetchMock } = await connectAmaSocketRelay();
 
-    await expect(proxyAmaSessionSocket(userGrantEnv(), "tenant-a", "session-1", "project-1")).resolves.toBe(upstream);
+    expect(response).not.toBe(upstreamResponse);
+    expect(response.status).toBe(101);
+    expect(response.webSocket).toBe(browserClient);
+    expect(response.webSocket).not.toBe(upstream);
+    expect(browserServer.accepted).toBe(true);
+    expect(upstream.accepted).toBe(true);
+
+    const browserBinary = new Uint8Array([1, 2, 3]).buffer;
+    browserClient.send("browser-text");
+    browserClient.send(browserBinary);
+    expect(upstream.sent).toEqual(["browser-text", browserBinary]);
+
+    const upstreamBinary = new Uint8Array([4, 5, 6]).buffer;
+    upstream.emitMessage("ama-text");
+    upstream.emitMessage(upstreamBinary);
+    expect(browserClient.received).toEqual(["ama-text", upstreamBinary]);
+
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
       headers: expect.objectContaining({
@@ -166,6 +180,43 @@ describe("AMA Realmroot user-grant integration", () => {
     });
     expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty("dpop");
     expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty("x-ak-tenant-id");
+  });
+
+  it("propagates a browser close to AMA and an AMA close to the browser", async () => {
+    const browserClosed = await connectAmaSocketRelay();
+    browserClosed.browserClient.close(1000, "browser done");
+    expect(browserClosed.upstream.closedWith).toEqual({ code: 1000, reason: "browser done" });
+
+    const upstreamClosed = await connectAmaSocketRelay();
+    upstreamClosed.upstream.emitClose(1001, "AMA going away");
+    expect(upstreamClosed.browserServer.closedWith).toEqual({ code: 1001, reason: "AMA going away" });
+    expect(upstreamClosed.browserClient.closedWith).toEqual({ code: 1001, reason: "AMA going away" });
+  });
+
+  it("closes both relay sides when either direction cannot send", async () => {
+    const toAmaFailure = await connectAmaSocketRelay();
+    toAmaFailure.upstream.sendError = new Error("AMA send failed");
+    toAmaFailure.browserClient.send("cannot reach AMA");
+    expect(toAmaFailure.browserServer.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
+    expect(toAmaFailure.upstream.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
+
+    const toBrowserFailure = await connectAmaSocketRelay();
+    toBrowserFailure.browserServer.sendError = new Error("browser send failed");
+    toBrowserFailure.upstream.emitMessage("cannot reach browser");
+    expect(toBrowserFailure.browserServer.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
+    expect(toBrowserFailure.upstream.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
+  });
+
+  it("closes both relay sides when either socket emits an error", async () => {
+    const browserFailure = await connectAmaSocketRelay();
+    browserFailure.browserServer.emitError();
+    expect(browserFailure.browserServer.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
+    expect(browserFailure.upstream.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
+
+    const amaFailure = await connectAmaSocketRelay();
+    amaFailure.upstream.emitError();
+    expect(amaFailure.browserServer.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
+    expect(amaFailure.upstream.closedWith).toEqual({ code: 1011, reason: "WebSocket relay failed" });
   });
 
   it("rejects a first non-101 AMA socket response without exposing its body or headers", async () => {
@@ -193,7 +244,7 @@ describe("AMA Realmroot user-grant integration", () => {
 
     const error = await proxyAmaSessionSocket(userGrantEnv(), "tenant-a", "session-1", "project-1").catch((value) => value);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(sdk.bearerToken).toHaveBeenNthCalledWith(2, expect.anything(), "tenant-a", true);
+    expect(sdk.bearerToken).toHaveBeenNthCalledWith(2, expect.anything(), "tenant-a", true, undefined);
     expect(error.message).toBe("AMA WebSocket handshake failed");
     expect(String(error)).not.toMatch(/first-secret|second-secret|first-header|second-header/);
   });
@@ -208,4 +259,24 @@ function userGrantEnv() {
     REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
     AMA_RESOURCE: "https://ama.example.test/api",
   } as never;
+}
+
+async function connectAmaSocketRelay() {
+  installCloudflareWebSocketTestGlobals(vi.stubGlobal);
+  const upstream = new TestWebSocket();
+  const upstreamResponse = { status: 101, webSocket: upstream } as unknown as Response;
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => upstreamResponse);
+  vi.stubGlobal("fetch", fetchMock);
+
+  const response = await proxyAmaSessionSocket(userGrantEnv(), "tenant-a", "session-1", "project-1");
+  const pair = TestWebSocketPair.latest as TestWebSocketPair | undefined;
+  if (!pair) throw new Error("AMA relay did not create a WebSocketPair");
+  return {
+    browserClient: pair[0],
+    browserServer: pair[1],
+    fetchMock,
+    response: response as Response & { webSocket: TestWebSocket },
+    upstream,
+    upstreamResponse,
+  };
 }

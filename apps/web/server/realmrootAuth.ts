@@ -413,8 +413,9 @@ export class AmaUserGrantRequired extends Error {
   }
 }
 
-export async function amaBearerToken(env: Env, tenantId: string, forceRefresh = false): Promise<string> {
-  const pending = amaGrantRefreshes.get(tenantId);
+export async function amaBearerToken(env: Env, tenantId: string, forceRefresh = false, subjectId?: string): Promise<string> {
+  const refreshKey = `${tenantId}\0${subjectId ?? ""}`;
+  const pending = amaGrantRefreshes.get(refreshKey);
   if (pending) {
     if (!forceRefresh || pending.force) return pending.promise;
     try {
@@ -422,20 +423,20 @@ export async function amaBearerToken(env: Env, tenantId: string, forceRefresh = 
     } catch {
       // A forced refresh must still run after a failed non-forced lookup.
     }
-    return amaBearerToken(env, tenantId, true);
+    return amaBearerToken(env, tenantId, true, subjectId);
   }
-  const refresh = refreshAmaBearerToken(env, tenantId, forceRefresh);
+  const refresh = refreshAmaBearerToken(env, tenantId, forceRefresh, subjectId);
   const entry = { force: forceRefresh, promise: refresh };
-  amaGrantRefreshes.set(tenantId, entry);
+  amaGrantRefreshes.set(refreshKey, entry);
   try {
     return await refresh;
   } finally {
-    if (amaGrantRefreshes.get(tenantId) === entry) amaGrantRefreshes.delete(tenantId);
+    if (amaGrantRefreshes.get(refreshKey) === entry) amaGrantRefreshes.delete(refreshKey);
   }
 }
 
-async function refreshAmaBearerToken(env: Env, tenantId: string, forceRefresh: boolean): Promise<string> {
-  let grant = await findAmaGrant(env.DB, tenantId);
+async function refreshAmaBearerToken(env: Env, tenantId: string, forceRefresh: boolean, subjectId?: string): Promise<string> {
+  let grant = await findAmaGrant(env.DB, tenantId, subjectId);
   if (!grant) throw new AmaUserGrantRequired();
   if (!forceRefresh && Date.parse(grant.access_token_expires_at) - AMA_TOKEN_REFRESH_WINDOW_MS > Date.now()) {
     return decryptSecret(env, grant.access_token_ciphertext, grant.access_token_nonce);
@@ -444,7 +445,7 @@ async function refreshAmaBearerToken(env: Env, tenantId: string, forceRefresh: b
   const metadata = await discover(env.REALMROOT_ISSUER);
   const refreshToken = await decryptSecret(env, grant.refresh_token_ciphertext, grant.refresh_token_nonce);
   const tokens = await exchangeRefreshToken(env, metadata, refreshToken, required(env.AMA_RESOURCE, "AMA_RESOURCE")).catch(async (error) => {
-    const current = await findAmaGrant(env.DB, tenantId);
+    const current = await findAmaGrant(env.DB, tenantId, subjectId);
     if (current && current.refresh_token_ciphertext !== grant?.refresh_token_ciphertext) {
       return {
         access_token: await decryptSecret(env, current.access_token_ciphertext, current.access_token_nonce),
@@ -476,7 +477,7 @@ async function refreshAmaBearerToken(env: Env, tenantId: string, forceRefresh: b
     )
     .run();
   if ((updated.meta.changes ?? 0) === 0) {
-    grant = await findAmaGrant(env.DB, tenantId);
+    grant = await findAmaGrant(env.DB, tenantId, subjectId);
     if (!grant) throw new AmaUserGrantRequired();
     return decryptSecret(env, grant.access_token_ciphertext, grant.access_token_nonce);
   }
