@@ -143,7 +143,7 @@ describe("ak start Machine runner lifecycle", () => {
       ["auth", "login", "--api-server", "https://ama.example.test"],
     ]);
     expect(readFileSync(contextLoginMarker, "utf8")).toBe("authorization-code-pkce\n");
-    expect(statSync(contextLoginMarker).mode & 0o777).toBe(0o600);
+    expectPosixMode(contextLoginMarker, 0o600);
   });
 
   it("migrates Context login independently for canonicalized origins in one credential store", async () => {
@@ -218,8 +218,21 @@ describe("ak start Machine runner lifecycle", () => {
     ).toEqual(markers.map((marker) => marker.slice(state.directory.length + 1)).sort());
     for (const marker of markers) {
       expect(readFileSync(marker, "utf8")).toBe("authorization-code-pkce\n");
-      expect(statSync(marker).mode & 0o777).toBe(0o600);
+      expectPosixMode(marker, 0o600);
     }
+  });
+
+  it("closes the successful spawn log handle so the next start can rotate it", async () => {
+    writeFileSync(contextLoginMarker, "authorization-code-pkce\n", { mode: 0o600 });
+    writeRunnerCredentials({ accessToken: "valid-access", expiresAt: futureExpiry() });
+
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+    await command(registerStartCommand).parseAsync(["start"], { from: "user" });
+
+    expect(readdirSync(`${state.directory}/logs`).sort()).toEqual([
+      expect.stringMatching(/^daemon-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.log$/),
+      "daemon.log",
+    ]);
   });
 
   it("keeps a valid Context-login credential silent when the marker exists", async () => {
@@ -444,4 +457,9 @@ function registeredMachine(origin: string) {
     name: "test-machine",
     runner: { origin, projectId: "project-1", environmentId: "environment-1" },
   };
+}
+
+function expectPosixMode(path: string, expected: number): void {
+  const stats = statSync(path);
+  if (process.platform !== "win32") expect(stats.mode & 0o777).toBe(expected);
 }

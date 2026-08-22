@@ -43,6 +43,7 @@ vi.mock("@napi-rs/keyring", () => ({
 vi.mock("../src/config.js", () => configMocks);
 
 const { clearRealmrootAuthority, loginWithRealmroot, realmrootRequestHeaders } = await import("../src/nativeAuth.js");
+if (process.platform === "win32") vi.setConfig({ testTimeout: 15_000 });
 
 beforeEach(() => {
   keychain.clear();

@@ -336,9 +336,8 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   let pid: number;
   try {
     pid = await waitForSpawn(child, runner.path);
-  } catch (error) {
+  } finally {
     closeSync(logFd);
-    throw error;
   }
   mkdirSync(STATE_DIR, { recursive: true });
   writeFileSync(PID_FILE, String(pid));

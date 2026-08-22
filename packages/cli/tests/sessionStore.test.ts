@@ -96,8 +96,8 @@ describe("writeSession / readSession", () => {
 
     writeSession(session);
 
-    expect(statSync(testSessionsDir).mode & 0o777).toBe(0o700);
-    expect(statSync(join(testSessionsDir, `${session.sessionId}.json`)).mode & 0o777).toBe(0o600);
+    expectPosixMode(testSessionsDir, 0o700);
+    expectPosixMode(join(testSessionsDir, `${session.sessionId}.json`), 0o600);
   });
 
   it("repairs broad permissions on an existing sessions directory and file", () => {
@@ -109,10 +109,15 @@ describe("writeSession / readSession", () => {
 
     writeSession({ ...session, status: "in_review" });
 
-    expect(statSync(testSessionsDir).mode & 0o777).toBe(0o700);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expectPosixMode(testSessionsDir, 0o700);
+    expectPosixMode(path, 0o600);
   });
 });
+
+function expectPosixMode(path: string, expected: number): void {
+  const stats = statSync(path);
+  if (process.platform !== "win32") expect(stats.mode & 0o777).toBe(expected);
+}
 
 describe("readSession", () => {
   it("returns null for an unknown session ID", () => {

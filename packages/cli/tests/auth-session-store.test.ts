@@ -32,12 +32,12 @@ afterEach(() => {
 });
 
 describe("worker Agent auth session storage", () => {
-  it("creates an owner-only directory and atomically stores an owner-only private key file", () => {
+  it("creates a private session directory and atomically stores the private key file", () => {
     writeWorkerAuthSession(session);
 
     expect(readWorkerAuthSession()).toEqual(session);
-    expect(statSync(stateDirectory).mode & 0o777).toBe(0o700);
-    expect(statSync(sessionFile).mode & 0o777).toBe(0o600);
+    expectPosixMode(stateDirectory, 0o700);
+    expectPosixMode(sessionFile, 0o600);
     expect(readdirSync(stateDirectory)).toEqual(["worker-auth-session.json"]);
   });
 
@@ -49,8 +49,13 @@ describe("worker Agent auth session storage", () => {
 
     writeWorkerAuthSession({ ...session, createdAt: 2 });
 
-    expect(statSync(stateDirectory).mode & 0o777).toBe(0o700);
-    expect(statSync(sessionFile).mode & 0o777).toBe(0o600);
+    expectPosixMode(stateDirectory, 0o700);
+    expectPosixMode(sessionFile, 0o600);
     expect(readWorkerAuthSession()).toMatchObject({ createdAt: 2 });
   });
 });
+
+function expectPosixMode(path: string, expected: number): void {
+  const stats = statSync(path);
+  if (process.platform !== "win32") expect(stats.mode & 0o777).toBe(expected);
+}
