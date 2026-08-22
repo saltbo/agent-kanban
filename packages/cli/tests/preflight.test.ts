@@ -109,25 +109,6 @@ describe("checkDaemonDependencies()", () => {
     expect(errors[0]).toContain("Install:");
   });
 
-  it("returns one error block when gpg is missing", () => {
-    missingBinary("gpg");
-
-    const errors = checkDaemonDependencies();
-
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("`gpg`");
-    expect(errors[0]).toContain("Install:");
-  });
-
-  it("uses the linux hint for gpg when running on linux", () => {
-    mockPlatform.mockReturnValue("linux");
-    missingBinary("gpg");
-
-    const errors = checkDaemonDependencies();
-
-    expect(errors[0]).toContain("apt install gnupg");
-  });
-
   it("returns two distinct error blocks when gh and npx are both missing", () => {
     missingBinaries("gh", "npx");
 
@@ -173,17 +154,17 @@ describe("checkDaemonDependencies()", () => {
     expect(joined).toContain("no agent runtime on PATH");
   });
 
-  it("returns four error blocks when all four binaries are missing", () => {
+  it("returns three error blocks when all required binaries are missing", () => {
     missingBinaries("git", "gh", "npx", "gpg");
 
     const errors = checkDaemonDependencies();
 
-    expect(errors).toHaveLength(4);
+    expect(errors).toHaveLength(3);
     const joined = errors.join("\n");
     expect(joined).toContain("`git`");
     expect(joined).toContain("`gh`");
     expect(joined).toContain("`npx`");
-    expect(joined).toContain("`gpg`");
+    expect(joined).not.toContain("`gpg`");
   });
 
   it("uses the linux hint when running on linux", () => {

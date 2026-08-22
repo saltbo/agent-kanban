@@ -13,9 +13,7 @@ function env() {
     ...createTestEnv(),
     DB: db,
     AMA_ORIGIN: "https://ama.test",
-    AMA_OIDC_ISSUER: "https://auth.test",
-    AMA_OIDC_CLIENT_ID: "ak-app",
-    AMA_OIDC_CLIENT_SECRET: "ak-secret",
+    AMA_RESOURCE: "https://ama.test/api",
   } as any;
 }
 
@@ -76,10 +74,10 @@ async function seedMaintainer(input: { serialized?: boolean; status?: "active" |
   await seedUser(db, ownerId, `${ownerId}@test.com`);
   await db
     .prepare(
-      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-       VALUES (?, ?, ?, 'vault_concurrency', '{}')`,
+      `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+       VALUES (?, ?, 'vault_concurrency', '{}')`,
     )
-    .bind(ownerId, projectId, ownerId)
+    .bind(ownerId, projectId)
     .run();
 
   const { createBoard } = await import("../apps/web/server/boardRepo");

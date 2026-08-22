@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { getAuthToken, refreshAuthToken } from "../lib/auth-client";
 
 interface UseSSEOptions {
   taskId: string;
@@ -19,15 +18,11 @@ export function useSSE({ taskId, enabled = true }: UseSSEOptions) {
   useEffect(() => {
     if (!enabled) return;
 
-    async function connect() {
+    function connect() {
       // Close previous connection if any
       esRef.current?.close();
 
-      const token = (await refreshAuthToken()) ?? getAuthToken();
-      if (!token) return;
-
-      const url = `/api/tasks/${taskId}/stream?token=${encodeURIComponent(token!)}`;
-      const es = new EventSource(url);
+      const es = new EventSource(`/api/tasks/${taskId}/stream`, { withCredentials: true });
       esRef.current = es;
 
       es.onopen = () => {
@@ -57,7 +52,7 @@ export function useSSE({ taskId, enabled = true }: UseSSEOptions) {
 
         if (failCount.current >= 3) {
           setReconnecting(true);
-          startPolling(token!);
+          startPolling();
           return;
         }
 
@@ -66,14 +61,13 @@ export function useSSE({ taskId, enabled = true }: UseSSEOptions) {
       };
     }
 
-    function startPolling(tk: string) {
+    function startPolling() {
       if (pollTimer.current) return;
       const poll = async () => {
         try {
-          const headers = { Authorization: `Bearer ${tk}` };
           const [notesRes, msgsRes] = await Promise.all([
-            fetch(`/api/tasks/${taskId}/notes`, { headers }),
-            fetch(`/api/tasks/${taskId}/messages`, { headers }),
+            fetch(`/api/tasks/${taskId}/notes`, { credentials: "include" }),
+            fetch(`/api/tasks/${taskId}/messages`, { credentials: "include" }),
           ]);
           if (notesRes.ok) setNotes(await notesRes.json());
           if (msgsRes.ok) setMessages(await msgsRes.json());

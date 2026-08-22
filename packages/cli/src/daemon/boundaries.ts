@@ -9,7 +9,7 @@
  *   api      — ApiClient calls (getTask, createSession, releaseTask, etc.)
  *   provider — provider.execute, handle iteration, handle.abort
  *   fs       — workspace create/cleanup, session file ops
- *   exec     — gh CLI, gpg import, git worktree
+ *   exec     — gh CLI and git worktree operations
  *   tunnel   — WebSocket send/recv
  */
 
@@ -107,7 +107,7 @@ export function cleanupSync(label: string, fn: () => void): void {
   }
 }
 
-// ---- External commands (gh, gpg, git) ----
+// ---- External commands (gh, git) ----
 
 export function execBoundary<T>(label: string, fn: () => T): T {
   try {

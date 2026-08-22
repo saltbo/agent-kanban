@@ -288,11 +288,11 @@ function CommandContent() {
         {/* Command */}
         <div style={{ padding: 12, fontSize: 11, fontFamily: MONO, lineHeight: "18px" }}>
           <span style={{ color: C.dim }}>$ </span>
-          <span style={{ color: C.secondary }}>npx agent-kanban start \</span>
+          <span style={{ color: C.secondary }}>ak auth login \</span>
           <br />
           <span style={{ color: C.secondary, paddingLeft: 16 }}>--api-url https://agent-kanban.dev \</span>
           <br />
-          <span style={{ color: C.secondary, paddingLeft: 16 }}>--api-key ak_live_xxxxxxxx</span>
+          <span style={{ color: C.secondary, paddingLeft: 16 }}>--client-id ak_cli</span>
         </div>
       </div>
 

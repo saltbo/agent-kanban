@@ -11,41 +11,30 @@ export interface StoredIdentity {
   fingerprint: string;
 }
 
-function scopedIdentityPath(runtime: string): string {
+function identityPath(runtime: string): string {
   const { apiUrl } = getCredentials();
-  const deviceId = generateDeviceId();
-  const scope = createHash("sha256").update(`${apiUrl}\n${deviceId}\n${runtime}`).digest("hex").slice(0, 16);
+  const scope = createHash("sha256").update(`${apiUrl}\n${generateDeviceId()}\n${runtime}`).digest("hex").slice(0, 16);
   return join(IDENTITIES_DIR, `${runtime}-${scope}.json`);
-}
-
-function legacyIdentityPath(runtime: string): string {
-  return join(IDENTITIES_DIR, `${runtime}.json`);
 }
 
 export function loadIdentity(runtime: string): StoredIdentity | null {
   try {
-    return JSON.parse(readFileSync(scopedIdentityPath(runtime), "utf-8"));
-  } catch {}
-  try {
-    const identity = JSON.parse(readFileSync(legacyIdentityPath(runtime), "utf-8")) as StoredIdentity;
-    saveIdentity(runtime, identity);
-    return identity;
-  } catch {}
-  return null;
+    return JSON.parse(readFileSync(identityPath(runtime), "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 export function saveIdentity(runtime: string, identity: StoredIdentity): void {
   mkdirSync(IDENTITIES_DIR, { recursive: true });
-  writeFileSync(scopedIdentityPath(runtime), `${JSON.stringify(identity, null, 2)}\n`);
+  writeFileSync(identityPath(runtime), `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
 }
 
 export function removeIdentity(runtime: string): boolean {
-  let removed = false;
   try {
-    rmSync(scopedIdentityPath(runtime));
-    removed = true;
+    rmSync(identityPath(runtime));
+    return true;
   } catch {
-    // ignore
+    return false;
   }
-  return removed;
 }

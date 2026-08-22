@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestAgent, createTestSubagent } from "./helpers/db";
+import { applyMigrations as applyAllMigrations, createTestAgent, createTestSubagent } from "./helpers/db";
 
 const MIGRATIONS_DIR = join(__dirname, "../apps/web/migrations");
 
@@ -38,6 +38,14 @@ async function applyMigrations(db: D1Database) {
     "0030_agent_taints.sql",
     "0031_drop_board_maintainer_name.sql",
     "0032_board_maintainer_api_key.sql",
+    "0033_board_maintainer_heartbeat_enabled.sql",
+    "0034_task_assignee_status_index.sql",
+    "0035_board_maintainer_vault.sql",
+    "0036_backfill_ama_session_secret_refs.sql",
+    "0037_unique_latest_leader_per_runtime.sql",
+    "0038_board_maintainer_http_trigger_serial.sql",
+    "0039_realmroot_native.sql",
+    "0040_ama_resource_initialization_claims.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -57,7 +65,7 @@ beforeAll(async () => {
     d1Databases: { DB: "test-db" },
   });
   db = await mf.getD1Database("DB");
-  await applyMigrations(db);
+  await applyAllMigrations(db);
 });
 
 afterAll(async () => {

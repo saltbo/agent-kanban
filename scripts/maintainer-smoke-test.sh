@@ -213,26 +213,14 @@ const os = require('os');
 const path = require('path');
 const config = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'agent-kanban', 'config.json'), 'utf8'));
 const current = config.current;
-if (!current || !config.credentials?.[current]) process.exit(1);
-console.log(config.credentials[current]['api-url'].replace(/\\/$/, ''));
-"
-}
-
-api_key() {
-  node -e "
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const config = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'agent-kanban', 'config.json'), 'utf8'));
-const current = config.current;
-if (!current || !config.credentials?.[current]) process.exit(1);
-console.log(config.credentials[current]['api-key']);
+if (!current || !config.environments?.[current]) process.exit(1);
+console.log(config.environments[current]['api-url'].replace(/\\/$/, ''));
 "
 }
 
 api_get() {
   local path="$1"
-  curl -fsS -H "authorization: Bearer $(api_key)" "$(api_url)$path"
+  realmroot toolbox get "agent-kanban/\${path#/api/}" --json
 }
 
 dev_var() {
@@ -896,7 +884,6 @@ if [ -n "$LEADER_SESSION_JSON" ]; then
   LEADER_AGENT_ID="$(printf '%s' "$LEADER_SESSION_JSON" | json_query "data.agentId")"
   LEADER_SESSION_ID="$(printf '%s' "$LEADER_SESSION_JSON" | json_query "data.sessionId")"
   LEADER_API_URL="$(printf '%s' "$LEADER_SESSION_JSON" | json_query "data.apiUrl")"
-  LEADER_AGENT_KEY="$(printf '%s' "$LEADER_SESSION_JSON" | json_query "data.privateKeyJwk")"
   pass "found current leader agent session for synthetic AK_WORKER isolation check"
 else
   fail "could not locate a current leader agent session for AK_WORKER isolation check"
@@ -910,7 +897,7 @@ if [ -n "$LEADER_SESSION_JSON" ] \
     AK_API_URL="$LEADER_API_URL" \
     AK_AGENT_ID="$LEADER_AGENT_ID" \
     AK_SESSION_ID="$LEADER_SESSION_ID" \
-    AK_AGENT_KEY="$LEADER_AGENT_KEY" \
+    REALMROOT_STATE_DIR="${REALMROOT_STATE_DIR:-$ORIGINAL_HOME/.local/state/realmroot}" \
     ak get repo "$REPO_ID" -o json >/dev/null 2>&1; then
   pass "ak command works with AK_WORKER and isolated AMA workspace env"
 else
@@ -925,7 +912,7 @@ if [ -n "$LEADER_SESSION_JSON" ] \
     AK_API_URL="$LEADER_API_URL" \
     AK_AGENT_ID="$LEADER_AGENT_ID" \
     AK_SESSION_ID="$LEADER_SESSION_ID" \
-    AK_AGENT_KEY="$LEADER_AGENT_KEY" \
+    REALMROOT_STATE_DIR="${REALMROOT_STATE_DIR:-$ORIGINAL_HOME/.local/state/realmroot}" \
     ak auth git "$REPO_ID" >/dev/null 2>&1; then
   if [ -f "$TEMP_AMA_WORKSPACE/.home/.git-credentials" ] \
     && grep -q "x-access-token:" "$TEMP_AMA_WORKSPACE/.home/.git-credentials" \

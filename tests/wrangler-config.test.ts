@@ -24,6 +24,13 @@ function stringArrayValue(body: string, key: string): string[] | null {
 }
 
 describe("production wrangler configuration", () => {
+  it("routes the canonical API resource and its descendants to the Worker before SPA assets", () => {
+    const workerFirst = stringArrayValue(tableBody("[assets]"), "run_worker_first");
+
+    expect(workerFirst).toEqual(expect.arrayContaining(["/api", "/api/*"]));
+    expect(workerFirst?.filter((pattern) => pattern === "/api")).toHaveLength(1);
+  });
+
   it("keeps both production hostnames routed to the worker", () => {
     const productionConfig = config.split("[env.staging]", 1)[0];
     const routes = [...productionConfig.matchAll(/^\[\[routes\]\]\s*\n([\s\S]*?)(?=^\s*\[|(?![\s\S]))/gm)].map((match) => ({
@@ -40,9 +47,9 @@ describe("production wrangler configuration", () => {
     );
   });
 
-  it("pins AMA runner 0.7.0 in production and staging", () => {
-    expect(stringValue(tableBody("[vars]"), "AMA_RUNNER_VERSION")).toBe("0.7.0");
-    expect(stringValue(tableBody("[env.staging.vars]"), "AMA_RUNNER_VERSION")).toBe("0.7.0");
+  it("pins AMA runner 0.8.1 in production and staging", () => {
+    expect(stringValue(tableBody("[vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.1");
+    expect(stringValue(tableBody("[env.staging.vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.1");
   });
 
   it("keeps staging routes explicitly empty", () => {

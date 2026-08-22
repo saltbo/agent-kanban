@@ -121,7 +121,7 @@ describe("buildAgentEnv — AK_WORKER env var", () => {
     expect(env.GNUPGHOME).toBeUndefined();
   });
 
-  it("includes GNUPGHOME when both gnupgHome and gpgSubkeyId are provided", async () => {
+  it("ignores removed automatic GPG signing inputs", async () => {
     const { buildAgentEnv } = await import("../packages/cli/src/daemon/dispatcher.js");
     const env = buildAgentEnv({
       agentId: "a",
@@ -132,11 +132,11 @@ describe("buildAgentEnv — AK_WORKER env var", () => {
       gpgSubkeyId: "ABCDEF01",
       gnupgHome: "/tmp/gnupg-test",
     });
-    expect(env.GNUPGHOME).toBe("/tmp/gnupg-test");
-    expect(env.GIT_CONFIG_VALUE_1).toBe("ABCDEF01!");
+    expect(env.GNUPGHOME).toBeUndefined();
+    expect(Object.values(env)).not.toContain("ABCDEF01!");
   });
 
-  it("AK_AGENT_KEY is JSON-stringified privateKeyJwk", async () => {
+  it("does not expose the removed Agent JWT private key", async () => {
     const { buildAgentEnv } = await import("../packages/cli/src/daemon/dispatcher.js");
     const jwk = { kty: "OKP", crv: "Ed25519", x: "testkey" } as JsonWebKey;
     const env = buildAgentEnv({
@@ -148,6 +148,6 @@ describe("buildAgentEnv — AK_WORKER env var", () => {
       gpgSubkeyId: null,
       gnupgHome: null,
     });
-    expect(env.AK_AGENT_KEY).toBe(JSON.stringify(jwk));
+    expect(env).not.toHaveProperty("AK_AGENT_KEY");
   });
 });

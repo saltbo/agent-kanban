@@ -287,7 +287,6 @@ export interface Agent {
   owner_id: string;
   name: string;
   username: string;
-  gpg_subkey_id: string | null;
   bio: string | null;
   soul: string | null;
   role: string | null;

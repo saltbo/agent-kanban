@@ -1,4 +1,10 @@
-# Agent Kanban — UI Test Plan
+# Agent Kanban — archived pre-Realmroot UI test plan
+
+> **Archived:** This document describes the removed Better Auth, GitHub user
+> OAuth, static API-key, and GPG onboarding architecture. It is retained only
+> as historical context and must not be used as the current implementation or
+> acceptance-test contract. Use `README.md` and
+> `docs/realmroot-native-cutover.md` for the Realmroot Native contract.
 
 ## Application Overview
 

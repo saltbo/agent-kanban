@@ -13,19 +13,16 @@ import {
   type Volume,
   type VolumeMount,
 } from "@any-managed-agents/sdk";
-import { amaOidcResource, oidcDiscoveryUrl } from "./betterAuth";
+import { AmaUserGrantRequired, amaBearerToken } from "./realmrootAuth";
 import type { Env } from "./types";
 
-const amaAccessTokenRequests = new Map<string, Promise<string>>();
-const AMA_ACCESS_TOKEN_REFRESH_SKEW_MS = 30_000;
-
-export class AmaLinkedAccountAuthError extends Error {
+export class AmaUserAuthError extends Error {
   readonly status = 401;
-  readonly code = "AMA_RECONNECT_REQUIRED";
+  readonly code = "AMA_USER_AUTH_REQUIRED";
 
-  constructor(message = "AMA rejected the linked account token. Reconnect AMA in Account settings, then run ak start again.") {
+  constructor(message = "Sign in again to authorize Agent Kanban to use AMA.") {
     super(message);
-    this.name = "AmaLinkedAccountAuthError";
+    this.name = "AmaUserAuthError";
   }
 }
 
@@ -73,6 +70,7 @@ export interface AmaAgentInput {
   handoffPolicy?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   memoryPolicy?: Record<string, unknown>;
+  realmroot?: { agentId: string; origin: string; credentialRef: string } | null;
 }
 
 export interface AmaAgent {
@@ -81,6 +79,19 @@ export interface AmaAgent {
   name: string;
   provider: string;
   model: string | null;
+}
+
+function amaAgentSpec(input: AmaAgentInput) {
+  return {
+    systemPrompt: input.instructions ?? "",
+    ...(input.provider ? { provider: input.provider } : {}),
+    model: input.model ?? null,
+    skills: input.skills ?? [],
+    subagents: toAmaAgentSubagents(input.subagents ?? []),
+    allowedTools: [],
+    mcpConnectors: [],
+    realmroot: input.realmroot ?? null,
+  };
 }
 
 export interface AmaEnvironment {
@@ -123,20 +134,6 @@ export interface AmaVaultCredentialSecretInput {
   referenceName?: string;
   secretData: Record<string, string>;
   metadata?: Record<string, unknown>;
-}
-
-interface AmaLinkedAccountRow {
-  id: string;
-  accessToken: string | null;
-  refreshToken: string | null;
-  accessTokenExpiresAt: string | null;
-  refreshTokenExpiresAt: string | null;
-}
-
-interface AmaRefreshTokenResult {
-  accessToken: string;
-  refreshToken?: string;
-  accessTokenExpiresAt: string | null;
 }
 
 export interface AmaScheduledTriggerInput {
@@ -306,6 +303,7 @@ export interface AmaVaultInput {
   name: string;
   description?: string;
   scope: "project" | "organization";
+  idempotencyKey?: string;
 }
 
 export interface AmaVault {
@@ -356,15 +354,18 @@ export function vendorFromModelId(modelId: string): string {
   return segments.length >= 2 && first ? first : "unknown";
 }
 
-// AMA is "configured" for this AK instance when the AMA origin and the OIDC
-// client used to register the provider are present. Per-call authorization
-// is the logged-in user's own linked AMA account (resolved at request time).
-function hasAmaOidcClient(env: Env): boolean {
-  return Boolean(env.AMA_OIDC_ISSUER && env.AMA_OIDC_CLIENT_ID && env.AMA_OIDC_CLIENT_SECRET);
+function hasAmaUserClient(env: Env): boolean {
+  return Boolean(
+    env.REALMROOT_ISSUER &&
+      env.REALMROOT_WEB_CLIENT_ID &&
+      env.REALMROOT_WEB_CLIENT_SECRET &&
+      env.REALMROOT_SESSION_ENCRYPTION_KEY &&
+      env.AMA_RESOURCE,
+  );
 }
 
 export function isAmaRuntimeConfigured(env: Env): boolean {
-  return Boolean(env.AMA_ORIGIN && hasAmaOidcClient(env));
+  return Boolean(env.AMA_ORIGIN && hasAmaUserClient(env));
 }
 
 export function isAmaTaskDispatchConfigured(env: Env): boolean {
@@ -375,7 +376,7 @@ export async function createAmaTaskSession(env: Env, ownerId: string, input: Ama
   const client = await createAmaClient(env, ownerId, input.projectId);
   const envFrom = toAmaEnvFrom(input.runtimeSecretEnv ?? []);
   const resources = toAmaRuntimeResources(input.resourceRefs ?? [], input.gitCredentialSecret ?? null);
-  const session = await withAmaErrorDetails("create session", () =>
+  const session = await withAmaErrorDetails(env, "create session", () =>
     client.sessions.create({
       metadata: { name: input.title },
       spec: {
@@ -587,35 +588,27 @@ function toAmaMemoryStore(store: SdkMemoryStore): AmaMemoryStore {
 
 export async function createAmaAgent(env: Env, ownerId: string, input: AmaAgentInput): Promise<AmaAgent> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const agent = await withAmaErrorDetails("create runtime agent", () =>
+  const agent = await withAmaErrorDetails(env, "create runtime agent", () =>
     client.agents.create({
       metadata: {
         name: input.name,
         description: input.description ?? null,
       },
-      spec: {
-        systemPrompt: input.instructions ?? "",
-        ...(input.provider ? { provider: input.provider } : {}),
-        ...(input.model ? { model: input.model } : {}),
-        skills: input.skills ?? [],
-        subagents: toAmaAgentSubagents(input.subagents ?? []),
-        allowedTools: [],
-        mcpConnectors: [],
-      },
+      spec: amaAgentSpec(input),
     }),
   );
   return toAmaAgent(agent, input.provider);
 }
 
-export async function createAmaProject(env: Env, ownerId: string, input: { name: string }): Promise<AmaProject> {
-  const client = await createAmaClient(env, ownerId);
-  const project = await withAmaErrorDetails("create project", () => client.projects.create({ name: input.name }));
+export async function createAmaProject(env: Env, ownerId: string, input: { name: string; idempotencyKey?: string }): Promise<AmaProject> {
+  const client = await createAmaClient(env, ownerId, undefined, input.idempotencyKey ? { "idempotency-key": input.idempotencyKey } : undefined);
+  const project = await withAmaErrorDetails(env, "create project", () => client.projects.create({ name: input.name }));
   return { id: project.id, name: project.name };
 }
 
 export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultInput): Promise<AmaVault> {
-  const client = await createAmaClient(env, ownerId, input.projectId);
-  const vault = await withAmaErrorDetails("create vault", () =>
+  const client = await createAmaClient(env, ownerId, input.projectId, input.idempotencyKey ? { "idempotency-key": input.idempotencyKey } : undefined);
+  const vault = await withAmaErrorDetails(env, "create vault", () =>
     client.vaults.create({
       metadata: {
         name: input.name,
@@ -629,7 +622,7 @@ export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultI
 
 export async function listAmaVaultCredentials(env: Env, ownerId: string, projectId: string, vaultId: string): Promise<AmaVaultCredential[]> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const page = await withAmaErrorDetails("list vault credentials", () => client.vaults.listCredentials(vaultId, { limit: 100 }));
+  const page = await withAmaErrorDetails(env, "list vault credentials", () => client.vaults.listCredentials(vaultId, { limit: 100 }), true);
   return page.data.map((credential) => ({
     id: credential.metadata.uid,
     name: credential.metadata.name,
@@ -641,7 +634,7 @@ export async function listAmaVaultCredentials(env: Env, ownerId: string, project
 
 export async function createAmaEnvironment(env: Env, ownerId: string, input: AmaEnvironmentInput): Promise<AmaEnvironment> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const environment = await withAmaErrorDetails("create environment", () =>
+  const environment = await withAmaErrorDetails(env, "create environment", () =>
     client.environments.create({
       metadata: {
         name: input.name,
@@ -653,22 +646,31 @@ export async function createAmaEnvironment(env: Env, ownerId: string, input: Ama
   return { id: environment.metadata.uid };
 }
 
-async function withAmaErrorDetails<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+async function withAmaErrorDetails<T>(env: Env, operation: string, fn: () => Promise<T>, idempotent = false): Promise<T> {
+  try {
+    return await withAmaAuthRetry(env, idempotent, fn);
+  } catch (error) {
+    throwIfAmaAuthError(error);
+    const status = typeof (error as { status?: unknown }).status === "number" ? ` HTTP ${(error as { status: number }).status}` : "";
+    throw new Error(`AMA ${operation} failed${status}`, { cause: error });
+  }
+}
+
+async function withAmaAuthRetry<T>(env: Env, idempotent: boolean, fn: () => Promise<T>): Promise<T> {
+  void env;
+  void idempotent;
   try {
     return await fn();
   } catch (error) {
     throwIfAmaAuthError(error);
-    const status = typeof (error as { status?: unknown }).status === "number" ? ` HTTP ${(error as { status: number }).status}` : "";
-    const responseText =
-      typeof (error as { responseText?: unknown }).responseText === "string" ? `: ${(error as { responseText: string }).responseText}` : "";
-    throw new Error(`AMA ${operation} failed${status}${responseText}`);
+    throw error;
   }
 }
 
 export async function readAmaAgent(env: Env, ownerId: string, projectId: string, agentId: string): Promise<AmaAgent | null> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    const agent = await client.agents.get(agentId);
+    const agent = await withAmaAuthRetry(env, true, () => client.agents.get(agentId));
     return toAmaAgent(agent, "");
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
@@ -679,21 +681,13 @@ export async function readAmaAgent(env: Env, ownerId: string, projectId: string,
 
 export async function updateAmaAgentConfig(env: Env, ownerId: string, projectId: string, agentId: string, input: AmaAgentInput): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await withAmaErrorDetails("update runtime agent config", () =>
+  await withAmaErrorDetails(env, "update runtime agent config", () =>
     client.agents.update(agentId, {
       metadata: {
         name: input.name,
         description: input.description ?? null,
       },
-      spec: {
-        systemPrompt: input.instructions ?? "",
-        ...(input.provider ? { provider: input.provider } : {}),
-        model: input.model ?? null,
-        skills: input.skills ?? [],
-        subagents: toAmaAgentSubagents(input.subagents ?? []),
-        allowedTools: [],
-        mcpConnectors: [],
-      },
+      spec: amaAgentSpec(input),
     }),
   );
 }
@@ -704,12 +698,12 @@ export async function updateAmaAgentConfig(env: Env, ownerId: string, projectId:
 // lists, history preserved). Archive is the {archived:true} lifecycle PATCH.
 export async function archiveAmaAgent(env: Env, ownerId: string, projectId: string, agentId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await withAmaErrorDetails("archive runtime agent", () => client.agents.update(agentId, { archived: true }));
+  await withAmaErrorDetails(env, "archive runtime agent", () => client.agents.update(agentId, { archived: true }));
 }
 
 export async function archiveAmaEnvironment(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await withAmaErrorDetails("archive runtime environment", () => client.environments.update(environmentId, { archived: true }));
+  await withAmaErrorDetails(env, "archive runtime environment", () => client.environments.update(environmentId, { archived: true }));
 }
 
 // Self-heal probes: AMA resources we hold an id for can be deleted out of band
@@ -719,7 +713,7 @@ export async function archiveAmaEnvironment(env: Env, ownerId: string, projectId
 export async function readAmaProject(env: Env, ownerId: string, projectId: string): Promise<AmaProject | null> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    const project = await client.projects.get(projectId);
+    const project = await withAmaAuthRetry(env, true, () => client.projects.get(projectId));
     return { id: project.id, name: project.name };
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
@@ -731,7 +725,7 @@ export async function readAmaProject(env: Env, ownerId: string, projectId: strin
 export async function amaEnvironmentExists(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<boolean> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    await client.environments.get(environmentId);
+    await withAmaAuthRetry(env, true, () => client.environments.get(environmentId));
     return true;
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return false;
@@ -764,16 +758,18 @@ export async function createAmaSessionSecret(env: Env, ownerId: string, input: A
   if (!stringData || Object.keys(stringData).length === 0) {
     throw new Error("AMA vault credential requires at least one secret data key");
   }
-  const credential = await client.vaults.createCredential(input.vaultId, {
-    name: input.name,
-    type: "opaque",
-    metadata: input.metadata ?? {},
-    secret: {
-      stringData,
-      referenceName: input.name,
+  const credential = await withAmaAuthRetry(env, false, () =>
+    client.vaults.createCredential(input.vaultId, {
+      name: input.name,
+      type: "opaque",
       metadata: input.metadata ?? {},
-    },
-  });
+      secret: {
+        stringData,
+        referenceName: input.name,
+        metadata: input.metadata ?? {},
+      },
+    }),
+  );
   return {
     credentialId: credential.metadata.uid,
     secretRef: credentialSecretRef({ vaultId: input.vaultId, credentialId: credential.metadata.uid }),
@@ -785,7 +781,7 @@ export async function updateAmaVaultCredentialSecret(env: Env, ownerId: string, 
     throw new Error("AMA vault credential secret requires at least one secret data key");
   }
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const credential = await withAmaErrorDetails("update vault credential secret", () =>
+  const credential = await withAmaErrorDetails(env, "update vault credential secret", () =>
     client.vaults.updateCredentialSecret(input.vaultId, input.credentialId, {
       stringData: input.secretData,
       referenceName: input.referenceName,
@@ -818,7 +814,7 @@ export async function readAmaSessionUsageTotals(
   let records = 0;
   let cursor: string | undefined;
   do {
-    const page = await client.usage.listRecords({ sessionId, limit: 100, ...(cursor ? { cursor } : {}) });
+    const page = await withAmaAuthRetry(env, true, () => client.usage.listRecords({ sessionId, limit: 100, ...(cursor ? { cursor } : {}) }));
     for (const record of page.data) {
       totals.promptTokens += record.promptTokens ?? 0;
       totals.completionTokens += record.completionTokens ?? 0;
@@ -839,7 +835,7 @@ export async function revokeAmaVaultCredential(
   reason = "AK agent session closed",
 ): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.vaults.updateCredential(vaultId, credentialId, { state: "revoked", revokeReason: reason });
+  await withAmaAuthRetry(env, false, () => client.vaults.updateCredential(vaultId, credentialId, { state: "revoked", revokeReason: reason }));
 }
 
 export async function sendAmaSessionMessage(
@@ -848,17 +844,25 @@ export async function sendAmaSessionMessage(
   projectId: string,
   sessionId: string,
   message: string,
+  requestId?: string,
 ): Promise<AmaRuntimeCommandResult> {
   const client = await createAmaClient(env, ownerId, projectId);
+  const body = { type: "prompt" as const, content: message, ...(requestId ? { requestId } : {}) };
   // A 201 means the prompt message was accepted and queued for the session.
-  await client.sessions.createMessage(sessionId, { type: "prompt", content: message });
+  await withAmaAuthRetry(env, false, () => client.sessions.createMessage(sessionId, body));
   return { accepted: true };
 }
 
-export async function readAmaSession(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {
-  const client = await createAmaClient(env, ownerId, projectId);
+export async function readAmaSession(
+  env: Env,
+  ownerId: string,
+  sessionId: string,
+  projectId?: string,
+  subjectId?: string,
+): Promise<Record<string, unknown> | null> {
+  const client = await createAmaClient(env, ownerId, projectId, {}, subjectId);
   try {
-    return normalizeSession(await client.sessions.get(sessionId));
+    return normalizeSession(await withAmaAuthRetry(env, true, () => client.sessions.get(sessionId)));
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
     throwIfAmaAuthError(error);
@@ -882,19 +886,19 @@ export async function listAmaSessions(
     ...(options.archived !== undefined ? { archived: (options.archived ? "true" : "false") as AmaArchivedFilter } : {}),
     ...(options.labelSelector ? { labelSelector: options.labelSelector } : {}),
   };
-  const page = await client.sessions.list(query);
+  const page = await withAmaAuthRetry(env, true, () => client.sessions.list(query));
   return { data: page.data.map(normalizeSession), pagination: page.pagination };
 }
 
 export async function listAmaAgents(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId);
-  const page = await client.agents.list({ limit: 100 });
+  const page = await withAmaAuthRetry(env, true, () => client.agents.list({ limit: 100 }));
   return { data: page.data.map(normalizeAgent), pagination: page.pagination };
 }
 
 export async function listAmaEnvironments(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId);
-  const page = await client.environments.list({ limit: 100 });
+  const page = await withAmaAuthRetry(env, true, () => client.environments.list({ limit: 100 }));
   return { data: page.data.map(normalizeEnvironment), pagination: page.pagination };
 }
 
@@ -915,13 +919,13 @@ export async function listAmaCatalogModels(env: Env, ownerId: string): Promise<A
   // GET /api/v1/providers/models returns the entire catalog in one envelope
   // (the AMA route lists all rows; pagination is always {hasMore:false}), so no
   // cursor loop is needed.
-  const response = await client.providers.listModels();
+  const response = await withAmaAuthRetry(env, true, () => client.providers.listModels());
   return response.data as unknown as AmaCatalogModel[];
 }
 
 export async function listAmaRunners(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<AmaListResponse<AmaRunner>> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const page = await client.runners.list({ environmentId, limit: 100 });
+  const page = await withAmaAuthRetry(env, true, () => client.runners.list({ environmentId, limit: 100 }));
   // /api/v1 runners report lifecycle as `state`; AK's dispatch gate reads
   // `status` (active | draining | disabled | offline).
   return {
@@ -1047,7 +1051,7 @@ export async function listAmaTriggerRuns(
   options: { limit?: number } = {},
 ): Promise<AmaListResponse<AmaTriggerRun>> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const page = await client.triggers.listRuns(triggerId, { limit: options.limit ?? 20 });
+  const page = await withAmaAuthRetry(env, true, () => client.triggers.listRuns(triggerId, { limit: options.limit ?? 20 }));
   return { data: page.data.map((run) => toAmaTriggerRun(run as SdkTriggerRun)), pagination: page.pagination };
 }
 
@@ -1059,7 +1063,9 @@ export async function closeAmaSession(
   reason: "user_requested" | "timeout" | "policy" | "runtime_error",
 ) {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.sessions.update(sessionId, { state: "closed", metadata: { annotations: { closeReason: reason } } });
+  await withAmaAuthRetry(env, false, () =>
+    client.sessions.update(sessionId, { state: "closed", metadata: { annotations: { closeReason: reason } } }),
+  );
 }
 
 export async function reopenAmaSession(
@@ -1070,12 +1076,12 @@ export async function reopenAmaSession(
   metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> },
 ) {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.sessions.update(sessionId, { state: "idle", ...(metadata ? { metadata } : {}) });
+  await withAmaAuthRetry(env, false, () => client.sessions.update(sessionId, { state: "idle", ...(metadata ? { metadata } : {}) }));
 }
 
 export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const trigger = await withAmaErrorDetails("create scheduled trigger", () =>
+  const trigger = await withAmaErrorDetails(env, "create scheduled trigger", () =>
     client.triggers.create({
       metadata: { name: input.name },
       spec: {
@@ -1093,7 +1099,7 @@ export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, 
 
 export async function createAmaHttpAgentTrigger(env: Env, ownerId: string, input: AmaHttpTriggerInput): Promise<AmaHttpTrigger> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const trigger = await withAmaErrorDetails("create HTTP trigger", () =>
+  const trigger = await withAmaErrorDetails(env, "create HTTP trigger", () =>
     client.triggers.create({
       metadata: { name: input.name },
       spec: {
@@ -1128,7 +1134,7 @@ export async function updateAmaScheduledAgentTrigger(
   if (template || metadata) body.spec.template = { ...(metadata ? { metadata } : {}), ...(template ? { spec: template } : {}) };
   if (Object.keys(body.spec).length === 0) delete body.spec;
   const client = await createAmaClient(env, ownerId, projectId);
-  const trigger = await withAmaErrorDetails("update scheduled trigger", () => client.triggers.update(scheduleId, body));
+  const trigger = await withAmaErrorDetails(env, "update scheduled trigger", () => client.triggers.update(scheduleId, body));
   return toAmaScheduledTrigger(trigger as SdkTrigger);
 }
 
@@ -1149,7 +1155,7 @@ export async function updateAmaHttpAgentTrigger(
   if (template || metadata) body.spec.template = { ...(metadata ? { metadata } : {}), ...(template ? { spec: template } : {}) };
   if (Object.keys(body.spec).length === 0) delete body.spec;
   const client = await createAmaClient(env, ownerId, projectId);
-  const trigger = await withAmaErrorDetails("update HTTP trigger", () => client.triggers.update(triggerId, body));
+  const trigger = await withAmaErrorDetails(env, "update HTTP trigger", () => client.triggers.update(triggerId, body));
   return toAmaHttpTrigger(trigger as SdkTrigger);
 }
 
@@ -1159,12 +1165,12 @@ export async function deleteAmaScheduledAgentTrigger(env: Env, ownerId: string, 
 
 export async function deleteAmaTrigger(env: Env, ownerId: string, projectId: string, triggerId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await withAmaErrorDetails("delete trigger", () => client.triggers.delete(triggerId));
+  await withAmaErrorDetails(env, "delete trigger", () => client.triggers.delete(triggerId));
 }
 
 export async function createAmaMemoryStore(env: Env, ownerId: string, input: AmaMemoryStoreInput): Promise<AmaMemoryStore> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const store = await withAmaErrorDetails("create memory store", () =>
+  const store = await withAmaErrorDetails(env, "create memory store", () =>
     client.memoryStores.create({
       metadata: {
         name: input.name,
@@ -1184,23 +1190,27 @@ export async function listAmaMemoryStoreMemories(
   options: { limit?: number; cursor?: string } = {},
 ): Promise<AmaListResponse<AmaMemoryStoreMemory>> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const page = await withAmaErrorDetails("list memories", () =>
-    client.memoryStores.listMemories(storeId, {
-      limit: options.limit ?? 100,
-      ...(options.cursor ? { cursor: options.cursor } : {}),
-    }),
+  const page = await withAmaErrorDetails(
+    env,
+    "list memories",
+    () =>
+      client.memoryStores.listMemories(storeId, {
+        limit: options.limit ?? 100,
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+      }),
+    true,
   );
   return { data: page.data.map(toAmaMemoryStoreMemory), pagination: page.pagination };
 }
 
 export async function archiveAmaMemoryStore(env: Env, ownerId: string, projectId: string, storeId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await withAmaErrorDetails("archive memory store", () => client.memoryStores.update(storeId, { archived: true }));
+  await withAmaErrorDetails(env, "archive memory store", () => client.memoryStores.update(storeId, { archived: true }));
 }
 
 export async function dispatchAmaHttpTriggerRun(env: Env, ownerId: string, input: AmaHttpTriggerRunInput): Promise<AmaTriggerRun> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const run = await withAmaErrorDetails("create HTTP trigger run", () =>
+  const run = await withAmaErrorDetails(env, "create HTTP trigger run", () =>
     client.triggers.createRun(input.triggerId, input.body, {
       ...(input.idempotencyKey ? { headers: { "idempotency-key": input.idempotencyKey } } : {}),
     }),
@@ -1208,207 +1218,141 @@ export async function dispatchAmaHttpTriggerRun(env: Env, ownerId: string, input
   return toAmaTriggerRun(run as SdkTriggerRun);
 }
 
-// Resolves the AMA access token for the linked AMA account of the AK user.
-// BetterAuth's generic OAuth refresh path does not forward the resource
-// indicator, so AMA refresh is handled here to keep access tokens JWT-shaped for
-// AMA's bearer-token validation.
-async function userAmaAccessToken(env: Env, ownerId: string): Promise<string> {
-  const requestKey = `${ownerId}:ama`;
-  const existing = amaAccessTokenRequests.get(requestKey);
-  if (existing) return existing;
-
-  const request = resolveUserAmaAccessToken(env, ownerId).finally(() => {
-    amaAccessTokenRequests.delete(requestKey);
-  });
-  amaAccessTokenRequests.set(requestKey, request);
-  return request;
-}
-
-async function resolveUserAmaAccessToken(env: Env, ownerId: string): Promise<string> {
-  const account = await readAmaLinkedAccount(env.DB, ownerId);
-  if (!account) {
-    throw new Error(`No linked AMA account for user ${ownerId}; connect AMA to enable cloud scheduling`);
-  }
-
-  if (isUsableAmaAccessToken(account.accessToken, account.accessTokenExpiresAt)) {
-    return account.accessToken;
-  }
-  if (!account.refreshToken) {
-    throw new AmaLinkedAccountAuthError("AMA linked account has no refresh token. Reconnect AMA in Account settings, then run ak start again.");
-  }
-  if (isKnownExpired(account.refreshTokenExpiresAt, Date.now())) {
-    throw new AmaLinkedAccountAuthError("AMA linked account refresh token is expired. Reconnect AMA in Account settings, then run ak start again.");
-  }
-
-  const refreshed = await refreshAmaLinkedAccountToken(env, account.refreshToken);
-  await updateAmaLinkedAccountToken(env.DB, account, refreshed);
-  return refreshed.accessToken;
-}
-
-export function assertAmaAccessToken(accessToken: string): string {
-  if (!isSerializedJwt(accessToken)) {
-    throw new AmaLinkedAccountAuthError("AMA linked account token is not a JWT. Reconnect AMA in Account settings, then run ak start again.");
-  }
-  return accessToken;
-}
-
-export function isUsableAmaAccessToken(
-  accessToken: string | null | undefined,
-  expiresAt: string | null | undefined,
-  nowMs = Date.now(),
-): accessToken is string {
-  return Boolean(accessToken && isSerializedJwt(accessToken) && !isExpired(expiresAt, nowMs, AMA_ACCESS_TOKEN_REFRESH_SKEW_MS));
-}
-
-function isSerializedJwt(token: string): boolean {
-  return token.split(".").length === 3;
-}
-
-function isExpired(expiresAt: string | null | undefined, nowMs: number, skewMs: number): boolean {
-  if (!expiresAt) return true;
-  const expiresAtMs = Date.parse(expiresAt);
-  return Number.isNaN(expiresAtMs) || expiresAtMs <= nowMs + skewMs;
-}
-
-function isKnownExpired(expiresAt: string | null | undefined, nowMs: number): boolean {
-  if (!expiresAt) return false;
-  const expiresAtMs = Date.parse(expiresAt);
-  return Number.isNaN(expiresAtMs) || expiresAtMs <= nowMs;
-}
-
-async function readAmaLinkedAccount(db: Env["DB"], ownerId: string): Promise<AmaLinkedAccountRow | null> {
-  return db
-    .prepare(
-      `SELECT id, accessToken, refreshToken, accessTokenExpiresAt, refreshTokenExpiresAt
-       FROM account
-       WHERE userId = ? AND providerId = 'ama'
-       LIMIT 1`,
-    )
-    .bind(ownerId)
-    .first<AmaLinkedAccountRow>();
-}
-
-async function refreshAmaLinkedAccountToken(env: Env, refreshToken: string): Promise<AmaRefreshTokenResult> {
-  const tokenEndpoint = await amaOidcTokenEndpoint(env);
-  const resource = amaOidcResource(env);
-  const body = amaRefreshTokenForm(refreshToken, resource);
-
-  const response = await fetch(tokenEndpoint, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      authorization: `Basic ${btoa(`${requireEnv(env.AMA_OIDC_CLIENT_ID, "AMA_OIDC_CLIENT_ID")}:${requireEnv(env.AMA_OIDC_CLIENT_SECRET, "AMA_OIDC_CLIENT_SECRET")}`)}`,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-  const text = await response.text();
-  const data = parseJsonObject(text);
-  if (!response.ok) {
-    if (data?.error === "invalid_grant") {
-      throw new AmaLinkedAccountAuthError("AMA linked account refresh token is invalid. Reconnect AMA in Account settings, then run ak start again.");
-    }
-    throw new Error(`AMA OIDC refresh failed with HTTP ${response.status}: ${text}`);
-  }
-  if (typeof data?.access_token !== "string") {
-    throw new Error("AMA OIDC refresh response did not include an access token.");
-  }
-  const accessToken = assertAmaAccessToken(data.access_token);
-  return {
-    accessToken,
-    ...(typeof data.refresh_token === "string" ? { refreshToken: data.refresh_token } : {}),
-    accessTokenExpiresAt: tokenResponseExpiresAt(data),
-  };
-}
-
-export function amaRefreshTokenForm(refreshToken: string, resource: string | null): URLSearchParams {
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-  });
-  if (resource) body.set("resource", resource);
-  return body;
-}
-
-async function amaOidcTokenEndpoint(env: Env): Promise<string> {
-  const issuer = requireEnv(env.AMA_OIDC_ISSUER, "AMA_OIDC_ISSUER");
-  const response = await fetch(oidcDiscoveryUrl(issuer), { headers: { accept: "application/json" } });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`AMA OIDC discovery failed with HTTP ${response.status}: ${text}`);
-  }
-  const data = parseJsonObject(text);
-  if (typeof data?.token_endpoint !== "string") {
-    throw new Error("AMA OIDC discovery response did not include a token endpoint.");
-  }
-  return data.token_endpoint;
-}
-
-function parseJsonObject(text: string): Record<string, unknown> | null {
-  try {
-    const value = JSON.parse(text) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
-function tokenResponseExpiresAt(data: Record<string, unknown>): string | null {
-  if (typeof data.expires_at === "number" && Number.isFinite(data.expires_at)) {
-    return new Date(data.expires_at * 1000).toISOString();
-  }
-  if (typeof data.expires_in === "number" && Number.isFinite(data.expires_in)) {
-    return new Date(Date.now() + data.expires_in * 1000).toISOString();
-  }
-  return null;
-}
-
-async function updateAmaLinkedAccountToken(db: Env["DB"], account: AmaLinkedAccountRow, token: AmaRefreshTokenResult): Promise<void> {
-  await db
-    .prepare(
-      `UPDATE account
-       SET accessToken = ?,
-           refreshToken = ?,
-           accessTokenExpiresAt = ?,
-           updatedAt = datetime('now')
-       WHERE id = ?`,
-    )
-    .bind(token.accessToken, token.refreshToken ?? account.refreshToken, token.accessTokenExpiresAt, account.id)
-    .run();
-}
-
 function throwIfAmaAuthError(error: unknown): void {
+  if (error instanceof AmaUserGrantRequired) throw new AmaUserAuthError(error.message);
   if (isAmaUnauthorizedError(error)) {
-    throw new AmaLinkedAccountAuthError();
+    throw new AmaUserAuthError();
   }
 }
 
 function isAmaUnauthorizedError(error: unknown): boolean {
-  if ((error as { status?: unknown }).status === 401) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /\bHTTP 401\b/.test(message) || /authentication required/i.test(message);
+  const candidate = error as { status?: unknown; statusCode?: unknown; responseText?: unknown; body?: unknown; cause?: unknown };
+  if (candidate.status === 401 || candidate.statusCode === 401) return true;
+  const detail = [
+    error instanceof Error ? error.message : String(error),
+    typeof candidate.responseText === "string" ? candidate.responseText : "",
+    typeof candidate.body === "string" ? candidate.body : JSON.stringify(candidate.body ?? ""),
+    candidate.cause instanceof Error ? candidate.cause.message : "",
+  ].join(" ");
+  return /\bHTTP 401\b/.test(detail) || /unauthorized|authentication required|invalid[_ -]?token/i.test(detail);
 }
 
-async function createAmaClient(env: Env, ownerId: string, projectId?: string) {
+async function createAmaClient(env: Env, ownerId: string, projectId?: string, requestHeaders: Record<string, string> = {}, subjectId?: string) {
   const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
-  const accessToken = await userAmaAccessToken(env, ownerId);
-  return createSdkClient({ baseUrl, accessToken, projectId });
+  const accessToken = await requiredAmaBearerToken(env, ownerId, false, subjectId);
+  const client = createSdkClient({
+    baseUrl,
+    projectId,
+    headers: { ...requestHeaders, authorization: `Bearer ${accessToken}` },
+  });
+  const authenticatedFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    const headers = new Headers(request.headers);
+    headers.set("authorization", `Bearer ${await requiredAmaBearerToken(env, ownerId, false, subjectId)}`);
+    let response = await fetch(new Request(request, { headers }));
+    if (response.status === 401) {
+      const refreshed = await requiredAmaBearerToken(env, ownerId, true, subjectId);
+      if (request.method === "GET" || request.method === "HEAD") {
+        headers.set("authorization", `Bearer ${refreshed}`);
+        response = await fetch(new Request(request, { headers }));
+      }
+    }
+    return response;
+  };
+  client.raw.setConfig({ fetch: authenticatedFetch });
+  return client;
 }
 
-// The token-bearing AMA browser-socket URL the SPA connects to directly (no AK
-// proxy/bridge): live events are pushed + history backfilled over one WebSocket,
-// replacing the chat's poll loop. The user's AMA access token rides as the
-// `access_token` query param (the AMA socket route authenticates on it).
-export async function getAmaSessionSocketUrl(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<string> {
+// Clients connect only to AK. AK validates their AK authority and tenant-owned
+// session before opening a user-authorized upstream socket to AMA.
+export async function getAmaSessionSocketUrl(env: Env, _ownerId: string, sessionId: string, projectId?: string): Promise<string> {
+  const baseUrl = requireEnv(env.AK_API_URL ?? env.AK_RESOURCE, "AK_API_URL");
+  const wsBase = baseUrl.replace(/^http(s?):\/\//i, (_match, secure) => `ws${secure}://`).replace(/\/api\/?$/, "");
+  const socketUrl = new URL(`/api/ama/sessions/${encodeURIComponent(sessionId)}/socket`, wsBase);
+  if (projectId) socketUrl.searchParams.set("projectId", projectId);
+  return socketUrl.toString();
+}
+
+export async function proxyAmaSessionSocket(env: Env, ownerId: string, sessionId: string, projectId: string, subjectId?: string): Promise<Response> {
   const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
-  const accessToken = await userAmaAccessToken(env, ownerId);
-  const wsBase = baseUrl.replace(/^http(s?):\/\//i, (_match, secure) => `ws${secure}://`);
-  // The browser connects with no request headers, so the session's project rides
-  // as a query param (the AMA socket route reads x-ama-project-id from header OR
-  // query). Without it the token resolves to the user's default project and the
-  // session — which lives in the machine's project — reads as "not found".
-  const projectParam = projectId ? `&x-ama-project-id=${encodeURIComponent(projectId)}` : "";
-  return `${wsBase}/api/v1/sessions/${encodeURIComponent(sessionId)}/socket?access_token=${encodeURIComponent(accessToken)}${projectParam}`;
+  const upstreamUrl = new URL(`/api/v1/sessions/${encodeURIComponent(sessionId)}/socket`, baseUrl).toString();
+  const connect = async (forceRefresh = false) => {
+    return fetch(upstreamUrl, {
+      headers: {
+        authorization: `Bearer ${await requiredAmaBearerToken(env, ownerId, forceRefresh, subjectId)}`,
+        upgrade: "websocket",
+        "x-ama-project-id": projectId,
+      },
+    });
+  };
+  let response = await connect();
+  if (response.status === 401) {
+    response = await connect(true);
+  }
+  if (response.status === 101 && response.webSocket) return relayAmaSessionSocket(response.webSocket, sessionId, projectId);
+  console.error("AMA WebSocket handshake failed", { status: response.status, sessionId, projectId });
+  throw new Error("AMA WebSocket handshake failed");
+}
+
+function relayAmaSessionSocket(upstream: WebSocket, sessionId: string, projectId: string): Response {
+  const pair = new WebSocketPair();
+  const browser = pair[1];
+  let closed = false;
+
+  const closePeer = (peer: WebSocket, event: CloseEvent) => {
+    if (closed) return;
+    closed = true;
+    try {
+      if ([1004, 1005, 1006, 1015].includes(event.code)) peer.close();
+      else peer.close(event.code, event.reason);
+    } catch (error) {
+      console.error("AMA WebSocket relay close failed", { sessionId, projectId, error });
+    }
+  };
+  const failRelay = (direction: string, error?: unknown) => {
+    if (closed) return;
+    closed = true;
+    console.error("AMA WebSocket relay failed", { sessionId, projectId, direction, error });
+    for (const socket of [browser, upstream]) {
+      try {
+        socket.close(1011, "WebSocket relay failed");
+      } catch {
+        // A socket may already be closed after a send failure.
+      }
+    }
+  };
+
+  browser.addEventListener("message", (event) => {
+    try {
+      upstream.send(event.data);
+    } catch (error) {
+      failRelay("browser-to-ama", error);
+    }
+  });
+  upstream.addEventListener("message", (event) => {
+    try {
+      browser.send(event.data);
+    } catch (error) {
+      failRelay("ama-to-browser", error);
+    }
+  });
+  browser.addEventListener("close", (event) => closePeer(upstream, event));
+  upstream.addEventListener("close", (event) => closePeer(browser, event));
+  browser.addEventListener("error", () => failRelay("browser"));
+  upstream.addEventListener("error", () => failRelay("ama"));
+
+  browser.accept();
+  upstream.accept();
+  return new Response(null, { status: 101, webSocket: pair[0] });
+}
+
+async function requiredAmaBearerToken(env: Env, ownerId: string, forceRefresh = false, subjectId?: string): Promise<string> {
+  try {
+    return await amaBearerToken(env, ownerId, forceRefresh, subjectId);
+  } catch (error) {
+    if (error instanceof AmaUserGrantRequired) throw new AmaUserAuthError(error.message);
+    throw error;
+  }
 }
 
 function requireEnv(value: string | undefined, name: string): string {

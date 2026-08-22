@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestAgent, seedUser } from "./helpers/db";
+import { applyMigrations as applyAllMigrations, createTestAgent, seedUser } from "./helpers/db";
 
 const MIGRATIONS_DIR = join(__dirname, "../apps/web/migrations");
 
@@ -39,6 +39,14 @@ async function applyMigrations(db: D1Database) {
     "0030_agent_taints.sql",
     "0031_drop_board_maintainer_name.sql",
     "0032_board_maintainer_api_key.sql",
+    "0033_board_maintainer_heartbeat_enabled.sql",
+    "0034_task_assignee_status_index.sql",
+    "0035_board_maintainer_vault.sql",
+    "0036_backfill_ama_session_secret_refs.sql",
+    "0037_unique_latest_leader_per_runtime.sql",
+    "0038_board_maintainer_http_trigger_serial.sql",
+    "0039_realmroot_native.sql",
+    "0040_ama_resource_initialization_claims.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -58,7 +66,7 @@ beforeAll(async () => {
     d1Databases: { DB: "test-db" },
   });
   db = await mf.getD1Database("DB");
-  await applyMigrations(db);
+  await applyAllMigrations(db);
 });
 
 afterAll(async () => {
@@ -188,7 +196,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
 
   it("getBoard returns tasks with parsed labels and input", async () => {
     const { getBoard } = await import("../apps/web/server/boardRepo");
-    const board = await getBoard(db, boardId);
+    const board = await getBoard(db, boardId, ownerId);
 
     expect(board).toBeTruthy();
     const task = board!.tasks.find((t) => t.id === taskId)!;
@@ -211,7 +219,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
     expect(typeof claimed!.input).toBe("object");
     expect(claimed!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
 
-    const reviewed = await reviewTask(db, taskId, "agent:worker", agent.id, "https://github.com/pr/1", "agent:worker");
+    const reviewed = await reviewTask(db, taskId, ownerId, "agent:worker", agent.id, "https://github.com/pr/1", "agent:worker");
     expect(Array.isArray(reviewed!.labels)).toBe(true);
     expect(typeof reviewed!.input).toBe("object");
     expect(reviewed!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
@@ -226,7 +234,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
       labels: ["bug", "feature"],
     });
 
-    const board = await deleteBoardLabel(db, boardId, "bug");
+    const board = await deleteBoardLabel(db, boardId, ownerId, "bug");
     const updated = await getTask(db, task.id, ownerId);
 
     expect(board!.labels.map((label) => label.name)).not.toContain("bug");

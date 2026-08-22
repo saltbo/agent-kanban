@@ -4,7 +4,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createTestAgent, seedUser } from "./helpers/db";
 
 const MIGRATIONS_DIR = join(__dirname, "../apps/web/migrations");
 
@@ -47,9 +46,20 @@ describe("AMA session secret_ref migration", () => {
 
   it("freezes legacy session credential IDs to their owner session vault refs", async () => {
     const ownerId = "owner-secret-ref-backfill";
-    await seedUser(db, ownerId, `${ownerId}@test.local`);
-    const agent = await createTestAgent(db, ownerId, { username: "secret-ref-agent", runtime: "claude" });
     const now = new Date().toISOString();
+    await db
+      .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, 'Test User', ?, 1, ?, ?)")
+      .bind(ownerId, `${ownerId}@test.local`, now, now)
+      .run();
+    const agentId = "secret-ref-agent";
+    await db
+      .prepare(
+        `INSERT INTO agents
+          (id, owner_id, name, runtime, public_key, private_key, fingerprint, kind, username, created_at, updated_at)
+         VALUES (?, ?, 'Secret ref agent', 'claude', 'public', 'private', 'fingerprint', 'worker', 'secret-ref-agent', ?, ?)`,
+      )
+      .bind(agentId, ownerId, now, now)
+      .run();
 
     await db
       .prepare(
@@ -65,7 +75,7 @@ describe("AMA session secret_ref migration", () => {
           secret_credential_id, secret_ref, created_at
         ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
       )
-      .bind("session-legacy", ownerId, agent.id, "ama-session-legacy", "pub", "proof", "cred_legacy", null, now)
+      .bind("session-legacy", ownerId, agentId, "ama-session-legacy", "pub", "proof", "cred_legacy", null, now)
       .run();
     await db
       .prepare(
@@ -77,7 +87,7 @@ describe("AMA session secret_ref migration", () => {
       .bind(
         "session-current",
         ownerId,
-        agent.id,
+        agentId,
         "ama-session-current",
         "pub",
         "proof",

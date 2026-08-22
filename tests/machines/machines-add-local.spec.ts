@@ -19,13 +19,11 @@ test.describe("Machines Page", () => {
     // Click 'Your Computer'
     await dialog.getByRole("button", { name: /Your Computer/ }).click();
 
-    // expect: The dialog transitions to the 'waiting' step
-    // expect: The AddMachineSteps component is displayed
-    // expect: Setup instructions with an API key and CLI commands are shown
+    // expect: Setup uses Realmroot Device Flow and contains no static API key.
+    await expect(dialog.getByText(/Authenticate this machine through Realmroot/)).toBeVisible();
+    await expect(dialog.getByText(/npx agent-kanban auth login --api-url/)).toBeVisible();
     await expect(dialog.getByText(/npx agent-kanban start/)).toBeVisible();
-
-    // expect: A waiting indicator shows the system is waiting for the machine to connect
-    await expect(dialog.getByText("Waiting for connection...")).toBeVisible();
+    await expect(dialog.getByText(/--api-key/)).toHaveCount(0);
 
     // Close dialog after test
     await page.keyboard.press("Escape");

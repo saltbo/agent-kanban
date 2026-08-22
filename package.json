@@ -51,7 +51,6 @@
     "@assistant-ui/react": "^0.12.24",
     "@openai/codex-sdk": "^0.118.0",
     "dompurify": "^3.3.3",
-    "framer-motion": "^12.38.0",
-    "openpgp": "^6.3.0"
+    "framer-motion": "^12.38.0"
   }
 }

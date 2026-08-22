@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -89,7 +89,35 @@ describe("writeSession / readSession", () => {
     writeSession(s); // must not throw
     expect(readSession(s.sessionId)).not.toBeNull();
   });
+
+  it("stores private session state with owner-only directory and file permissions", () => {
+    chmodSync(testSessionsDir, 0o777);
+    const session = makeSession();
+
+    writeSession(session);
+
+    expectPosixMode(testSessionsDir, 0o700);
+    expectPosixMode(join(testSessionsDir, `${session.sessionId}.json`), 0o600);
+  });
+
+  it("repairs broad permissions on an existing sessions directory and file", () => {
+    const session = makeSession();
+    writeSession(session);
+    const path = join(testSessionsDir, `${session.sessionId}.json`);
+    chmodSync(testSessionsDir, 0o777);
+    chmodSync(path, 0o666);
+
+    writeSession({ ...session, status: "in_review" });
+
+    expectPosixMode(testSessionsDir, 0o700);
+    expectPosixMode(path, 0o600);
+  });
 });
+
+function expectPosixMode(path: string, expected: number): void {
+  const stats = statSync(path);
+  if (process.platform !== "win32") expect(stats.mode & 0o777).toBe(expected);
+}
 
 describe("readSession", () => {
   it("returns null for an unknown session ID", () => {

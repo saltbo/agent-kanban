@@ -1,25 +1,23 @@
-import type { Session, User } from "better-auth";
-
 export interface Env {
   DB: D1Database;
   AE: AnalyticsEngineDataset;
   EMAIL: SendEmail;
   TUNNEL_RELAY: DurableObjectNamespace;
   ASSETS: Fetcher;
-  AUTH_SECRET: string;
   ALLOWED_HOSTS: string;
-  GITHUB_CLIENT_ID: string;
-  GITHUB_CLIENT_SECRET: string;
+  REALMROOT_ISSUER: string;
+  REALMROOT_WEB_CLIENT_ID: string;
+  REALMROOT_WEB_CLIENT_SECRET: string;
+  REALMROOT_SESSION_ENCRYPTION_KEY: string;
+  REALMROOT_CLI_CLIENT_ID: string;
+  AK_RESOURCE: string;
+  REALMROOT_CONSOLE_URL?: string;
   MAILS_ADMIN_TOKEN: string;
   CF_ACCOUNT_ID: string;
   CF_API_TOKEN: string;
   AK_API_URL?: string;
   AMA_ORIGIN?: string;
-  // OIDC issuer for AMA. Discovery URL is derived from the standard well-known path.
-  AMA_OIDC_ISSUER?: string;
-  AMA_OIDC_CLIENT_ID?: string;
-  AMA_OIDC_CLIENT_SECRET?: string;
-  AMA_OIDC_SCOPES?: string;
+  AMA_RESOURCE?: string;
   AMA_RUNNER_VERSION?: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;
@@ -33,17 +31,21 @@ export interface Env {
 declare module "hono" {
   interface ContextVariableMap {
     ownerId: string;
-    identityType: "user" | "machine" | "maintainer:key" | "agent:worker" | "agent:leader";
-    apiKeyId?: string;
-    apiKeyConfigId?: string;
-    apiKeyPermissions?: Record<string, string[]> | null;
-    apiKeyMetadata?: Record<string, any> | null;
+    identityType: "user" | "machine" | "agent:worker" | "agent:leader" | "service";
+    principal: {
+      source: "session" | "token";
+      type: "human" | "machine" | "agent" | "service";
+      subjectId: string;
+      tenantId: string;
+      clientId?: string;
+      scopes: string[];
+    };
     machineId?: string;
     agentId?: string;
     sessionId?: string;
     agentRuntimeSource?: "ama" | "legacy";
     agentCapabilities?: string[];
-    user?: User;
-    session?: Session;
+    user?: { id: string; name: string; email: string; image?: string | null; role: string };
+    session?: { id: string; expiresAt: Date; csrfToken: string };
   }
 }

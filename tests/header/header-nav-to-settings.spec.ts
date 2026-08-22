@@ -20,10 +20,9 @@ test.describe("Header and Navigation", () => {
     // expect: The user is navigated to the profile settings page
     await expect(page).toHaveURL(/\/settings\/profile$/);
 
-    // expect: The Settings page is displayed with profile settings
-    await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Theme" })).not.toBeVisible();
-    await expect(page.getByRole("heading", { name: "GitHub" })).not.toBeVisible();
-    await expect(page.getByRole("heading", { name: "Boards" })).not.toBeVisible();
+    // expect: Identity and security management are delegated to Realmroot.
+    await expect(page.getByRole("heading", { name: "Realmroot account" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Manage in Realmroot/ })).toBeVisible();
+    await expect(page.getByText(/password|api key|connect github/i)).toHaveCount(0);
   });
 });

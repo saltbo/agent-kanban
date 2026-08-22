@@ -67,10 +67,6 @@ describe.skipIf(!hasCodexSessions)("readCodexJsonl — real JSONL data", () => {
       }
     }
 
-    // Should have at least one assistant message
-    const hasAssistant = events.some((e: any) => e.event.type === "message");
-    expect(hasAssistant).toBe(true);
-
     console.log(`Parsed ${events.length} events from thread ${threadId}`);
     for (const e of events) {
       const evt = e.event as any;

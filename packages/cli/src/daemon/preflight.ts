@@ -36,15 +36,6 @@ const REQUIRED_BINARIES: BinaryDep[] = [
       generic: "https://nodejs.org/",
     },
   },
-  {
-    command: "gpg",
-    purpose: "signing agent commits",
-    hints: {
-      darwin: "brew install gnupg",
-      linux: "apt install gnupg  |  dnf install gnupg2",
-      generic: "https://gnupg.org/download/",
-    },
-  },
 ];
 
 function isOnPath(command: string): boolean {

@@ -1,15 +1,5 @@
-import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-
-async function signUp(page: Page, email: string): Promise<void> {
-  await page.goto("/auth");
-  await page.getByRole("button", { name: "Sign up" }).click();
-  await page.locator('input[placeholder="Name"]').fill("Test User");
-  await page.locator('input[type="email"]').fill(email);
-  await page.locator('input[type="password"]').fill("password123");
-  await page.getByRole("button", { name: "Sign Up" }).click();
-  await page.waitForFunction(() => Boolean(localStorage.getItem("auth-token")));
-}
+import { signUpAndGetBoard } from "../helpers/auth";
 
 const now = "2026-05-04T12:00:00.000Z";
 
@@ -71,7 +61,7 @@ const board = {
 
 test.describe("Board Page", () => {
   test("task card opens detail and assigned agent click opens chat", async ({ page }) => {
-    await signUp(page, `cardchat_${Date.now()}@example.com`);
+    await signUpAndGetBoard(page, `cardchat_${Date.now()}@example.com`);
 
     await page.route("**/api/boards/*", async (route) => {
       await route.fulfill({ json: board });
@@ -79,7 +69,7 @@ test.describe("Board Page", () => {
     await page.route("**/api/tasks/task-card-chat", async (route) => {
       await route.fulfill({ json: task });
     });
-    await page.route("**/api/tasks/task-card-chat/stream?*", async (route) => {
+    await page.route("**/api/tasks/task-card-chat/stream*", async (route) => {
       await route.fulfill({
         status: 200,
         headers: {

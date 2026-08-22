@@ -2,19 +2,14 @@
 // section: 7.12 Agent detail page renders identity hero
 
 import { expect, test } from "@playwright/test";
-import { signUpAndGetBoard } from "../helpers/auth";
+import { seedRealmrootAgent, signUpAndGetBoard } from "../helpers/auth";
 
 test.describe("Agents Page", () => {
   test("Agent detail page renders identity hero", async ({ page }) => {
     // 1. Sign in and navigate to an agent's detail page at /agents/:id
     await signUpAndGetBoard(page, `agent_detail_${Date.now()}@example.com`);
-    await page.goto("/agents");
-
-    await page.getByText("Quality Goalkeeper").first().waitFor({ state: "visible" });
-
-    // Navigate to the agent detail page via card click
-    await page.getByRole("link", { name: /Quality Goalkeeper/ }).click();
-    await expect(page).toHaveURL(/\/agents\/.+/);
+    const agentId = await seedRealmrootAgent(page);
+    await page.goto(`/agents/${agentId}`);
 
     await page.getByText("← Agents").first().waitFor({ state: "visible" });
 

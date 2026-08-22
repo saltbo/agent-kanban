@@ -15,20 +15,21 @@ custom_domain = true
 [vars]
 ALLOWED_HOSTS = "agent-kanban.dev"
 AK_API_URL = "https://agent-kanban.dev"
-GITHUB_CLIENT_ID = "Ov23liryJHLmoT8019oo"
 CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
 AMA_ORIGIN = "https://ama.tftt.cc"
-AMA_OIDC_ISSUER = "https://id.tftt.cc/api/auth"
-AMA_OIDC_CLIENT_ID = "client_5fd9ed5b769b47ff8611f44debc82c10"
-AMA_RUNNER_VERSION = "0.7.0"
+AMA_RESOURCE = "https://ama.tftt.cc/api"
+REALMROOT_ISSUER = "https://id.realmroot.dev/api/auth"
+AK_RESOURCE = "https://agent-kanban.dev/api"
+REALMROOT_CONSOLE_URL = "https://id.realmroot.dev"
+REALMROOT_WEB_CLIENT_ID = "01a02088-aac0-74a9-a5a9-ffca6cf338c0"
+REALMROOT_CLI_CLIENT_ID = "01a02088-7878-734d-94dc-de7c9ac081b3"
+AMA_RUNNER_VERSION = "0.8.1"
 GITHUB_APP_ID = "4098405"
 GITHUB_APP_SLUG = "agent-kanban"
-# Optional override. Defaults to "openid profile email offline_access".
-# AMA_OIDC_SCOPES = "openid profile email offline_access"
 
 # Secrets are set via `wrangler secret put`:
-# AUTH_SECRET, GITHUB_CLIENT_SECRET, MAILS_ADMIN_TOKEN, CF_API_TOKEN,
-# AMA_OIDC_CLIENT_SECRET, GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_PRIVATE_KEY
+# REALMROOT_WEB_CLIENT_SECRET, REALMROOT_SESSION_ENCRYPTION_KEY,
+# MAILS_ADMIN_TOKEN, CF_API_TOKEN, GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_PRIVATE_KEY
 # Local dev overrides are in .dev.vars
 
 [observability]
@@ -49,7 +50,7 @@ crons = ["* * * * *"]
 [assets]
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/.well-known/*", "/agents/*.gpg", "/share/*"]
+run_worker_first = ["/api", "/api/*", "/.well-known/*", "/share/*"]
 
 [durable_objects]
 bindings = [{ name = "TUNNEL_RELAY", class_name = "TunnelRelay" }]
@@ -82,14 +83,15 @@ routes = []
 [env.staging.vars]
 ALLOWED_HOSTS = "*.workers.dev"
 AK_API_URL = "TODO_STAGING_AK_API_URL"
-GITHUB_CLIENT_ID = "Ov23liryJHLmoT8019oo"
 CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
 AMA_ORIGIN = "https://ama.tftt.cc"
-AMA_OIDC_ISSUER = "https://id.tftt.cc/api/auth"
-AMA_OIDC_CLIENT_ID = "TODO_STAGING_AMA_OIDC_CLIENT_ID"
-AMA_RUNNER_VERSION = "0.7.0"
-# Optional override. Defaults to "openid profile email offline_access".
-# AMA_OIDC_SCOPES = "openid profile email offline_access"
+AMA_RESOURCE = "https://ama.tftt.cc/api"
+REALMROOT_ISSUER = "https://id.realmroot.dev/api/auth"
+AK_RESOURCE = "TODO_STAGING_AK_API_URL/api"
+REALMROOT_CONSOLE_URL = "https://id.realmroot.dev"
+REALMROOT_WEB_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_WEB_CLIENT_ID"
+REALMROOT_CLI_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_CLI_CLIENT_ID"
+AMA_RUNNER_VERSION = "0.8.1"
 GITHUB_APP_ID = "4153714"
 GITHUB_APP_SLUG = "agent-kanban-staging"
 

@@ -80,7 +80,7 @@ test.describe("Repositories GitHub App", () => {
 
     // 7. Assert the dialog opens on the "From GitHub" tab by default
     await expect(page.getByRole("heading", { name: "Add Repository" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "From GitHub" })).toHaveAttribute("data-state", "active");
+    await expect(page.getByRole("tab", { name: "From GitHub" })).toHaveAttribute("aria-selected", "true");
 
     // 8. Assert acme/web row is present with an enabled "Add" button
     const webRow = page.getByRole("dialog").getByText("acme/web");

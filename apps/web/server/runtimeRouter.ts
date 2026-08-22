@@ -3,9 +3,12 @@ import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { type AmaRunner, isAmaTaskDispatchConfigured, listAmaRunners } from "./amaRuntime";
 import type { D1 } from "./db";
 import { legacyRuntimeAvailableOnMachines } from "./legacyRuntime";
+import { createLogger } from "./logger";
 import { listMachinesForRuntimeRouting } from "./machineRepo";
 import type { TaskRuntimeSource } from "./runtimeBinding";
 import type { Env } from "./types";
+
+const logger = createLogger("runtime-router");
 
 export interface RuntimeSourceAvailability {
   ama: boolean;
@@ -68,9 +71,14 @@ export async function resolveRuntimeSourceAvailability(
     ),
   ];
   const projectId = environmentIds.length > 0 ? await getAmaProjectId(db, ownerId) : null;
-  const runnerPages = projectId
-    ? await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, ownerId, projectId, environmentId)))
-    : [];
+  let runnerPages: Awaited<ReturnType<typeof listAmaRunners>>[] = [];
+  if (projectId) {
+    try {
+      runnerPages = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, ownerId, projectId, environmentId)));
+    } catch (error) {
+      logger.warn(`AMA runner availability unavailable for tenant ${ownerId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const amaRuntime = amaRuntimeName(runtime);
   const cloudAvailable = machines.some(
     (machine) => machine.hosting === "cloud" && machine.runtimes.some((entry) => entry.name === runtime && entry.status === "ready"),
@@ -83,9 +91,14 @@ export async function listAvailableRuntimeSources(db: D1, env: Env, ownerId: str
   const machines = await listMachinesForRuntimeRouting(db, ownerId);
   const projectId = isAmaTaskDispatchConfigured(env) ? await getAmaProjectId(db, ownerId) : null;
   const environmentIds = [...new Set(machines.map((machine) => machine.ama_environment_id).filter((id): id is string => Boolean(id)))];
-  const runnerPages = projectId
-    ? await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, ownerId, projectId, environmentId)))
-    : [];
+  let runnerPages: Awaited<ReturnType<typeof listAmaRunners>>[] = [];
+  if (projectId) {
+    try {
+      runnerPages = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, ownerId, projectId, environmentId)));
+    } catch (error) {
+      logger.warn(`AMA runner availability unavailable for tenant ${ownerId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const entries = await Promise.all(
     AGENT_RUNTIMES.map(async (runtime) => {
       const amaRuntime = amaRuntimeName(runtime);

@@ -30,8 +30,12 @@ export async function createSSEResponse(env: Env, taskId: string, lastEventId: s
   let since: string | undefined;
   if (lastEventId) {
     const ref = await db
-      .prepare("SELECT created_at FROM task_actions WHERE id = ? UNION SELECT created_at FROM messages WHERE id = ?")
-      .bind(lastEventId, lastEventId)
+      .prepare(
+        `SELECT created_at FROM task_actions WHERE id = ? AND task_id = ?
+         UNION
+         SELECT created_at FROM messages WHERE id = ? AND task_id = ?`,
+      )
+      .bind(lastEventId, taskId, lastEventId, taskId)
       .first<{ created_at: string }>();
     if (!ref) {
       return Response.json(

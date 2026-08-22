@@ -22,7 +22,7 @@ set -euo pipefail
 # Prerequisites (the live acceptance gate needs your machine's credentials):
 #   - A local AK dev server running (pnpm dev) and `ak config` api-url pointed at
 #     it (ak用本地环境). The script refuses to run against a non-local api-url.
-#   - ak authenticated to that local AK (ak login / device-login).
+#   - ak authenticated to that local AK (loopback PKCE login).
 #   - Runtime credentials on this host for the chosen runtimes (claude + ama).
 #     ama runs in the cloud; claude needs claude-code creds on the runner host.
 #   - The current ak built + installed (bash scripts/install-cli.sh).

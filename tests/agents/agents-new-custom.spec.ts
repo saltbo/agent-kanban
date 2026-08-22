@@ -20,12 +20,15 @@ test.describe("Agents Page", () => {
     // expect: The form step is displayed with the heading 'Create agent'
     await expect(page.getByRole("heading", { name: "Create agent" })).toBeVisible();
 
-    // expect: Identity fieldset with Name, Role, Bio, Soul inputs is visible
+    // expect: Identity contains only product-facing profile fields. Realmroot
+    // Agent enrollment and AMA credentials are provisioned by the backend.
     await expect(page.getByRole("group", { name: "Identity" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Name", exact: true })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Role" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Bio" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Soul" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Realmroot Agent ID" })).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "Realmroot credential reference" })).toHaveCount(0);
 
     // expect: Runtime fieldset with Runtime dropdown and Model input is visible
     await expect(page.getByRole("group", { name: "Runtime" })).toBeVisible();

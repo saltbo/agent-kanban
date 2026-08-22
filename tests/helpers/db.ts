@@ -1,9 +1,11 @@
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CreateAgentInput, CreateSubagentInput } from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 
 const MIGRATIONS_DIR = join(__dirname, "../../apps/web/migrations");
+const TEST_SESSION_ENCRYPTION_KEY = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=";
 
 export function createTestEnv() {
   return {
@@ -15,6 +17,13 @@ export function createTestEnv() {
     GITHUB_CLIENT_ID: "x",
     GITHUB_CLIENT_SECRET: "x",
     MAILS_ADMIN_TOKEN: "",
+    REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
+    REALMROOT_WEB_CLIENT_ID: "ak-web-test",
+    REALMROOT_WEB_CLIENT_SECRET: "ak-web-secret",
+    REALMROOT_CLI_CLIENT_ID: "ak-cli-test",
+    AK_RESOURCE: "http://localhost:8788/api",
+    AMA_RESOURCE: "https://ama.example.test/api",
+    REALMROOT_SESSION_ENCRYPTION_KEY: TEST_SESSION_ENCRYPTION_KEY,
   };
 }
 
@@ -58,6 +67,10 @@ export async function applyMigrations(db: D1Database) {
     "0036_backfill_ama_session_secret_refs.sql",
     "0037_unique_latest_leader_per_runtime.sql",
     "0038_board_maintainer_http_trigger_serial.sql",
+    "0039_realmroot_native.sql",
+    "0040_ama_resource_initialization_claims.sql",
+    "0041_drop_realmroot_identity_mappings.sql",
+    "0042_realmroot_user_ama_grants.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -76,23 +89,67 @@ export async function seedUser(db: D1Database, id: string, email: string) {
     .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
     .bind(id, "Test User", email, now, now)
     .run();
-  // AK calls AMA as the logged-in user's own linked AMA account; seed that link
-  // so dispatch paths can resolve a per-user JWT token without triggering an
-  // OIDC refresh round-trip in tests.
-  await linkAmaAccount(db, id);
-}
-
-// Links an AMA generic-OIDC account to the user with a long-lived JWT-shaped
-// access token so AMA calls do not trigger a refresh round-trip in tests.
-export async function linkAmaAccount(db: D1Database, userId: string, accessToken = "test.jwt.token") {
-  const now = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+  await db.prepare("INSERT OR IGNORE INTO realmroot_tenants (id) VALUES (?)").bind(id).run();
   await db
     .prepare(
-      "INSERT INTO account (id, accountId, providerId, userId, accessToken, refreshToken, accessTokenExpiresAt, scope, createdAt, updatedAt) VALUES (?, ?, 'ama', ?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO realmroot_tenant_members (tenant_id, subject_id, email, name, role)
+       VALUES (?, ?, ?, 'Test User', 'member')
+       ON CONFLICT(tenant_id, subject_id) DO UPDATE SET email = excluded.email`,
     )
-    .bind(`acct-ama-${userId}`, `ama-sub-${userId}`, userId, accessToken, "user-refresh", expiresAt, "openid profile email offline_access", now, now)
+    .bind(id, `legacy:${id}`, email)
     .run();
+  const refresh = await encryptTestGrant(`test-refresh:${id}`);
+  const access = await encryptTestGrant(`test-access:${id}`);
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO realmroot_user_ama_grants
+        (tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce,
+         access_token_ciphertext, access_token_nonce, access_token_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, `legacy:${id}`, refresh.ciphertext, refresh.nonce, access.ciphertext, access.nonce, new Date(Date.now() + 3_600_000).toISOString())
+    .run();
+}
+
+async function encryptTestGrant(value: string): Promise<{ ciphertext: string; nonce: string }> {
+  const raw = Uint8Array.from(atob(TEST_SESSION_ENCRYPTION_KEY), (character) => character.charCodeAt(0));
+  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, new TextEncoder().encode(value)));
+  return { ciphertext: base64Url(encrypted), nonce: base64Url(nonce) };
+}
+
+function base64Url(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export async function createTestWebSession(
+  db: D1Database,
+  tenantId: string,
+  options: { role?: "member" | "admin"; subjectId?: string; email?: string } = {},
+) {
+  const token = randomUUID();
+  const csrfToken = randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO realmroot_web_sessions
+        (id, token_hash, tenant_id, subject_id, email, name, role, csrf_token, expires_at)
+       VALUES (?, ?, ?, ?, ?, 'Test User', ?, ?, ?)`,
+    )
+    .bind(
+      randomUUID(),
+      createHash("sha256").update(token).digest("hex"),
+      tenantId,
+      options.subjectId ?? `subject:${tenantId}`,
+      options.email ?? `${tenantId}@test.local`,
+      options.role ?? "member",
+      csrfToken,
+      new Date(Date.now() + 3_600_000).toISOString(),
+    )
+    .run();
+  return { token, csrfToken, cookie: `ak_session=${token}` };
 }
 
 // Sets the agent's ama_agent_id column (the AMA agent is now created eagerly at
@@ -125,19 +182,6 @@ export async function addCloudSandboxMachine(db: D1Database, ownerId: string, ru
   return id;
 }
 
-export async function signUpVerifiedUser(
-  db: D1Database,
-  auth: any,
-  body: { name: string; email: string; password: string },
-  role = "user",
-): Promise<{ token: string; user: { id: string } }> {
-  await auth.api.signUpEmail({ body });
-  await db.prepare("UPDATE user SET emailVerified = 1, role = ? WHERE email = ?").bind(role, body.email.toLowerCase()).run();
-  const result = await auth.api.signInEmail({ body: { email: body.email, password: body.password } });
-  if (!result.token) throw new Error("verified signInEmail did not return a token");
-  return result;
-}
-
 export async function setupMiniflare() {
   const mf = new Miniflare({
     modules: true,
@@ -149,14 +193,14 @@ export async function setupMiniflare() {
   return { mf, db };
 }
 
-/** Ensure user row exists + create agent with GPG identity. Drop-in replacement for bare createAgent() in tests. */
+/** Ensure the tenant exists and create an Agent with its native Ed25519 identity. */
 export async function createTestAgent(db: D1Database, ownerId: string, input: CreateAgentInput, builtin = false) {
   // Ensure user row exists (idempotent)
   const existing = await db.prepare("SELECT 1 FROM user WHERE id = ?").bind(ownerId).first();
   if (!existing) await seedUser(db, ownerId, `${ownerId}@test.local`);
 
   const { createAgent, createAgentIdentity } = await import("../../apps/web/server/agentRepo");
-  const identity = await createAgentIdentity(db, ownerId, `${input.username}@mails.agent-kanban.dev`);
+  const identity = await createAgentIdentity();
   const agent = await createAgent(db, ownerId, input, identity, builtin);
   // Real agents are created eagerly with a backing AMA agent (POST /api/agents
   // stores agents.ama_agent_id); dispatch reads it. Mirror that for test agents

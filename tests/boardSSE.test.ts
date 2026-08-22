@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestAgent, createTestEnv, seedUser, setupMiniflare } from "./helpers/db";
+import { createTestAgent, createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 const env = createTestEnv();
 let mf: Miniflare;
@@ -11,7 +11,7 @@ let mf: Miniflare;
 async function apiRequest(method: string, path: string, body?: Record<string, unknown>, token?: string) {
   const { api } = await import("../apps/web/server/routes");
   const headers: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http" };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) headers.cookie = `ak_session=${token}`;
   const init: RequestInit = { method, headers };
   if (body && method !== "GET") init.body = JSON.stringify(body);
   return api.request(path, init, env);
@@ -113,16 +113,9 @@ describe("GET /api/boards/:id/stream", () => {
   let boardId: string;
   let apiKey: string;
 
-  async function createApiKeyForUser(uid: string): Promise<string> {
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const auth = createAuth(env);
-    const result = await auth.api.createApiKey({ body: { userId: uid } });
-    return result.key;
-  }
-
   beforeAll(async () => {
     await seedUser(env.DB, userId, `board-sse-route-${randomUUID()}@test.com`);
-    apiKey = await createApiKeyForUser(userId);
+    apiKey = (await createTestWebSession(env.DB, userId)).token;
 
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const board = await createBoard(env.DB, userId, "board-sse-route-board", "ops");

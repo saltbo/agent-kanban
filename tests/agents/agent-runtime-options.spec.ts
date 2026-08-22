@@ -18,11 +18,12 @@ test.describe("Agent runtime options", () => {
     await signUpAndGetBoard(page, `agent_runtimes_${Date.now()}@example.com`);
 
     const leaderId = await page.evaluate(async () => {
+      const session = await fetch("/api/auth/session", { credentials: "include" }).then((response) => response.json());
       const response = await fetch("/api/agents", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("auth-token")}`,
           "Content-Type": "application/json",
+          "x-csrf-token": session.session.csrfToken,
         },
         body: JSON.stringify({
           name: "OpenCode Leader",
@@ -36,11 +37,12 @@ test.describe("Agent runtime options", () => {
     });
 
     const workerId = await page.evaluate(async () => {
+      const session = await fetch("/api/auth/session", { credentials: "include" }).then((response) => response.json());
       const response = await fetch("/api/agents", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("auth-token")}`,
           "Content-Type": "application/json",
+          "x-csrf-token": session.session.csrfToken,
         },
         body: JSON.stringify({
           name: "Claude Worker",

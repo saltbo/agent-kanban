@@ -2,12 +2,13 @@
 // section: 7.3 Agent card links to agent detail page
 
 import { expect, test } from "@playwright/test";
-import { signUpAndGetBoard } from "../helpers/auth";
+import { seedRealmrootAgent, signUpAndGetBoard } from "../helpers/auth";
 
 test.describe("Agents Page", () => {
   test("Agent card links to agent detail page", async ({ page }) => {
     // 1. Sign in, navigate to /agents, and click on an agent card
     await signUpAndGetBoard(page, `agents_card_${Date.now()}@example.com`);
+    await seedRealmrootAgent(page);
     await page.goto("/agents");
 
     await page.getByText("Quality Goalkeeper").first().waitFor({ state: "visible" });

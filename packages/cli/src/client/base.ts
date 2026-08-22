@@ -23,17 +23,22 @@ export abstract class ApiClient {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
-  protected abstract authorize(): Promise<string>;
+  protected abstract authorizationHeaders(method: string, url: string): Promise<Record<string, string>>;
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const authorization = await this.authorize();
-    const doFetch = () =>
-      fetch(`${this.baseUrl}${path}`, {
+  sessionSocketHeaders(url: string): Promise<Record<string, string>> {
+    const httpUrl = url.replace(/^ws:/, "http:").replace(/^wss:/, "https:");
+    return this.authorizationHeaders("GET", httpUrl);
+  }
+
+  protected async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const doFetch = async () =>
+      fetch(url, {
         method,
         headers: {
           "Content-Type": "application/json",
           "X-CLI-Version": getVersion(),
-          Authorization: authorization,
+          ...(await this.authorizationHeaders(method, url)),
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
@@ -43,7 +48,7 @@ export abstract class ApiClient {
     try {
       res = await doFetch();
     } catch (err: any) {
-      if (err?.cause?.code === "ECONNRESET") {
+      if (err?.cause?.code === "ECONNRESET" && (method === "GET" || method === "HEAD")) {
         res = await doFetch();
       } else {
         throw err;
@@ -124,9 +129,6 @@ export abstract class ApiClient {
   getAgent(agentId: string) {
     return this.request("GET", `/api/agents/${agentId}`);
   }
-  getAgentGpgKey(agentId: string) {
-    return this.request<{ armored_private_key: string; gpg_subkey_id: string | null }>("GET", `/api/agents/${agentId}/gpg-key`);
-  }
   updateAgent(agentId: string, body: Record<string, unknown>) {
     return this.request("PATCH", `/api/agents/${agentId}`, body);
   }
@@ -166,10 +168,11 @@ export abstract class ApiClient {
   }
 
   // Agent Sessions
-  createSession(agentId: string, sessionId: string, sessionPublicKey: string) {
+  createSession(agentId: string, sessionId: string, sessionPublicKey: string, machineId: string) {
     return this.request<{ delegation_proof: string }>("POST", `/api/agents/${agentId}/sessions`, {
       session_id: sessionId,
       session_public_key: sessionPublicKey,
+      machine_id: machineId,
     });
   }
   closeSession(agentId: string, sessionId: string) {

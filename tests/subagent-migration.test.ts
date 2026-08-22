@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { seedUser } from "./helpers/db";
 
 const MIGRATIONS_DIR = join(__dirname, "../apps/web/migrations");
 const MIGRATIONS_BEFORE_SUBAGENTS = [
@@ -108,7 +107,11 @@ async function createLegacyAgent(
 describe("0021_subagents migration", () => {
   it("copies existing agent subagent references into the subagents table", async () => {
     const ownerId = "subagent-migration-owner";
-    await seedUser(db, ownerId, "subagent-migration-owner@test.local");
+    const now = new Date().toISOString();
+    await db
+      .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
+      .bind(ownerId, "Migration Owner", "subagent-migration-owner@test.local", now, now)
+      .run();
     const referenced = await createLegacyAgent(db, ownerId, {
       id: "legacy-reviewer-id",
       username: "legacy-reviewer",

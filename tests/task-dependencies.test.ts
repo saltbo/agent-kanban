@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { applyMigrations as applyAllMigrations, seedUser } from "./helpers/db";
 
 const MIGRATIONS_DIR = join(__dirname, "../apps/web/migrations");
 
@@ -46,6 +47,14 @@ async function applyMigrations(db: D1Database) {
     "0030_agent_taints.sql",
     "0031_drop_board_maintainer_name.sql",
     "0032_board_maintainer_api_key.sql",
+    "0033_board_maintainer_heartbeat_enabled.sql",
+    "0034_task_assignee_status_index.sql",
+    "0035_board_maintainer_vault.sql",
+    "0036_backfill_ama_session_secret_refs.sql",
+    "0037_unique_latest_leader_per_runtime.sql",
+    "0038_board_maintainer_http_trigger_serial.sql",
+    "0039_realmroot_native.sql",
+    "0040_ama_resource_initialization_claims.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -65,12 +74,9 @@ beforeAll(async () => {
     d1Databases: { DB: "test-db" },
   });
   env.DB = await mf.getD1Database("DB");
-  await applyMigrations(env.DB);
+  await applyAllMigrations(env.DB);
 
-  const now = new Date().toISOString();
-  await env.DB.prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
-    .bind("test-user-deps", "Deps User", "deps@example.com", now, now)
-    .run();
+  await seedUser(env.DB, "test-user-deps", "deps@example.com");
 });
 
 afterAll(async () => {
@@ -104,6 +110,25 @@ describe("task dependencies", () => {
     const tasks = await listTasks(env.DB, userId, { board_id: boardId });
     const child = tasks.find((t: any) => t.id === t2.id) as any;
     expect(child.depends_on).toEqual([t1.id]);
+  });
+
+  it("rejects cross-tenant parent and dependency task references on create and update", async () => {
+    const otherOwner = "test-user-deps-other";
+    await seedUser(env.DB, otherOwner, "deps-other@example.com");
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask: createTaskRecord, updateTask } = await import("../apps/web/server/taskRepo");
+    const otherBoard = await createBoard(env.DB, otherOwner, "other-deps-board", "ops");
+    const foreignTask = await createTaskRecord(env.DB, otherOwner, { title: "Foreign task", board_id: otherBoard.id });
+
+    await expect(createTaskRecord(env.DB, userId, { title: "Cross-tenant parent", board_id: boardId, created_from: foreignTask.id })).rejects.toThrow(
+      "Parent task not found",
+    );
+    await expect(
+      createTaskRecord(env.DB, userId, { title: "Cross-tenant dependency", board_id: boardId, depends_on: [foreignTask.id] }),
+    ).rejects.toThrow("Dependency task not found");
+
+    const localTask = await createTask({ title: "Local task" });
+    await expect(updateTask(env.DB, localTask.id, { depends_on: [foreignTask.id] }, userId)).rejects.toThrow("Dependency task not found");
   });
 
   it("listTasks returns empty depends_on for tasks with no deps", async () => {

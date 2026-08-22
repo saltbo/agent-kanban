@@ -18,6 +18,7 @@ const mockGetTaskSession = vi.fn();
 const mockGetTaskSessionWs = vi.fn();
 const mockGetSession = vi.fn();
 const mockGetSessionWs = vi.fn();
+const mockSessionSocketHeaders = vi.fn();
 const mockListTasks = vi.fn();
 const mockClient = {
   getTask: mockGetTask,
@@ -25,6 +26,7 @@ const mockClient = {
   getTaskSessionWs: mockGetTaskSessionWs,
   getSession: mockGetSession,
   getSessionWs: mockGetSessionWs,
+  sessionSocketHeaders: mockSessionSocketHeaders,
   listTasks: mockListTasks,
 };
 const mockCreateClient = vi.fn(() => Promise.resolve(mockClient));
@@ -100,6 +102,7 @@ beforeEach(() => {
   mockGetTaskSessionWs.mockResolvedValue({ url: "wss://session.test" });
   mockGetSession.mockResolvedValue({ session_id: "session-1", session: { state: "idle" } });
   mockGetSessionWs.mockResolvedValue({ url: "wss://session.test" });
+  mockSessionSocketHeaders.mockResolvedValue({ authorization: "Bearer session-authority", dpop: "session-proof" });
   mockReadSessionEvents.mockResolvedValue([]);
   mockFindMatchingSessionSubagents.mockReturnValue([{ toolCallId: "call-reviewer", name: "reviewer" }]);
   mockFindSessionSubagents.mockReturnValue([{ toolCallId: "call-reviewer", name: "reviewer" }]);
@@ -205,8 +208,16 @@ describe("get task — single-task fetch by ID", () => {
     await program.parseAsync(["get", "task", "task-42", "--session"], { from: "user" });
     expect(mockReadSessionEvents).toHaveBeenCalledWith(
       "wss://session.test",
-      expect.objectContaining({ all: undefined, watch: undefined, filter: "all", mainStream: true, recentLimit: 20 }),
+      expect.objectContaining({
+        all: undefined,
+        watch: undefined,
+        filter: "all",
+        headers: { authorization: "Bearer session-authority", dpop: "session-proof" },
+        mainStream: true,
+        recentLimit: 20,
+      }),
     );
+    expect(mockSessionSocketHeaders).toHaveBeenCalledWith("wss://session.test");
   });
 
   it("uses the default recent limit when filtering task session events by subagent", async () => {
@@ -253,8 +264,16 @@ describe("get session", () => {
     expect(mockGetTaskSessionWs).not.toHaveBeenCalled();
     expect(mockReadSessionEvents).toHaveBeenCalledWith(
       "wss://session.test",
-      expect.objectContaining({ all: undefined, watch: undefined, filter: "all", mainStream: true, recentLimit: 20 }),
+      expect.objectContaining({
+        all: undefined,
+        watch: undefined,
+        filter: "all",
+        headers: { authorization: "Bearer session-authority", dpop: "session-proof" },
+        mainStream: true,
+        recentLimit: 20,
+      }),
     );
+    expect(mockSessionSocketHeaders).toHaveBeenCalledWith("wss://session.test");
   });
 
   it("passes --watch, --all, and --tool to the WebSocket event reader", async () => {

@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LEGACY_SAVED_SESSIONS_FILE, LEGACY_SESSION_PIDS_FILE, SESSIONS_DIR } from "../paths.js";
@@ -27,15 +27,18 @@ function sessionPath(sessionId: string): string {
 }
 
 function ensureDir(): void {
-  mkdirSync(SESSIONS_DIR, { recursive: true });
+  mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  chmodSync(SESSIONS_DIR, 0o700);
 }
 
 export function writeSession(session: SessionFile): void {
   ensureDir();
   // Atomic write: tmp file + rename
   const tmp = join(tmpdir(), `ak-session-${randomUUID()}.json`);
-  writeFileSync(tmp, JSON.stringify(session, null, 2));
-  renameSync(tmp, sessionPath(session.sessionId));
+  writeFileSync(tmp, JSON.stringify(session, null, 2), { mode: 0o600 });
+  const target = sessionPath(session.sessionId);
+  renameSync(tmp, target);
+  chmodSync(target, 0o600);
 }
 
 export function readSession(sessionId: string): SessionFile | null {
@@ -144,7 +147,6 @@ export function migrateLegacySessions(): void {
       workspace: s.workspace,
       status: s.status ?? "active",
       model: s.model,
-      gpgSubkeyId: s.gpgSubkeyId,
       agentUsername: s.agentUsername,
       agentName: s.agentName,
     });

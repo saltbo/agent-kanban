@@ -70,10 +70,10 @@ Agents have three lifecycle states: **idle** → **working** → **offline**. Ta
 
 | Role | Identity | Permissions |
 |------|----------|-------------|
-| **Human** | User session | View board, chat with agents, reject/complete tasks, manage boards/repos/agents |
-| **Leader Agent** | Ed25519 JWT | Create/assign tasks, reject/complete/cancel tasks, manage boards/repos/agents |
-| **Worker Agent** | Ed25519 JWT | Claim tasks, create subtasks, log progress, submit for review |
-| **Daemon (Machine)** | API key | Poll tasks, spawn/close agent sessions, release tasks, auto-complete on merge |
+| **Human** | Realmroot + AK Session Cookie | View board, chat with agents, reject/complete tasks, manage boards/repos/agents |
+| **Leader Agent** | AK Ed25519 Agent Session | Create/assign tasks, reject/complete/cancel tasks, manage boards/repos/agents |
+| **Worker Agent** | AK Ed25519 Agent Session | Claim tasks, create subtasks, log progress, submit for review |
+| **Machine** | Realmroot Native (Bearer or DPoP) | Start the local runtime context and report machine state |
 
 ## Quick Start
 
@@ -84,12 +84,12 @@ Agents have three lifecycle states: **idle** → **working** → **offline**. Ta
 
 ### 1. Install and configure
 
-Sign up at [agent-kanban.dev](https://agent-kanban.dev), create a machine to get an API key, then:
+Sign in at [agent-kanban.dev](https://agent-kanban.dev), then authenticate the CLI with the registered AK Realmroot Native Application:
 
 ```bash
 volta install agent-kanban   # or: npm install -g agent-kanban
 
-ak config set --api-url https://agent-kanban.dev --api-key ak_xxxxx
+ak auth login --api-url https://agent-kanban.dev --client-id "$AK_REALMROOT_CLIENT_ID"
 ```
 
 ### 2. Start the daemon

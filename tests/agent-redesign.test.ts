@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestAgent } from "./helpers/db";
+import { applyMigrations as applyAllMigrations, createTestAgent, seedUser as seedRealmrootUser } from "./helpers/db";
 
 // Integration tests for Agent Entity Redesign:
 // - Agent CRUD (update, delete)
@@ -63,6 +63,14 @@ async function applyMigrations(db: D1Database) {
     "0034_task_assignee_status_index.sql",
     "0035_board_maintainer_vault.sql",
     "0036_backfill_ama_session_secret_refs.sql",
+    "0037_unique_latest_leader_per_runtime.sql",
+    "0038_board_maintainer_http_trigger_serial.sql",
+    "0039_realmroot_native.sql",
+    "0040_ama_resource_initialization_claims.sql",
+    "0033_board_maintainer_heartbeat_enabled.sql",
+    "0034_task_assignee_status_index.sql",
+    "0035_board_maintainer_vault.sql",
+    "0036_backfill_ama_session_secret_refs.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -76,28 +84,8 @@ async function applyMigrations(db: D1Database) {
 }
 
 async function seedUser(db: D1Database, id: string, email: string): Promise<string> {
-  const now = new Date().toISOString();
-  await db
-    .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
-    .bind(id, "Test User", email, now, now)
-    .run();
+  await seedRealmrootUser(db, id, email);
   return id;
-}
-
-async function createApiKeyForUser(userId: string): Promise<string> {
-  const { createAuth } = await import("../apps/web/server/betterAuth");
-  const auth = createAuth(env);
-  const result = await auth.api.createApiKey({ body: { userId } });
-  return result.key;
-}
-
-async function _apiRequest(method: string, path: string, body?: any, token?: string) {
-  const { api } = await import("../apps/web/server/routes");
-  const headers: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const init: RequestInit = { method, headers };
-  if (body) init.body = JSON.stringify(body);
-  return api.request(path, init, env);
 }
 
 async function createSessionKeypair() {
@@ -121,7 +109,7 @@ beforeAll(async () => {
     d1Databases: { DB: "test-db" },
   });
   env.DB = await mf.getD1Database("DB");
-  await applyMigrations(env.DB);
+  await applyAllMigrations(env.DB);
 });
 
 afterAll(async () => {
@@ -189,12 +177,10 @@ describe("agent task status count computation", () => {
   let userId: string;
   let agentId: string;
   let machineId: string;
-  let _apiKey: string;
 
   it("setup", async () => {
     const { upsertMachine } = await import("../apps/web/server/machineRepo");
     userId = await seedUser(env.DB, "user-status", "status@test.com");
-    _apiKey = await createApiKeyForUser(userId);
     const machine = await upsertMachine(env.DB, userId, {
       name: "status-machine",
       os: "test",
@@ -203,24 +189,6 @@ describe("agent task status count computation", () => {
       device_id: "test-device-redesign-status",
     });
     machineId = machine.id;
-
-    // Create BA agentHost
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const auth = createAuth(env);
-    const authCtx = await auth.$context;
-    await (authCtx.adapter.create as any)({
-      model: "agentHost",
-      data: {
-        id: machineId,
-        name: "status-machine",
-        userId,
-        status: "active",
-        activatedAt: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      forceAllowId: true,
-    });
 
     const agent = await createTestAgent(env.DB, userId, { name: "StatusAgent", username: "status-agent", runtime: "claude" });
     agentId = agent.id;
@@ -299,28 +267,11 @@ describe("session lifecycle", () => {
     });
     machineId = machine.id;
 
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const authCtx = await createAuth(env).$context;
-    await (authCtx.adapter.create as any)({
-      model: "agentHost",
-      data: {
-        id: machineId,
-        name: "session-machine",
-        userId,
-        status: "active",
-        activatedAt: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      forceAllowId: true,
-    });
-
     const agent = await createTestAgent(env.DB, userId, { name: "SessionAgent", username: "session-agent", runtime: "claude" });
     agentId = agent.id;
   });
 
-  it("createSession auto-creates agentHost when it does not exist yet", async () => {
-    // Use a fresh machine with no pre-seeded agentHost to exercise the create-if-not-exists branch
+  it("creates a session without a Better Auth agentHost record", async () => {
     const { upsertMachine } = await import("../apps/web/server/machineRepo");
     const freshMachine = await upsertMachine(env.DB, userId, {
       name: "fresh-machine-no-host",

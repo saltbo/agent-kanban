@@ -152,7 +152,7 @@ describe("repositoryRepo", () => {
   it("deleteRepository removes a repo", async () => {
     const { createRepository, deleteRepository, listRepositories } = await import("../apps/web/server/repositoryRepo");
     const repo = await createRepository(env.DB, "repo-test-user", { name: "del-repo", url: "https://github.com/org/del-repo" });
-    const deleted = await deleteRepository(env.DB, repo.id);
+    const deleted = await deleteRepository(env.DB, repo.id, "repo-test-user");
     expect(deleted).toBe(true);
     const repos = await listRepositories(env.DB, "repo-test-user", { url: "https://github.com/org/del-repo" });
     expect(repos.length).toBe(0);
@@ -160,7 +160,7 @@ describe("repositoryRepo", () => {
 
   it("deleteRepository returns false for unknown repo", async () => {
     const { deleteRepository } = await import("../apps/web/server/repositoryRepo");
-    const deleted = await deleteRepository(env.DB, "nonexistent");
+    const deleted = await deleteRepository(env.DB, "nonexistent", "repo-test-user");
     expect(deleted).toBe(false);
   });
 

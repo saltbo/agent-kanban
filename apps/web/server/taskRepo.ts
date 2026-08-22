@@ -37,6 +37,21 @@ async function assertRepositoryBelongsToBoardOwner(db: D1, boardId: string, repo
   if (!row) throw new HTTPException(404, { message: "Repository not found" });
 }
 
+async function assertOwnedTaskIds(db: D1, ownerId: string, taskIds: string[], message: string): Promise<void> {
+  const ids = [...new Set(taskIds)];
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => "?").join(", ");
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM tasks t
+       JOIN boards b ON b.id = t.board_id
+       WHERE t.id IN (${placeholders}) AND b.owner_id = ?`,
+    )
+    .bind(...ids, ownerId)
+    .first<{ count: number }>();
+  if (row?.count !== ids.length) throw new HTTPException(400, { message });
+}
+
 function enforceTransition(action: TaskActionType, currentStatus: TaskStatus, identity: IdentityType): void {
   const error = validateTransition(action as any, currentStatus, identity);
   if (error) {
@@ -107,13 +122,13 @@ export async function createTask(
   const position = (maxPos?.max_pos ?? -1) + 1;
 
   if (input.depends_on?.length) {
+    await assertOwnedTaskIds(db, ownerId, input.depends_on, "Dependency task not found");
     const hasCycle = await detectCycle(db, taskId, input.depends_on);
     if (hasCycle) throw new HTTPException(400, { message: "Circular dependency detected" });
   }
 
   if (input.created_from) {
-    const parent = await db.prepare("SELECT id FROM tasks WHERE id = ?").bind(input.created_from).first();
-    if (!parent) throw new HTTPException(400, { message: "Parent task not found" });
+    await assertOwnedTaskIds(db, ownerId, [input.created_from], "Parent task not found");
   }
 
   if (input.assigned_to) {
@@ -317,12 +332,22 @@ export async function updateTask(
     metadata?: Record<string, unknown>;
     depends_on?: string[];
   },
+  ownerId?: string,
 ): Promise<Task | null> {
-  const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<Task>();
+  const task = ownerId
+    ? await db
+        .prepare("SELECT t.* FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND b.owner_id = ?")
+        .bind(taskId, ownerId)
+        .first<Task>()
+    : await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<Task>();
   if (!task) return null;
 
   if (updates.depends_on !== undefined) {
     if (updates.depends_on.length > 0) {
+      const taskOwner =
+        ownerId ?? (await db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(task.board_id).first<{ owner_id: string }>())?.owner_id;
+      if (!taskOwner) return null;
+      await assertOwnedTaskIds(db, taskOwner, updates.depends_on, "Dependency task not found");
       const hasCycle = await detectCycle(db, taskId, updates.depends_on);
       if (hasCycle) throw new HTTPException(400, { message: "Circular dependency detected" });
     }
@@ -350,8 +375,9 @@ export async function updateTask(
   }
 
   binds.push(taskId);
+  if (ownerId) binds.push(ownerId);
   await db
-    .prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`)
+    .prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?${ownerId ? " AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)" : ""}`)
     .bind(...binds)
     .run();
   if (updates.repository_id) await recordBoardRepository(db, task.board_id, updates.repository_id);
@@ -359,10 +385,14 @@ export async function updateTask(
   return parseTask({ ...task, ...updates, updated_at: now } as Task);
 }
 
-export async function deleteTask(db: D1, taskId: string): Promise<boolean> {
+export async function deleteTask(db: D1, taskId: string, ownerId: string): Promise<boolean> {
   const task = await db
-    .prepare("SELECT status, assigned_to FROM tasks WHERE id = ?")
-    .bind(taskId)
+    .prepare(
+      `SELECT t.status, t.assigned_to FROM tasks t
+       JOIN boards b ON b.id = t.board_id
+       WHERE t.id = ? AND b.owner_id = ?`,
+    )
+    .bind(taskId, ownerId)
     .first<{ status: string; assigned_to: string | null }>();
   if (!task) return false;
 
@@ -371,7 +401,10 @@ export async function deleteTask(db: D1, taskId: string): Promise<boolean> {
     throw new HTTPException(409, { message: `Cannot delete task in ${task.status}${task.assigned_to ? " (assigned)" : ""} status` });
   }
 
-  const result = await db.prepare("DELETE FROM tasks WHERE id = ?").bind(taskId).run();
+  const result = await db
+    .prepare("DELETE FROM tasks WHERE id = ? AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)")
+    .bind(taskId, ownerId)
+    .run();
   return result.meta.changes > 0;
 }
 
@@ -619,13 +652,17 @@ export async function cancelTask(
 export async function reviewTask(
   db: D1,
   taskId: string,
+  ownerId: string,
   actorType: string,
   actorId: string,
   prUrl: string | null,
   identity: IdentityType,
   sessionId: string | null = null,
 ): Promise<Task | null> {
-  const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<Task>();
+  const task = await db
+    .prepare("SELECT t.* FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND b.owner_id = ?")
+    .bind(taskId, ownerId)
+    .first<Task>();
   if (!task) return null;
   enforceTransition("review" as any, task.status as TaskStatus, identity);
 
@@ -633,7 +670,11 @@ export async function reviewTask(
   const logId = newLongId();
 
   await db.batch([
-    db.prepare("UPDATE tasks SET status = 'in_review', pr_url = COALESCE(?, pr_url), updated_at = ? WHERE id = ?").bind(prUrl, now, taskId),
+    db
+      .prepare(
+        "UPDATE tasks SET status = 'in_review', pr_url = COALESCE(?, pr_url), updated_at = ? WHERE id = ? AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)",
+      )
+      .bind(prUrl, now, taskId, ownerId),
     db
       .prepare(
         "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, 'review_requested', NULL, ?, ?)",

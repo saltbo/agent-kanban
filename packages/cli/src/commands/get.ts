@@ -114,6 +114,7 @@ async function showSession(
     }
     recentLimit = parsedLimit;
   }
+  const socketHeaders = await client.sessionSocketHeaders(url);
   const session = source === "task" ? await client.getTaskSession(sessionId) : await client.getSession(sessionId);
 
   const applySubagentFilter = (events: SessionEvent[]): SessionEvent[] => {
@@ -131,6 +132,7 @@ async function showSession(
   if (fmt !== "text") {
     try {
       const events = await readSessionEvents(url, {
+        headers: socketHeaders,
         all: opts.all || Boolean(opts.subagent),
         watch: false,
         filter: opts.subagent ? "all" : mode,
@@ -161,6 +163,7 @@ async function showSession(
   try {
     if (opts.subagent) {
       const events = await readSessionEvents(url, {
+        headers: socketHeaders,
         all: true,
         watch: false,
         filter: "all",
@@ -173,6 +176,7 @@ async function showSession(
       }
     } else {
       await readSessionEvents(url, {
+        headers: socketHeaders,
         all: opts.all,
         watch: opts.watch,
         filter: mode,

@@ -3,6 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  bindMachine: vi.fn(),
+  tunnelConstructor: vi.fn(),
   heartbeat: vi.fn(),
   registerMachine: vi.fn(),
   getProvider: vi.fn(),
@@ -29,6 +31,7 @@ vi.mock("../src/logger.js", () => ({
 
 vi.mock("../src/client/index.js", () => ({
   MachineClient: vi.fn().mockImplementation(() => ({
+    bindMachine: mocks.bindMachine,
     registerMachine: mocks.registerMachine,
     heartbeat: mocks.heartbeat,
   })),
@@ -101,15 +104,18 @@ vi.mock("../src/daemon/runtimePool.js", () => ({
 }));
 
 vi.mock("../src/daemon/tunnel.js", () => ({
-  TunnelClient: vi.fn().mockImplementation(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    disconnect: vi.fn(),
-    onHistoryRequest: vi.fn((handler) => {
-      mocks.historyHandler = handler;
-    }),
-    onHumanMessage: vi.fn(),
-    sendHistory: mocks.sendHistory,
-  })),
+  TunnelClient: vi.fn().mockImplementation((...args) => {
+    mocks.tunnelConstructor(...args);
+    return {
+      connect: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn(),
+      onHistoryRequest: vi.fn((handler) => {
+        mocks.historyHandler = handler;
+      }),
+      onHumanMessage: vi.fn(),
+      sendHistory: mocks.sendHistory,
+    };
+  }),
 }));
 
 vi.mock("../src/daemon/usageCollector.js", () => ({
@@ -134,6 +140,8 @@ describe("daemon heartbeat runtime states", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-21T10:00:00.000Z"));
     mocks.heartbeat.mockReset();
+    mocks.bindMachine.mockReset();
+    mocks.tunnelConstructor.mockReset();
     mocks.registerMachine.mockReset();
     mocks.registerMachine.mockResolvedValue({ id: "machine-1" });
     mocks.getHistory.mockReset();
@@ -169,6 +177,8 @@ describe("daemon heartbeat runtime states", () => {
         ],
       }),
     );
+    expect(mocks.bindMachine).toHaveBeenCalledWith("machine-1");
+    expect(mocks.tunnelConstructor).toHaveBeenCalledWith("https://example.test", "machine-1");
     expect(mocks.heartbeat).toHaveBeenCalledWith("machine-1", {
       version: "1.2.3",
       runtimes: [

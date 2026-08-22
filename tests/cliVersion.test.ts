@@ -1,18 +1,11 @@
 // @vitest-environment node
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestEnv, seedUser, setupMiniflare } from "./helpers/db";
+import { createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 const env = createTestEnv();
 let mf: Miniflare;
 let apiKey: string;
-
-async function createApiKeyForUser(userId: string): Promise<string> {
-  const { createAuth } = await import("../apps/web/server/betterAuth");
-  const auth = createAuth(env);
-  const result = await auth.api.createApiKey({ body: { userId } });
-  return result.key;
-}
 
 async function apiRequest(method: string, path: string, extraHeaders?: Record<string, string>) {
   const { api } = await import("../apps/web/server/routes");
@@ -20,7 +13,7 @@ async function apiRequest(method: string, path: string, extraHeaders?: Record<st
     "Content-Type": "application/json",
     Host: "localhost:8788",
     "x-forwarded-proto": "http",
-    Authorization: `Bearer ${apiKey}`,
+    cookie: `ak_session=${apiKey}`,
     ...extraHeaders,
   };
   return api.request(path, { method, headers }, env);
@@ -29,7 +22,7 @@ async function apiRequest(method: string, path: string, extraHeaders?: Record<st
 beforeAll(async () => {
   ({ mf, db: env.DB } = await setupMiniflare());
   await seedUser(env.DB, "cli-version-test-user", "cliversion@test.com");
-  apiKey = await createApiKeyForUser("cli-version-test-user");
+  apiKey = (await createTestWebSession(env.DB, "cli-version-test-user")).token;
 });
 
 afterAll(async () => {

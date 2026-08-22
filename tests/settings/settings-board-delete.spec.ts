@@ -33,10 +33,7 @@ test.describe("Settings Page", () => {
     await expect
       .poll(async () => {
         return page.evaluate(async () => {
-          const token = localStorage.getItem("auth-token");
-          const res = await fetch("/api/boards", {
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          const res = await fetch("/api/boards", { credentials: "include" });
           const boards = (await res.json()) as { id: string }[];
           return boards.map((board) => board.id);
         });

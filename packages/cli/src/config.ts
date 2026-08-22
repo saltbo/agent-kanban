@@ -2,93 +2,70 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CONFIG_FILE } from "./paths.js";
 
-interface Credential {
+export interface RealmrootEnvironment {
   "api-url": string;
-  "api-key": string;
+  issuer: string;
+  resource: string;
+  "client-id": string;
 }
 
-interface Config {
+export interface Config {
   current?: string;
-  credentials: Record<string, Credential>;
+  environments: Record<string, RealmrootEnvironment>;
 }
 
 function hostFromUrl(url: string): string {
   return new URL(url).host;
 }
 
-function migrate(raw: Record<string, any>): Config {
-  if (raw["api-url"] && raw["api-key"]) {
-    const host = hostFromUrl(raw["api-url"]);
-    const config: Config = {
-      current: host,
-      credentials: {
-        [host]: { "api-url": raw["api-url"], "api-key": raw["api-key"] },
-      },
-    };
-    writeConfig(config);
-    return config;
-  }
-  return { credentials: {} };
-}
-
 export function readConfig(): Config {
   try {
-    const raw = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
-    // Detect legacy format: has top-level api-url instead of credentials
-    if (raw["api-url"] && !raw.credentials) {
-      return migrate(raw);
+    const raw = JSON.parse(readFileSync(CONFIG_FILE, "utf-8")) as Partial<Config> & { credentials?: unknown };
+    return { current: raw.current, environments: raw.environments ?? {} };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(`Invalid AK configuration at ${CONFIG_FILE}`, { cause: error });
     }
-    return { credentials: {}, ...raw };
-  } catch {
-    return { credentials: {} };
+    return { environments: {} };
   }
 }
 
 export function writeConfig(config: Config): void {
   mkdirSync(dirname(CONFIG_FILE), { recursive: true });
-  writeFileSync(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`);
+  writeFileSync(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 }
 
-export function getCredentials(host?: string): { apiUrl: string; apiKey: string } {
+export function getCredentials(host?: string): { apiUrl: string; issuer: string; resource: string; clientId: string } {
   const config = readConfig();
   const target = host || config.current;
-  if (!target) throw new Error("No AK API environment configured. Run: ak config set --api-url <url> --api-key <key>");
-  const cred = config.credentials[target];
-  if (!cred) throw new Error(`No AK API credentials for ${target}. Run: ak config set --api-url <url> --api-key <key>`);
-  return { apiUrl: cred["api-url"], apiKey: cred["api-key"] };
+  if (!target) throw new Error("No AK environment configured. Run: ak auth login --api-url <url>");
+  const environment = config.environments[target];
+  if (!environment) throw new Error(`No AK environment for ${target}. Run: ak auth login --api-url <url>`);
+  return {
+    apiUrl: environment["api-url"],
+    issuer: environment.issuer,
+    resource: environment.resource,
+    clientId: environment["client-id"],
+  };
 }
 
-export function saveCredentials(apiUrl: string, apiKey: string): void {
-  const host = hostFromUrl(apiUrl);
+export function saveEnvironment(input: { apiUrl: string; issuer: string; resource: string; clientId: string }): void {
+  const host = hostFromUrl(input.apiUrl);
   const config = readConfig();
-  config.credentials[host] = { "api-url": apiUrl, "api-key": apiKey };
+  config.environments[host] = {
+    "api-url": input.apiUrl.replace(/\/$/, ""),
+    issuer: input.issuer.replace(/\/$/, ""),
+    resource: input.resource.replace(/\/$/, ""),
+    "client-id": input.clientId,
+  };
   config.current = host;
-  writeConfig(config);
-}
-
-export function updateCredentials(apiUrl: string, updates: Partial<Credential>): void {
-  const host = hostFromUrl(apiUrl);
-  const config = readConfig();
-  const existing = config.credentials[host];
-  if (!existing) throw new Error(`No credentials for ${host}`);
-  config.credentials[host] = { ...existing, ...updates };
   writeConfig(config);
 }
 
 export function setCurrent(apiUrl: string): void {
   const host = hostFromUrl(apiUrl);
   const config = readConfig();
-  if (!config.credentials[host]) throw new Error(`No credentials for ${host}`);
+  if (!config.environments[host]) throw new Error(`No Realmroot login for ${host}`);
   config.current = host;
   writeConfig(config);
-}
-
-// Backward-compatible helpers used by other modules during transition
-export function getConfigValue(key: "api-url" | "api-key"): string | undefined {
-  try {
-    const { apiUrl, apiKey } = getCredentials();
-    return key === "api-url" ? apiUrl : apiKey;
-  } catch {
-    return undefined;
-  }
 }

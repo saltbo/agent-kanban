@@ -3,7 +3,7 @@
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getSystemStats } from "../apps/web/server/statsRepo";
-import { createTestAgent, createTestEnv, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import { createTestAgent, createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 const env = createTestEnv();
 let mf: Miniflare;
@@ -23,7 +23,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 async function apiRequest(method: string, path: string, body?: Record<string, unknown>, token?: string) {
   const { api } = await import("../apps/web/server/routes");
   const headers: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http" };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) headers.cookie = `ak_session=${token}`;
   const init: RequestInit = { method, headers };
   if (body && method !== "GET") init.body = JSON.stringify(body);
   return api.request(path, init, env);
@@ -42,21 +42,10 @@ afterAll(async () => {
 describe("getSystemStats", () => {
   it("returns the correct shape with all expected top-level fields", async () => {
     const stats = await getSystemStats(env.DB);
-    expect(stats).toHaveProperty("users");
     expect(stats).toHaveProperty("agents");
     expect(stats).toHaveProperty("tasks");
     expect(stats).toHaveProperty("boards");
     expect(stats).toHaveProperty("runtime_sessions");
-  });
-
-  it("returns users.total as a number", async () => {
-    const stats = await getSystemStats(env.DB);
-    expect(typeof stats.users.total).toBe("number");
-  });
-
-  it("returns users.recent as a number", async () => {
-    const stats = await getSystemStats(env.DB);
-    expect(typeof stats.users.recent).toBe("number");
   });
 
   it("returns agents.total as a number", async () => {
@@ -119,20 +108,6 @@ describe("getSystemStats", () => {
     expect(stats.agents.online).toBe(0);
   });
 
-  it("reflects seeded users in users.total", async () => {
-    const before = await getSystemStats(env.DB);
-    await seedUser(env.DB, "stats-seed-user-1", "stats-seed-1@test.com");
-    const after = await getSystemStats(env.DB);
-    expect(after.users.total).toBeGreaterThan(before.users.total);
-  });
-
-  it("reflects a recently created user in users.recent", async () => {
-    const before = await getSystemStats(env.DB);
-    await seedUser(env.DB, "stats-seed-user-2", "stats-seed-2@test.com");
-    const after = await getSystemStats(env.DB);
-    expect(after.users.recent).toBeGreaterThan(before.users.recent);
-  });
-
   it("reflects seeded boards in boards.total", async () => {
     const before = await getSystemStats(env.DB);
     const userId = "stats-board-owner";
@@ -183,32 +158,12 @@ describe("getSystemStats", () => {
 describe("GET /api/admin/stats", () => {
   let adminToken: string;
   let regularToken: string;
-  let machineApiKey: string;
 
   beforeAll(async () => {
-    const { createAuth } = await import("../apps/web/server/betterAuth");
-    const auth = createAuth(env);
-
-    // Create admin user via signup then elevate role
-    const adminResult = await signUpVerifiedUser(
-      env.DB,
-      auth,
-      { name: "Admin Stats User", email: "admin-stats@test.com", password: "admin-password-123" },
-      "admin",
-    );
-    adminToken = adminResult.token;
-
-    // Create regular (non-admin) user via signup
-    const regularResult = await signUpVerifiedUser(env.DB, auth, {
-      name: "Regular Stats User",
-      email: "regular-stats@test.com",
-      password: "regular-password-123",
-    });
-    regularToken = regularResult.token;
-
-    // Create a machine API key for testing machine identity blocking
-    const machineKeyResult = await auth.api.createApiKey({ body: { userId: "machine-owner-for-stats" } });
-    machineApiKey = machineKeyResult.key;
+    await seedUser(env.DB, "admin-stats-user", "admin-stats@test.com");
+    await seedUser(env.DB, "regular-stats-user", "regular-stats@test.com");
+    adminToken = (await createTestWebSession(env.DB, "admin-stats-user", { role: "admin" })).token;
+    regularToken = (await createTestWebSession(env.DB, "regular-stats-user")).token;
   });
 
   it("returns 401 when no token is provided", async () => {
@@ -228,20 +183,9 @@ describe("GET /api/admin/stats", () => {
     expect(body.error.code).toBe("FORBIDDEN");
   });
 
-  it("returns 403 for machine identity (API key auth)", async () => {
-    const res = await apiRequest("GET", "/api/admin/stats", undefined, machineApiKey);
-    expect(res.status).toBe(403);
-  });
-
   it("returns 200 for an admin user", async () => {
     const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
     expect(res.status).toBe(200);
-  });
-
-  it("returns users field in stats for an admin user", async () => {
-    const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
-    const body = (await res.json()) as any;
-    expect(body).toHaveProperty("users");
   });
 
   it("returns agents field in stats for an admin user", async () => {
@@ -268,18 +212,6 @@ describe("GET /api/admin/stats", () => {
     expect(body).toHaveProperty("runtime_sessions");
   });
 
-  it("returns numeric users.total for an admin user", async () => {
-    const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
-    const body = (await res.json()) as any;
-    expect(typeof body.users.total).toBe("number");
-  });
-
-  it("returns numeric users.recent for an admin user", async () => {
-    const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
-    const body = (await res.json()) as any;
-    expect(typeof body.users.recent).toBe("number");
-  });
-
   it("returns numeric agents.total for an admin user", async () => {
     const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
     const body = (await res.json()) as any;
@@ -295,15 +227,11 @@ describe("GET /api/admin/stats", () => {
   it("derives machine online stats from AMA runners when AMA dispatch is configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
-      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
-      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
+      AMA_RESOURCE: env.AMA_RESOURCE,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_ISSUER: "https://auth.test",
-      AMA_OIDC_CLIENT_ID: "ak-app",
-      AMA_OIDC_CLIENT_SECRET: "ak-secret",
+      AMA_RESOURCE: "https://ama.test/api",
     });
     const ownerId = "admin-ama-machine-owner";
     const machineId = "admin-ama-machine";
@@ -312,11 +240,11 @@ describe("GET /api/admin/stats", () => {
     // account so the admin stats route can resolve a per-user runner token.
     await seedUser(env.DB, ownerId, `${ownerId}@test.local`);
     await env.DB.prepare(
-      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-       VALUES (?, 'project_admin_stats', ?, 'vault_admin_stats', '{}')
-       ON CONFLICT(owner_id) DO UPDATE SET ama_project_id = excluded.ama_project_id`,
+      `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+       VALUES (?, 'project_admin_stats', 'vault_admin_stats', '{}')
+       ON CONFLICT(tenant_id) DO UPDATE SET ama_project_id = excluded.ama_project_id`,
     )
-      .bind(ownerId, ownerId)
+      .bind(ownerId)
       .run();
     await env.DB.prepare(
       `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, last_heartbeat_at, created_at, ama_environment_id)

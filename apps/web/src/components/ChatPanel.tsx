@@ -115,10 +115,9 @@ export function AmaSessionChat({
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
 
-  // Events come entirely over the AMA browser WebSocket — never HTTP. On connect
-  // the Session DO pushes the history (a backfill frame, paginated over the same
-  // socket), then streams new events live. AK hands the SPA a token-bearing socket
-  // URL; the browser connects directly to the session's DO socket.
+  // Events come over AK's authenticated WebSocket boundary. AK validates the
+  // browser Session Cookie and proxies upstream with its AMA machine authority;
+  // history backfill and live events remain on the same socket.
   useEffect(() => {
     let active = true;
     let ws: WebSocket | null = null;

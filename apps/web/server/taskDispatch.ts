@@ -52,9 +52,12 @@ export { amaRuntimeName };
 export const AK_VARIABLES_CREDENTIAL_NAME = "ak-variables";
 export const USER_VARIABLES_CREDENTIAL_NAME = "user-variables";
 export const AK_SESSION_CREDENTIAL_PREFIX = "ak-session-";
-const AK_AGENT_KEY_DATA_KEY = "AK_AGENT_KEY";
 const GH_USERNAME_DATA_KEY = "GH_USERNAME";
 const GH_TOKEN_DATA_KEY = "GH_TOKEN";
+const AK_AGENT_KEY_DATA_KEY = "AK_AGENT_KEY";
+const REJECT_RESUME_MAX_ATTEMPTS = 10;
+const REJECT_RESUME_RETRY_BASE_DELAY_MS = 250;
+const REJECT_RESUME_RETRY_MAX_DELAY_MS = 2_000;
 
 export function boardMaintainerResourceName(boardId: string): string {
   return `ak-boarder-${boardId}`;
@@ -88,8 +91,8 @@ export async function dispatchTaskToAma(
   if (options.takeover !== true && dispatchBackoffActive(task)) return task;
 
   const assignedTo = task.assigned_to;
-  // The project is provisioned eagerly when the owner connects AMA; dispatch
-  // reads it rather than creating it.
+  // The project is initialized idempotently on first AMA use; dispatch only
+  // reads the resulting resource mapping.
   const amaProjectId = await requireAmaProjectId(db, ownerId);
   const akAgent = await getAgent(db, assignedTo, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
@@ -98,7 +101,7 @@ export async function dispatchTaskToAma(
   // reads the stored id and never creates one.
   const amaAgentId = await getAgentAmaId(db, assignedTo);
   if (!amaAgentId) {
-    throw new HTTPException(409, { message: `Agent "${akAgent.username}" has no AMA agent; recreate it with AMA connected` });
+    throw new HTTPException(409, { message: `Agent "${akAgent.username}" has no AMA resource; initialize it again` });
   }
 
   // Atomic dispatch claim: the create/assign request and the cron sweep can
@@ -283,6 +286,7 @@ async function buildAmaAgentInput(
     handoffPolicy: amaAgentHandoffPolicy(akAgent.handoff_to),
     metadata: { runtime: runtimeProfile.runtime },
     memoryPolicy: amaAgentMemoryPolicy(options.memoryEnabled === true),
+    realmroot: null,
   };
 }
 
@@ -487,30 +491,42 @@ export async function sendTaskMessageToAma(env: Env, ownerId: string, task: Task
   return task;
 }
 
-export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, task: Task, reason: string | undefined): Promise<Task> {
+export async function sendTaskRejectToAma(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  task: Task,
+  reason: string | undefined,
+  waitForRetry: (delayMs: number) => Promise<void> = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+): Promise<Task> {
   const sessionId = amaSessionId(task);
   const projectId = amaProjectId(task);
   if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
     return task;
   }
-  await sendAmaSessionMessage(
-    env,
-    ownerId,
-    projectId,
-    sessionId,
-    [
-      `Task was rejected by reviewer.${reason ? ` Reason: ${reason}` : ""}`,
-      "",
-      `Resume task ${task.id}. It is already assigned to you and already in progress.`,
-      "Do not run `ak task claim` again.",
-      "Inspect the current task, repository, and pull request state. Fix the reviewer rejection in the working branch, commit and push any required code changes, rerun the smallest meaningful checks, then submit the task for review again.",
-      `When the fix is complete, add a Completion Summary note with what changed and what passed, then run: ak task review ${task.id}`,
-      "In AK, in_review does not only mean completed work is waiting for review. It is the task's only paused or handed-off state, including waits for blockers, prerequisites, external actions, or later continuation. in_progress means this worker session is actively running.",
-      `Even if this rejection or wake-up was a mistake and there is no actionable work, do not simply report that and exit. Write the Completion Summary and resubmit task ${task.id} using its existing PR URL.`,
-      "If the rejection reason says this task is blocked by another task, PR, migration, infrastructure repair, or maintainer action, do not stop and wait in in_progress. In the Completion Summary, state that there is no actionable worker work yet and tell the reviewer to keep this task in review until the prerequisite finishes, then reject it again only when you have an immediate action to perform.",
-      `Under all circumstances, the final task operation before ending this session must be \`ak task review ${task.id}\`, with \`--pr-url <existing PR URL>\` when the task has a PR. If it fails, correct the error and retry; do not end the session without a successful review submission.`,
-    ].join("\n"),
-  );
+  const message = [
+    `Task was rejected by reviewer.${reason ? ` Reason: ${reason}` : ""}`,
+    "",
+    `Resume task ${task.id}. It is already assigned to you and already in progress.`,
+    "Do not run `ak task claim` again.",
+    "Inspect the current task, repository, and pull request state. Fix the reviewer rejection in the working branch, commit and push any required code changes, rerun the smallest meaningful checks, then submit the task for review again.",
+    `When the fix is complete, add a Completion Summary note with what changed and what passed, then run: ak task review ${task.id}`,
+    "In AK, in_review does not only mean completed work is waiting for review. It is the task's only paused or handed-off state, including waits for blockers, prerequisites, external actions, or later continuation. in_progress means this worker session is actively running.",
+    `Even if this rejection or wake-up was a mistake and there is no actionable work, do not simply report that and exit. Write the Completion Summary and resubmit task ${task.id} using its existing PR URL.`,
+    "If the rejection reason says this task is blocked by another task, PR, migration, infrastructure repair, or maintainer action, do not stop and wait in in_progress. In the Completion Summary, state that there is no actionable worker work yet and tell the reviewer to keep this task in review until the prerequisite finishes, then reject it again only when you have an immediate action to perform.",
+    `Under all circumstances, the final task operation before ending this session must be \`ak task review ${task.id}\`, with \`--pr-url <existing PR URL>\` when the task has a PR. If it fails, correct the error and retry; do not end the session without a successful review submission.`,
+  ].join("\n");
+  const commandId = `reject_resume_${crypto.randomUUID()}`;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await sendAmaSessionMessage(env, ownerId, projectId, sessionId, message, commandId);
+      break;
+    } catch (error) {
+      if ((error as { status?: unknown }).status !== 409 || attempt >= REJECT_RESUME_MAX_ATTEMPTS) throw error;
+      const delayMs = Math.min(REJECT_RESUME_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), REJECT_RESUME_RETRY_MAX_DELAY_MS);
+      await waitForRetry(delayMs);
+    }
+  }
   return await annotateTask(db, task, {
     "ama.lastCommand": "reject_resume",
     "ama.lastCommand.result": "accepted",
@@ -832,18 +848,12 @@ function dispatchBackoffActive(task: Task): boolean {
 
 // Records a failed dispatch attempt: clears the binding result and arms the
 // backoff. Returns the updated task.
-// One-line reason for the task timeline. The wrapped AMA error is
-// "AMA <op> failed[ HTTP NNN][: <raw response body>]". Keep the envelope
-// (operation + status) and, when the body carries a structured human message,
-// append just that field — never the raw response body, which can carry
-// internal detail (credential ids, etc.). The raw error stays in the worker logs.
+// One-line safe reason for the task timeline. AMA response bodies remain on
+// the server-side cause chain and are never copied into task-visible metadata.
 function dispatchErrorReason(error: unknown): string {
   if (error == null) return "dispatch failed";
   const raw = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
-  const envelope = raw.split(/:\s*[{[]/, 1)[0]?.trim() ?? raw;
-  const bodyMessage = raw.match(/"(?:message|detail|error)"\s*:\s*"([^"]{1,160})"/)?.[1];
-  const reason = bodyMessage ? `${envelope}: ${bodyMessage}` : envelope;
-  return (reason || raw).slice(0, 300) || "unknown error";
+  return raw.slice(0, 300) || "unknown error";
 }
 
 async function recordDispatchFailure(db: D1, task: Task, error: unknown): Promise<Task> {

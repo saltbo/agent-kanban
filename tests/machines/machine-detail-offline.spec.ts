@@ -21,7 +21,8 @@ test.describe("Machines Page", () => {
     // expect: A warning panel 'Machine is offline' is displayed with an amber/warning border
     await expect(page.getByText("Machine is offline")).toBeVisible();
 
-    // expect: A reconnect command is shown: 'ak start --api-url <origin>'
-    await expect(page.getByText(/ak start --api-url/)).toBeVisible();
+    // expect: Reconnect uses the native Realmroot login and runtime commands.
+    await expect(page.getByText(/ak auth login --api-url/)).toBeVisible();
+    await expect(page.getByText(/ak start/)).toBeVisible();
   });
 });

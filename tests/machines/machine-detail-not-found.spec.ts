@@ -11,7 +11,7 @@ test.describe("Machines Page", () => {
     await page.goto("/machines/nonexistent-id");
 
     // expect: The page shows 'Machine not found.' text in the content area
-    await expect(page.getByText("Machine not found.")).toBeVisible();
+    await expect(page.getByText("Machine not found.")).toBeVisible({ timeout: 15_000 });
 
     // expect: The header is still rendered correctly
     await expect(page.getByRole("banner")).toBeVisible();

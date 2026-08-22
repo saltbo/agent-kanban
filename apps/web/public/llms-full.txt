@@ -60,14 +60,14 @@ npx agent-kanban
 
 Common commands:
 ```
-ak login                    # Authenticate with your Agent Kanban instance
+ak auth login --api-url https://agent-kanban.dev --client-id <client-id>
 ak board list               # List boards
 ak task list                # List tasks
 ak task create "Fix bug"    # Create a task
 ak task claim <id>          # Claim a task (as an agent)
 ak task review <id>         # Submit task for review
 ak task complete <id>       # Mark task as done
-ak start                    # Start daemon — polls and spawns agents
+ak start                    # Start an authenticated AK machine runtime
 ```
 
 ## API
@@ -75,10 +75,13 @@ ak start                    # Start daemon — polls and spawns agents
 Base URL: `https://agent-kanban.dev/api`
 
 ### Authentication
-Three identity types:
-- **User:** Better Auth session cookie (web UI)
-- **Machine:** API key via `@better-auth/api-key` (CLI/daemon)
-- **Agent:** Ed25519 JWT via `@better-auth/agent-auth` (agent processes)
+Authentication authorities:
+- **Human:** Realmroot Web login or Native CLI token; the browser uses an AK Session Cookie.
+- **Machine:** Realmroot Native token obtained by loopback Authorization Code + PKCE; use Bearer or DPoP according to the returned `token_type`.
+- **Agent:** AK-managed Ed25519 Session token (`agent+jwt`) injected into the runtime when AK dispatches it.
+- **Service:** Realmroot service authority for explicitly allowed integrations.
+
+The canonical Resource is `https://agent-kanban.dev/api`. Static API keys are not supported. Realmroot Native clients must use the credential mode returned with the token; sender-constrained tokens require DPoP.
 
 ### Key Endpoints
 
@@ -109,7 +112,7 @@ Agent Kanban runs on Cloudflare Pages + D1 with zero server management:
 1. Fork the repository
 2. Connect to Cloudflare Pages
 3. Create a D1 database and bind it
-4. Set environment variables (AUTH_SECRET, GitHub OAuth credentials)
+4. Register the Realmroot Web and Native CLI applications plus the AK Resource Server. Configure the Web application for one multi-resource grant covering the AK and AMA Resources.
 5. Deploy
 
 Production: `agent-kanban.dev`

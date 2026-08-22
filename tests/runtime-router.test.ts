@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
 const { dispatchTaskToAmaMock, releaseTaskRuntimeBindingMock } = vi.hoisted(() => ({
@@ -32,9 +33,11 @@ function env(): any {
     GITHUB_CLIENT_SECRET: "x",
     MAILS_ADMIN_TOKEN: "",
     AMA_ORIGIN: "https://ama.test",
-    AMA_OIDC_ISSUER: "https://auth.test",
-    AMA_OIDC_CLIENT_ID: "ak-app",
-    AMA_OIDC_CLIENT_SECRET: "ak-secret",
+    REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
+    REALMROOT_WEB_CLIENT_ID: "ak-web-test",
+    REALMROOT_WEB_CLIENT_SECRET: "ak-web-secret",
+    REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+    AMA_RESOURCE: "https://ama.test/api",
     AK_API_URL: "https://ak.test",
   };
 }
@@ -64,10 +67,10 @@ async function configureOwner(ownerId: string, environmentId: string) {
   const now = new Date().toISOString();
   await db
     .prepare(
-      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-       VALUES (?, 'project-router', ?, 'vault-router', '{}')`,
+      `INSERT INTO ama_owner_integrations (tenant_id, ama_project_id, session_secret_vault_id, metadata)
+       VALUES (?, 'project-router', 'vault-router', '{}')`,
     )
-    .bind(ownerId, ownerId)
+    .bind(ownerId)
     .run();
   await db
     .prepare(

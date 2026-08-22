@@ -1,285 +1,290 @@
 import type { Context, Next } from "hono";
-import { createAuth } from "./betterAuth";
+import { decodeJwt, decodeProtectedHeader, importJWK, errors as joseErrors, jwtVerify } from "jose";
+import { AuthError, authenticateRealmrootToken, authenticateWebSession, CsrfError, type RealmrootPrincipal } from "./realmrootAuth";
 import type { Env } from "./types";
 
-type IdentityType = "user" | "machine" | "maintainer:key" | "agent:worker" | "agent:leader";
+type IdentityType = "user" | "machine" | "agent:worker" | "agent:leader" | "service";
 
 interface RouteRule {
   allow: IdentityType[];
-  capability?: string; // required agent capability (only checked for agent identities)
-  apiKey?: {
-    configId?: string;
-    permissions?: Record<string, string[]>;
-  };
+  scope?: string;
 }
 
-const LEADER_CAPABILITIES = ["task:complete", "task:reject", "task:cancel", "task:log", "task:message", "agent:usage"];
-const WORKER_CAPABILITIES = ["task:claim", "task:review", "task:log", "task:message", "agent:usage"];
-
-// Route permission rules: method + path pattern → allowed identity types + required capability
-// Routes not listed here are open to any authenticated identity.
 const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
-  // Machines — machine-only (user can delete)
-  { method: "POST", pattern: /^\/api\/machines$/, rule: { allow: ["machine"] } },
-  { method: "POST", pattern: /^\/api\/machines\/[^/]+\/heartbeat$/, rule: { allow: ["machine"] } },
-  { method: "DELETE", pattern: /^\/api\/machines\/[^/]+$/, rule: { allow: ["user"] } },
-
-  // Agents — user/machine/leader creates, user/leader manages
-  { method: "POST", pattern: /^\/api\/agents$/, rule: { allow: ["user", "machine", "agent:leader"] } },
-  { method: "PATCH", pattern: /^\/api\/agents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "DELETE", pattern: /^\/api\/agents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-
-  // Subagents — configuration only, no cryptographic identity
-  { method: "POST", pattern: /^\/api\/subagents$/, rule: { allow: ["user", "machine", "agent:leader"] } },
-  { method: "PATCH", pattern: /^\/api\/subagents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "DELETE", pattern: /^\/api\/subagents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-
-  // Agent Sessions — machine creates/closes, agent reports usage
-  { method: "POST", pattern: /^\/api\/agents\/[^/]+\/sessions$/, rule: { allow: ["machine"] } },
-  { method: "DELETE", pattern: /^\/api\/agents\/[^/]+\/sessions\/[^/]+$/, rule: { allow: ["machine"] } },
+  { method: "GET", pattern: /^\/api\/machines(?:\/[^/]+)?$/, rule: { allow: ["user", "machine"], scope: "ak:read" } },
+  { method: "GET", pattern: /^\/api\/models$/, rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" } },
+  { method: "GET", pattern: /^\/api\/agents(?:\/[^/]+)?$/, rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" } },
+  {
+    method: "GET",
+    pattern: /^\/api\/subagents(?:\/[^/]+)?$/,
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/agents\/[^/]+\/inbox(?:\/[^/]+)?$/,
+    rule: { allow: ["user"], scope: "ak:read" },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/agents\/[^/]+\/sessions$/,
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/tasks(?:\/[^/]+)?(?:\/(?:session|notes|messages|stream|session\/ws))?$/,
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/sessions(?:\/[^/]+(?:\/ws)?)?$/,
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/ama\/sessions\/[^/]+\/socket$/,
+    rule: { allow: ["user", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  { method: "GET", pattern: /^\/api\/tunnel\/ws$/, rule: { allow: ["user", "machine"], scope: "ak:read" } },
+  {
+    method: "GET",
+    pattern: /^\/api\/boards\/[^/]+\/maintainers(?:\/[^/]+(?:\/(?:variables|runs|memories))?)?$/,
+    rule: { allow: ["user", "agent:leader"], scope: "ak:read" },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/boards(?:\/[^/]+(?:\/stream)?)?$/,
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/repositories(?:\/[^/]+)?$/,
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  { method: "GET", pattern: /^\/api\/github-app\/(?:config|setup|repositories)$/, rule: { allow: ["user"], scope: "ak:read" } },
+  { method: "POST", pattern: /^\/api\/ama\/provision$/, rule: { allow: ["user"], scope: "ak:write" } },
+  {
+    method: "POST",
+    pattern: /^\/api\/repositories\/[^/]+\/github-token$/,
+    rule: { allow: ["user", "machine", "agent:worker", "agent:leader"], scope: "ak:read" },
+  },
+  { method: "POST", pattern: /^\/api\/machines$/, rule: { allow: ["user", "machine"], scope: "ak:write" } },
+  { method: "POST", pattern: /^\/api\/machines\/[^/]+\/heartbeat$/, rule: { allow: ["user", "machine"], scope: "ak:write" } },
+  { method: "DELETE", pattern: /^\/api\/machines\/[^/]+$/, rule: { allow: ["user"], scope: "ak:write" } },
+  { method: "POST", pattern: /^\/api\/machines\/cloud$/, rule: { allow: ["user"], scope: "ak:write" } },
+  { method: "POST", pattern: /^\/api\/agents$/, rule: { allow: ["user", "machine", "agent:leader"], scope: "ak:write" } },
+  { method: "PATCH", pattern: /^\/api\/agents\/[^/]+$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  { method: "DELETE", pattern: /^\/api\/agents\/[^/]+$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  { method: "POST", pattern: /^\/api\/subagents$/, rule: { allow: ["user", "machine", "agent:leader"], scope: "ak:write" } },
+  { method: "PATCH", pattern: /^\/api\/subagents\/[^/]+$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  { method: "DELETE", pattern: /^\/api\/subagents\/[^/]+$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  { method: "POST", pattern: /^\/api\/agents\/[^/]+\/sessions$/, rule: { allow: ["user", "machine"], scope: "ak:write" } },
+  { method: "DELETE", pattern: /^\/api\/agents\/[^/]+\/sessions\/[^/]+$/, rule: { allow: ["user", "machine"], scope: "ak:write" } },
+  { method: "POST", pattern: /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/reopen$/, rule: { allow: ["user", "machine"], scope: "ak:write" } },
   {
     method: "PATCH",
     pattern: /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/usage$/,
-    rule: { allow: ["machine", "agent:worker", "agent:leader"], capability: "agent:usage" },
+    rule: { allow: ["machine", "agent:worker", "agent:leader"], scope: "agent:usage" },
   },
-
-  // Tasks — CRUD
-  { method: "POST", pattern: /^\/api\/tasks$/, rule: { allow: ["agent:worker", "agent:leader"] } },
-  { method: "PATCH", pattern: /^\/api\/tasks\/[^/]+$/, rule: { allow: ["agent:worker", "agent:leader"] } },
-  { method: "DELETE", pattern: /^\/api\/tasks\/[^/]+$/, rule: { allow: ["agent:worker", "agent:leader"] } },
-
-  // Task lifecycle — agents operate, machine manages
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/claim$/, rule: { allow: ["agent:worker"], capability: "task:claim" } },
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/review$/, rule: { allow: ["agent:worker"], capability: "task:review" } },
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/assign$/, rule: { allow: ["agent:worker", "agent:leader"] } },
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/release$/, rule: { allow: ["machine", "agent:worker", "agent:leader"] } },
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/complete$/, rule: { allow: ["user", "machine", "agent:worker", "agent:leader"] } },
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/cancel$/, rule: { allow: ["user", "machine", "agent:worker", "agent:leader"] } },
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/reject$/, rule: { allow: ["user", "agent:worker", "agent:leader"] } },
-
-  // Task messages & notes
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/messages$/, rule: { allow: ["agent:worker", "agent:leader", "user"] } },
-  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/notes$/, rule: { allow: ["agent:worker", "agent:leader"] } },
-
-  // Boards — user and leader
-  { method: "POST", pattern: /^\/api\/boards$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "PATCH", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "DELETE", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "POST", pattern: /^\/api\/boards\/[^/]+\/maintainers$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "GET", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/variables$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "PUT", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/variables$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "POST", pattern: /^\/api\/tasks$/, rule: { allow: ["agent:worker", "agent:leader"], scope: "task:log" } },
+  { method: "PATCH", pattern: /^\/api\/tasks\/[^/]+$/, rule: { allow: ["agent:worker", "agent:leader"], scope: "task:log" } },
+  { method: "DELETE", pattern: /^\/api\/tasks\/[^/]+$/, rule: { allow: ["agent:worker", "agent:leader"], scope: "task:cancel" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/claim$/, rule: { allow: ["agent:worker"], scope: "task:claim" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/review$/, rule: { allow: ["agent:worker"], scope: "task:review" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/assign$/, rule: { allow: ["agent:worker", "agent:leader"], scope: "task:assign" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/release$/, rule: { allow: ["machine", "agent:worker", "agent:leader"], scope: "task:release" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/complete$/, rule: { allow: ["user", "machine", "agent:leader"], scope: "task:complete" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/cancel$/, rule: { allow: ["user", "machine", "agent:leader"], scope: "task:cancel" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/reject$/, rule: { allow: ["user", "agent:leader"], scope: "task:reject" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/messages$/, rule: { allow: ["user", "agent:worker", "agent:leader"], scope: "task:message" } },
+  { method: "POST", pattern: /^\/api\/tasks\/[^/]+\/notes$/, rule: { allow: ["agent:worker", "agent:leader"], scope: "task:log" } },
   {
     method: "POST",
     pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/sessions$/,
-    rule: { allow: ["maintainer:key"], apiKey: { configId: "maintainer", permissions: { maintainerSession: ["create"] } } },
+    rule: { allow: ["agent:leader"], scope: "ak:write" },
   },
-  { method: "PATCH", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "DELETE", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-
-  // Repositories — user and leader
-  { method: "POST", pattern: /^\/api\/repositories$/, rule: { allow: ["user", "agent:leader"] } },
-  { method: "POST", pattern: /^\/api\/repositories\/[^/]+\/github-token$/, rule: { allow: ["user", "agent:worker", "agent:leader"] } },
-  { method: "DELETE", pattern: /^\/api\/repositories\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
-
-  // Sessions — machine reopen
-  { method: "POST", pattern: /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/reopen$/, rule: { allow: ["machine"] } },
-
-  // GPG keys — user only (public key), machine for agent private key
-  { method: "GET", pattern: /^\/api\/agents\/[^/]+\/gpg-key$/, rule: { allow: ["machine"] } },
-  { method: "GET", pattern: /^\/api\/gpg\/public-key$/, rule: { allow: ["user"] } },
-
-  // Agent inbox — user only
-  { method: "GET", pattern: /^\/api\/agents\/[^/]+\/inbox(\/[^/]+)?$/, rule: { allow: ["user"] } },
-
-  // Admin — user identity only (Better Auth plugin enforces role internally)
-  { method: "POST", pattern: /^\/api\/auth\/admin\//, rule: { allow: ["user"] } },
-  { method: "GET", pattern: /^\/api\/auth\/admin\//, rule: { allow: ["user"] } },
-
-  // Admin stats — user identity only (role check in handler)
-  { method: "GET", pattern: /^\/api\/admin\/stats$/, rule: { allow: ["user"] } },
+  { method: "POST", pattern: /^\/api\/boards$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  { method: "POST", pattern: /^\/api\/boards\/[^/]+\/(?:labels|maintainers)$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  {
+    method: "PATCH",
+    pattern: /^\/api\/boards\/[^/]+(?:\/labels\/[^/]+|\/maintainers\/[^/]+)?$/,
+    rule: { allow: ["user", "agent:leader"], scope: "ak:write" },
+  },
+  {
+    method: "PUT",
+    pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/variables$/,
+    rule: { allow: ["user", "agent:leader"], scope: "ak:write" },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/boards\/[^/]+(?:\/labels\/[^/]+|\/maintainers\/[^/]+)?$/,
+    rule: { allow: ["user", "agent:leader"], scope: "ak:write" },
+  },
+  { method: "POST", pattern: /^\/api\/repositories$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  { method: "DELETE", pattern: /^\/api\/repositories\/[^/]+$/, rule: { allow: ["user", "agent:leader"], scope: "ak:write" } },
+  { method: "GET", pattern: /^\/api\/admin\/(?:stats|machines)$/, rule: { allow: ["user"], scope: "ak:read" } },
 ];
 
-function matchRouteRule(method: string, path: string): RouteRule | null {
-  for (const { method: m, pattern, rule } of ROUTE_RULES) {
-    if (m === method && pattern.test(path)) return rule;
-  }
-  return null;
-}
-
-function detectTokenType(token: string): "apikey" | "agent" | "user" {
-  if (token.startsWith("ak_")) return "apikey";
-  const parts = token.split(".");
-  if (parts.length === 3) {
-    try {
-      const header = JSON.parse(atob(parts[0]));
-      if (header.typ === "agent+jwt") return "agent";
-    } catch {
-      /* not a valid JWT header */
-    }
-  }
-  return "user";
-}
-
 export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) {
-  const header = c.req.header("Authorization");
-  const queryToken = c.req.query("token");
-  const token = header?.startsWith("Bearer ") ? header.slice(7) : queryToken;
+  try {
+    const agentToken = localAgentToken(c.req.header("authorization"));
+    if (agentToken) return await authenticateAkAgent(c, agentToken, next);
 
-  const auth = createAuth(c.env);
-  if (!token) {
-    return handleUserSession(c, auth, c.req.raw.headers, next, "Missing token");
-  }
-
-  const type = detectTokenType(token);
-
-  if (type === "apikey") {
-    return handleApiKey(c, auth, token, next);
-  }
-
-  if (type === "agent") {
-    const sessionReq = new Request(new URL("/api/auth/agent/session", c.req.url), {
-      headers: c.req.raw.headers,
-    });
-    const sessionRes = await auth.handler(sessionReq);
-    if (!sessionRes.ok) {
-      if (sessionRes.status === 429) {
-        const retryAfter = sessionRes.headers.get("Retry-After");
-        return c.json(
-          { error: { code: "RATE_LIMITED", message: "Too many requests" } },
-          { status: 429, headers: retryAfter ? { "Retry-After": retryAfter } : {} },
-        );
+    const principal = c.req.header("authorization") ? await authenticateRealmrootToken(c) : await authenticateWebSession(c);
+    if (!principal) return c.json({ error: { code: "UNAUTHORIZED", message: "Authentication required" } }, 401);
+    if (principal.type === "agent") throw new AuthError("Realmroot Agent tokens are not accepted by AK");
+    if (principal.source === "token") await ensureTokenPrincipal(c, principal);
+    c.set("principal", principal);
+    c.set("ownerId", principal.tenantId);
+    c.set("identityType", principal.type === "human" ? "user" : principal.type);
+    if (principal.type === "machine") c.set("machineId", principal.subjectId);
+    if (principal.source === "token" && principal.type === "human") {
+      const machineId = c.req.header("x-ak-machine-id");
+      if (machineId) {
+        if (!/^[A-Za-z0-9_-]{1,160}$/.test(machineId)) return c.json({ error: { code: "FORBIDDEN", message: "Invalid AK machine context" } }, 403);
+        const binding = await c.env.DB.prepare(
+          `SELECT 1 FROM realmroot_native_machine_bindings
+           WHERE tenant_id = ? AND subject_id = ? AND machine_id = ?`,
+        )
+          .bind(principal.tenantId, principal.subjectId, machineId)
+          .first();
+        if (!binding) return c.json({ error: { code: "FORBIDDEN", message: "Native subject is not bound to this machine" } }, 403);
+        c.set("machineId", machineId);
+        c.set("identityType", "machine");
       }
-      const body = await sessionRes.text().catch(() => "");
-      return c.json({ error: { code: "UNAUTHORIZED", message: `Invalid agent session: ${sessionRes.status} ${body}`.trim() } }, 401);
     }
-    const agentIdentity = await sessionRes.json();
-    // Extract persistent agent ID from JWT `aid` claim
-    const aid = decodeJwtClaim(token, "aid");
-    return handleAgentIdentity(c, agentIdentity, aid, next);
-  }
-
-  const authHeaders = new Headers({ Authorization: `Bearer ${token}` });
-  return handleUserSession(c, auth, authHeaders, next, "Invalid or expired token");
-}
-
-async function handleUserSession(c: Context<{ Bindings: Env }>, auth: any, headers: Headers, next: Next, errorMessage: string) {
-  const session = await auth.api.getSession({ headers });
-  if (session) {
-    c.set("ownerId", session.user.id);
-    c.set("identityType", "user");
-    c.set("user", session.user);
-    c.set("session", session.session);
     return enforceRouteRule(c, next);
-  }
-
-  if (headers !== c.req.raw.headers) {
-    const cookieSession = await auth.api.getSession({ headers: c.req.raw.headers });
-    if (cookieSession) {
-      c.set("ownerId", cookieSession.user.id);
-      c.set("identityType", "user");
-      c.set("user", cookieSession.user);
-      c.set("session", cookieSession.session);
-      return enforceRouteRule(c, next);
+  } catch (error) {
+    if (error instanceof CsrfError) return c.json({ error: { code: "CSRF_INVALID", message: error.message } }, 403);
+    if (error instanceof AuthError || error instanceof joseErrors.JOSEError) {
+      const message = error instanceof AuthError ? error.message : "Invalid Realmroot authority";
+      return c.json({ error: { code: "UNAUTHORIZED", message } }, 401);
     }
+    throw error;
   }
-
-  return c.json({ error: { code: "UNAUTHORIZED", message: errorMessage } }, 401);
 }
 
-async function handleApiKey(c: Context<{ Bindings: Env }>, auth: any, token: string, next: Next) {
-  let result: any;
+function localAgentToken(authorization: string | undefined): string | null {
+  if (!authorization?.startsWith("Bearer ")) return null;
+  const token = authorization.slice(7);
   try {
-    const rule = matchRouteRule(c.req.method, c.req.path);
-    result = await auth.api.verifyApiKey({ body: { key: token, ...rule?.apiKey } });
-  } catch (err: any) {
-    return c.json({ error: { code: "UNAUTHORIZED", message: err?.message || "Invalid API key" } }, 401);
-  }
-  if (!result?.valid) {
-    return c.json({ error: result?.error || { code: "UNAUTHORIZED", message: "Invalid API key" } }, 401);
-  }
-
-  c.set("ownerId", result.key.referenceId);
-  c.set("apiKeyId", result.key.id);
-  c.set("apiKeyConfigId", result.key.configId);
-  c.set("apiKeyPermissions", result.key.permissions ?? null);
-  const metadata = result.key.metadata as Record<string, any> | null;
-  c.set("apiKeyMetadata", metadata ?? null);
-  c.set("identityType", result.key.configId === "maintainer" ? "maintainer:key" : "machine");
-  if (metadata?.machineId) c.set("machineId", metadata.machineId);
-
-  return enforceRouteRule(c, next);
-}
-
-async function handleAgentIdentity(c: Context<{ Bindings: Env }>, identity: any, persistentAgentId: string | null, next: Next) {
-  const sessionId = identity.agent.id;
-
-  const row = await c.env.DB.prepare(
-    `SELECT s.agent_id, a.kind, NULL AS owner_id, 'legacy' AS source
-     FROM agent_sessions s
-     JOIN agents a ON s.agent_id = a.id
-     WHERE s.id = ? AND s.status = 'active'
-     UNION ALL
-     SELECT s.agent_id, a.kind, s.owner_id, 'ama' AS source
-     FROM ama_agent_sessions s
-     JOIN agents a ON s.agent_id = a.id AND a.owner_id = s.owner_id
-     WHERE s.id = ? AND s.status = 'active'
-     LIMIT 1`,
-  )
-    .bind(sessionId, sessionId)
-    .first<{ agent_id: string; kind: string; owner_id: string | null; source: "ama" | "legacy" }>();
-
-  if (!row) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Agent session is not registered" } }, 403);
-  }
-
-  if (persistentAgentId && row.agent_id !== persistentAgentId) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Agent ID mismatch" } }, 403);
-  }
-
-  const agentId = row.agent_id;
-  c.set("ownerId", row.owner_id || identity.host?.userId || identity.user?.id);
-  c.set("sessionId", sessionId);
-  c.set("agentId", agentId);
-  c.set("agentRuntimeSource", row.source);
-  c.set("machineId", row.source === "legacy" ? identity.agent.hostId : undefined);
-  const kind = row.kind === "leader" ? "leader" : "worker";
-  c.set("agentCapabilities", kind === "leader" ? LEADER_CAPABILITIES : WORKER_CAPABILITIES);
-  c.set("identityType", kind === "leader" ? "agent:leader" : "agent:worker");
-
-  return enforceRouteRule(c, next);
-}
-
-function decodeJwtClaim(token: string, claim: string): string | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-    return payload[claim] || null;
+    return decodeProtectedHeader(token).typ === "agent+jwt" ? token : null;
   } catch {
     return null;
   }
 }
 
+async function authenticateAkAgent(c: Context<{ Bindings: Env }>, token: string, next: Next): Promise<Response> {
+  const unverified = decodeJwt(token) as { sub?: unknown; aid?: unknown };
+  if (typeof unverified.sub !== "string" || typeof unverified.aid !== "string") throw new AuthError("Invalid AK Agent token claims");
+
+  const row = await c.env.DB.prepare(
+    `SELECT s.id AS session_id, s.agent_id, s.machine_id, s.public_key, a.owner_id, a.kind, 'legacy' AS source
+     FROM agent_sessions s
+     JOIN agents a ON a.id = s.agent_id
+     WHERE s.id = ? AND s.agent_id = ? AND s.status = 'active' AND a.version = 'latest'
+     UNION ALL
+     SELECT s.id AS session_id, s.agent_id, NULL AS machine_id, s.public_key, s.owner_id, a.kind, 'ama' AS source
+     FROM ama_agent_sessions s
+     JOIN agents a ON a.id = s.agent_id AND a.owner_id = s.owner_id
+     WHERE s.id = ? AND s.agent_id = ? AND s.status = 'active' AND a.version = 'latest'
+     LIMIT 1`,
+  )
+    .bind(unverified.sub, unverified.aid, unverified.sub, unverified.aid)
+    .first<{
+      session_id: string;
+      agent_id: string;
+      machine_id: string | null;
+      public_key: string;
+      owner_id: string;
+      kind: string;
+      source: "legacy" | "ama";
+    }>();
+  if (!row) return c.json({ error: { code: "FORBIDDEN", message: "AK Agent session is not active" } }, 403);
+
+  const key = await importJWK({ kty: "OKP", crv: "Ed25519", x: row.public_key }, "EdDSA");
+  const { payload, protectedHeader } = await jwtVerify(token, key, {
+    algorithms: ["EdDSA"],
+    typ: "agent+jwt",
+    audience: new URL(c.req.url).origin,
+  });
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    protectedHeader.alg !== "EdDSA" ||
+    payload.sub !== row.session_id ||
+    payload.aid !== row.agent_id ||
+    typeof payload.iat !== "number" ||
+    typeof payload.exp !== "number" ||
+    payload.iat < now - 120 ||
+    payload.iat > now + 30 ||
+    payload.exp <= now ||
+    payload.exp > now + 150 ||
+    payload.exp - payload.iat > 120 ||
+    typeof payload.jti !== "string" ||
+    payload.jti.length === 0 ||
+    payload.jti.length > 160
+  ) {
+    throw new AuthError("Invalid AK Agent token claims");
+  }
+
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare("DELETE FROM ak_agent_jwt_replays WHERE expires_at <= ?").bind(new Date().toISOString()),
+      c.env.DB.prepare("INSERT INTO ak_agent_jwt_replays (session_id, jti, expires_at) VALUES (?, ?, ?)").bind(
+        row.session_id,
+        payload.jti,
+        new Date((payload.exp ?? Math.floor(Date.now() / 1000) + 60) * 1000).toISOString(),
+      ),
+    ]);
+  } catch (error) {
+    if (String(error).includes("UNIQUE") || String(error).includes("PRIMARY KEY")) throw new AuthError("Replayed AK Agent token");
+    throw error;
+  }
+
+  const leader = row.kind === "leader";
+  const scopes = leader
+    ? ["task:assign", "task:complete", "task:reject", "task:cancel", "task:log", "task:message", "agent:usage", "ak:read", "ak:write"]
+    : ["task:claim", "task:review", "task:log", "task:message", "agent:usage", "ak:read"];
+  c.set("principal", { source: "session", type: "agent", subjectId: row.agent_id, tenantId: row.owner_id, scopes });
+  c.set("ownerId", row.owner_id);
+  c.set("agentId", row.agent_id);
+  c.set("sessionId", row.session_id);
+  c.set("agentRuntimeSource", row.source);
+  c.set("agentCapabilities", scopes);
+  c.set("identityType", leader ? "agent:leader" : "agent:worker");
+  if (row.machine_id) c.set("machineId", row.machine_id);
+  const response = await enforceRouteRule(c, next);
+  return response ?? c.res;
+}
+
+async function ensureTokenPrincipal(c: Context<{ Bindings: Env }>, principal: RealmrootPrincipal): Promise<void> {
+  const statements = [
+    c.env.DB.prepare(
+      `INSERT INTO realmroot_tenants (id) VALUES (?)
+       ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+    ).bind(principal.tenantId),
+  ];
+  if (principal.type === "human") {
+    statements.push(
+      c.env.DB.prepare(
+        `INSERT INTO realmroot_tenant_members (tenant_id, subject_id, role)
+         VALUES (?, ?, 'member')
+         ON CONFLICT(tenant_id, subject_id) DO UPDATE SET updated_at = excluded.updated_at`,
+      ).bind(principal.tenantId, principal.subjectId),
+    );
+  }
+  await c.env.DB.batch(statements);
+}
+
 function enforceRouteRule(c: Context<{ Bindings: Env }>, next: Next) {
-  const rule = matchRouteRule(c.req.method, c.req.path);
   const identity = c.get("identityType") as IdentityType;
+  const rule = ROUTE_RULES.find(({ method, pattern }) => method === c.req.method && pattern.test(c.req.path))?.rule;
   if (!rule) {
-    if (identity === "maintainer:key") {
-      return c.json({ error: { code: "FORBIDDEN", message: "Agent session required" } }, 403);
-    }
-    return next(); // no rule = open to any authenticated user/machine/agent identity
+    return c.json({ error: { code: "FORBIDDEN", message: "Operation is not available to this principal" } }, 403);
   }
-
-  if (!rule.allow.includes(identity)) {
-    return c.json({ error: { code: "FORBIDDEN", message: `${rule.allow.join(" or ")} required` } }, 403);
+  if (!rule.allow.includes(identity)) return c.json({ error: { code: "FORBIDDEN", message: `${rule.allow.join(" or ")} required` } }, 403);
+  const principal = c.get("principal");
+  if (rule.scope && (principal.source === "token" || principal.type === "agent") && !principal.scopes.includes(rule.scope)) {
+    return c.json({ error: { code: "FORBIDDEN", message: `Missing scope: ${rule.scope}` } }, 403);
   }
-
-  if (rule.capability && identity.startsWith("agent:")) {
-    const caps: string[] = c.get("agentCapabilities") || [];
-    if (!caps.includes(rule.capability)) {
-      return c.json({ error: { code: "FORBIDDEN", message: `Missing capability: ${rule.capability}` } }, 403);
-    }
-  }
-
   return next();
 }

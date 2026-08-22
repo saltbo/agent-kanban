@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -20,7 +21,7 @@ import type { MachineRuntime } from "@agent-kanban/shared";
 import type { Command } from "commander";
 import { type AmaRunnerVersionInfo, resolveAmaRunnerBinary } from "../amaRunner.js";
 import { MachineClient } from "../client/machine.js";
-import { getCredentials, saveCredentials, setCurrent } from "../config.js";
+import { getCredentials, setCurrent } from "../config.js";
 import { generateDeviceId } from "../device.js";
 import { resolveMachineName } from "../machineName.js";
 import { DAEMON_STATE_FILE, LOGS_DIR, PID_FILE, SESSIONS_DIR, STATE_DIR } from "../paths.js";
@@ -30,7 +31,7 @@ import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
 const DEFAULT_MAX_CONCURRENT = 5;
-// Where ama-runner persists device-login credentials. AK pins this so the login
+// Where ama-runner persists Context-login credentials. AK pins this so the login
 // store is deterministic, kept under AK's own state, and isolated from a
 // standalone ama-runner install that may target a different origin.
 const AMA_RUNNER_CREDENTIALS_FILE = join(STATE_DIR, "ama-runner-credentials.json");
@@ -124,6 +125,12 @@ function maskApiUrl(url: string): string {
   }
 }
 
+function runnerContextLoginMarker(origin: string): string {
+  const canonicalOrigin = origin.replace(/\/$/, "");
+  const originHash = createHash("sha256").update(canonicalOrigin).digest("hex").slice(0, 32);
+  return join(STATE_DIR, `ama-runner-context-login-${originHash}-v1`);
+}
+
 function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   const args: string[] = [];
   const add = (flag: string, value: unknown) => {
@@ -210,7 +217,7 @@ function migrateLegacyRunnerLogin(): void {
 // Mirror ama-runner's own token-validity rules: a saved login is usable when it
 // targets this origin and can still produce a token (refreshable, or an
 // unexpired access token). Anything else means the runner would exit demanding a
-// fresh login, so AK re-runs the device flow instead.
+// fresh login, so AK re-runs the interactive login instead.
 function runnerLoginStatus(origin: string): "missing" | "valid" | "refresh" {
   migrateLegacyRunnerLogin();
   if (!existsSync(AMA_RUNNER_CREDENTIALS_FILE)) return "missing";
@@ -241,10 +248,16 @@ function runnerLoginStatus(origin: string): "missing" | "valid" | "refresh" {
   return "valid";
 }
 
-// ama-runner authenticates with AMA via its own OAuth device login, a separate
+// ama-runner authenticates with AMA via its own OAuth Context login, a separate
 // interactive step from the polling run mode. AK drives it once, foreground, so
 // the user can authorize; the saved refresh token keeps later starts silent.
 function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.ProcessEnv): void {
+  const contextLoginMarker = runnerContextLoginMarker(origin);
+  if (!existsSync(contextLoginMarker) && existsSync(AMA_RUNNER_CREDENTIALS_FILE)) {
+    const logout = spawnSync(runnerBin, ["auth", "logout", origin], { stdio: "ignore", env });
+    if (logout.error) throw new Error(`Failed to clear pre-Context ama-runner login: ${logout.error.message}`);
+    if (logout.status !== 0) throw new Error(`Failed to clear pre-Context ama-runner login (exit status ${logout.status})`);
+  }
   const status = runnerLoginStatus(origin);
   if (status === "valid") return;
   if (status === "refresh") {
@@ -259,8 +272,8 @@ function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.Proces
   console.log(`Authenticating ama-runner with AMA (${maskApiUrl(origin)})…`);
   const result = spawnSync(runnerBin, ["auth", "login", "--api-server", origin], { stdio: "inherit", env });
   if (result.error) throw new Error(`Failed to launch ama-runner login: ${result.error.message}`);
-  if (result.status !== 0)
-    throw new Error(`ama-runner device login did not complete (exit status ${result.status}); cannot start the machine runner`);
+  if (result.status !== 0) throw new Error(`ama-runner login did not complete (exit status ${result.status}); cannot start the machine runner`);
+  writeFileSync(contextLoginMarker, "authorization-code-pkce\n", { mode: 0o600 });
 }
 
 function machineRuntimes(): MachineRuntime[] {
@@ -323,9 +336,8 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   let pid: number;
   try {
     pid = await waitForSpawn(child, runner.path);
-  } catch (error) {
+  } finally {
     closeSync(logFd);
-    throw error;
   }
   mkdirSync(STATE_DIR, { recursive: true });
   writeFileSync(PID_FILE, String(pid));
@@ -349,31 +361,17 @@ async function startAmaRunner(opts: Record<string, unknown>) {
 }
 
 async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
-  if (typeof opts.apiUrl !== "string" || typeof opts.apiKey !== "string") {
-    throw new Error("API credentials are required to start the machine runner");
-  }
-  const creds = { apiUrl: opts.apiUrl, apiKey: opts.apiKey };
+  if (typeof opts.apiUrl !== "string") throw new Error("A Realmroot-authenticated AK environment is required");
 
   const runtimes = machineRuntimes();
   opts.providers = runtimes.map((runtime) => runtime.name);
-  const machineResponse = await fetch(`${creds.apiUrl.replace(/\/$/, "")}/api/machines`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${creds.apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      name: resolveMachineName(),
-      os: `${platform()} ${arch()} ${release()}`,
-      version: getVersion(),
-      runtimes,
-      device_id: generateDeviceId(),
-    }),
-  });
-  if (!machineResponse.ok) {
-    throw new Error(`Machine registration failed with HTTP ${machineResponse.status}: ${await machineResponse.text()}`);
-  }
-  const machine = (await machineResponse.json()) as RegisteredMachine;
+  const machine = (await new MachineClient().registerMachine({
+    name: resolveMachineName(),
+    os: `${platform()} ${arch()} ${release()}`,
+    version: getVersion(),
+    runtimes,
+    device_id: generateDeviceId(),
+  })) as RegisteredMachine;
   const onboarding = machine.runner;
   if (!onboarding) {
     throw new Error("Machine registration did not return runner onboarding details");
@@ -390,27 +388,23 @@ export function registerStartCommand(program: Command) {
     .command("start")
     .description("Start the Machine runner")
     .option("--api-url <url>", "API server URL")
-    .option("--api-key <key>", "AK API key")
     .option("--max-concurrent <n>", "Max concurrent agents", String(DEFAULT_MAX_CONCURRENT))
     .action(async (opts) => {
       // Save or resolve credentials
-      if (opts.apiUrl && opts.apiKey) {
-        saveCredentials(opts.apiUrl, opts.apiKey);
-      } else if (opts.apiUrl) {
-        // Switch to existing credentials for this host
+      if (opts.apiUrl) {
         try {
           setCurrent(opts.apiUrl);
         } catch {
-          console.error(`No saved credentials for ${opts.apiUrl}. Pass --api-key as well.`);
+          console.error(`No Realmroot login for ${opts.apiUrl}. Run ak auth login --api-url ${opts.apiUrl}.`);
           process.exit(1);
         }
       }
 
-      let creds: { apiUrl: string; apiKey: string };
+      let creds: { apiUrl: string };
       try {
         creds = getCredentials();
       } catch {
-        console.error("API URL and key required. Pass --api-url and --api-key.");
+        console.error("Realmroot login required. Run ak auth login --api-url <url>.");
         process.exit(1);
       }
 
@@ -421,7 +415,7 @@ export function registerStartCommand(program: Command) {
       if (prevState && prevState.apiUrl !== creds.apiUrl) {
         rmSync(SESSIONS_DIR, { recursive: true, force: true });
       }
-      await startAmaRunner({ ...opts, apiUrl: creds.apiUrl, apiKey: creds.apiKey });
+      await startAmaRunner({ ...opts, apiUrl: creds.apiUrl });
     });
 }
 
@@ -507,7 +501,6 @@ export function registerRestartCommand(program: Command) {
     .command("restart")
     .description("Restart the Machine runner")
     .option("--api-url <url>", "API server URL")
-    .option("--api-key <key>", "AK API key")
     .option("--max-concurrent <n>", "Max concurrent agents")
     .action(async (opts) => {
       const prevState = readDaemonState();
@@ -525,22 +518,20 @@ export function registerRestartCommand(program: Command) {
         console.log("○ Machine runner was not running");
       }
 
-      if (opts.apiUrl && opts.apiKey) {
-        saveCredentials(opts.apiUrl, opts.apiKey);
-      } else if (opts.apiUrl) {
+      if (opts.apiUrl) {
         try {
           setCurrent(opts.apiUrl);
         } catch {
-          console.error(`No saved credentials for ${opts.apiUrl}. Pass --api-key as well.`);
+          console.error(`No Realmroot login for ${opts.apiUrl}. Run ak auth login --api-url ${opts.apiUrl}.`);
           process.exit(1);
         }
       }
 
-      let creds: { apiUrl: string; apiKey: string };
+      let creds: { apiUrl: string };
       try {
         creds = getCredentials();
       } catch {
-        console.error("API URL and key required. Pass --api-url and --api-key, or run `ak start` first.");
+        console.error("Realmroot login required. Run ak auth login --api-url <url>.");
         process.exit(1);
       }
 
@@ -551,7 +542,6 @@ export function registerRestartCommand(program: Command) {
       await startAmaRunner({
         ...opts,
         apiUrl: creds.apiUrl,
-        apiKey: creds.apiKey,
         maxConcurrent: opts.maxConcurrent ?? String(prevState?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT),
       });
     });
