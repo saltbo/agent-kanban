@@ -47,9 +47,9 @@ describe("production wrangler configuration", () => {
     );
   });
 
-  it("pins AMA runner 0.8.0 in production and staging", () => {
-    expect(stringValue(tableBody("[vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.0");
-    expect(stringValue(tableBody("[env.staging.vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.0");
+  it("pins AMA runner 0.8.1 in production and staging", () => {
+    expect(stringValue(tableBody("[vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.1");
+    expect(stringValue(tableBody("[env.staging.vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.1");
   });
 
   it("keeps staging routes explicitly empty", () => {

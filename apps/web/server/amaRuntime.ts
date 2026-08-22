@@ -844,10 +844,12 @@ export async function sendAmaSessionMessage(
   projectId: string,
   sessionId: string,
   message: string,
+  requestId?: string,
 ): Promise<AmaRuntimeCommandResult> {
   const client = await createAmaClient(env, ownerId, projectId);
+  const body = { type: "prompt" as const, content: message, ...(requestId ? { requestId } : {}) };
   // A 201 means the prompt message was accepted and queued for the session.
-  await withAmaAuthRetry(env, false, () => client.sessions.createMessage(sessionId, { type: "prompt", content: message }));
+  await withAmaAuthRetry(env, false, () => client.sessions.createMessage(sessionId, body));
   return { accepted: true };
 }
 

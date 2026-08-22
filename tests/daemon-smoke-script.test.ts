@@ -1,7 +1,8 @@
 // @vitest-environment node
 
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -47,9 +48,9 @@ describe("daemon smoke script", () => {
     // runtime_default_model() maps each runtime to a model
     expect(script).toContain("runtime_default_model()");
     // codex queries the server for declared models and picks the first one
-    expect(script).toContain('codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
+    expect(script).toContain('codex) run_json_query "data[0]?.id" ak get model --runtime "$runtime" -o json');
     // ama queries the server dynamically (no hardcoded model id)
-    expect(script).toContain('ama) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
+    expect(script).toContain('ama) run_json_query "data[0]?.id" ak get model --runtime "$runtime" -o json');
     expect(script).toContain("opus");
 
     // create_agent() passes --model
@@ -104,6 +105,45 @@ describe("daemon smoke script", () => {
     expect(script).toContain("run_reject_phase()");
     expect(script).toContain("run_complete_phase()");
     expect(script).toContain("run_cancel_phase()");
+  });
+
+  it.each(["board", "repo", "model"])("fails fast with the original ak error when %s discovery fails", (failedResource) => {
+    const fakeBin = mkdtempSync(join(tmpdir(), "ak-daemon-smoke-discovery-"));
+    const callLog = join(fakeBin, "calls.log");
+    const fakeAk = join(fakeBin, "ak");
+    writeFileSync(
+      fakeAk,
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${callLog}"
+resource="\${2:-}"
+if [ "$1" = "get" ] && [ "$resource" = "${failedResource}" ]; then
+  echo "${failedResource} discovery failed upstream" >&2
+  exit 42
+fi
+case "$1 $resource" in
+  "get board") printf '%s\\n' '[{"id":"board-1","name":"Demo","type":"dev"}]' ;;
+  "get repo") printf '%s\\n' '[{"id":"repo-1","name":"slink"}]' ;;
+  "get model") printf '%s\\n' '[{"id":"model-1"}]' ;;
+  *) echo "unexpected continuation: $*" >&2; exit 97 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+
+    try {
+      const result = spawnSync("bash", [scriptPath, "codex"], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ""}` },
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`${failedResource} discovery failed upstream`);
+      expect(result.stderr).not.toMatch(/JSON\.parse|Unexpected end of JSON input|SyntaxError/);
+      const calls = readFileSync(callLog, "utf8").trim().split("\n");
+      expect(calls.at(-1)).toMatch(new RegExp(`^get ${failedResource}(?: |$)`));
+    } finally {
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
   });
 
   it("checks terminal runtime state by AMA session id, not task id", () => {

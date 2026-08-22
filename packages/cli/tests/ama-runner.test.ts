@@ -55,6 +55,10 @@ afterEach(() => {
 });
 
 describe("resolveAmaRunnerBinary", () => {
+  it("pins the bundled AMA runner release", () => {
+    expect(AMA_RUNNER_VERSION).toBe("0.8.1");
+  });
+
   it("installs a single AK-managed runner binary and removes legacy runner directories", async () => {
     mkdirSync(join(legacyRunnersDir, "ama-runner", "v0.1.0", "darwin-arm64"), { recursive: true });
     writeFileSync(join(legacyRunnersDir, "ama-runner", "v0.1.0", "darwin-arm64", "ama-runner"), "old");

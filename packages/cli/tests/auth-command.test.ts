@@ -16,6 +16,12 @@ const mocks = vi.hoisted(() => ({
   getRepository: vi.fn(async () => ({ id: "repo-1", url: "https://github.com/org/repo" })),
   createRepositoryGithubToken: vi.fn(async () => ({ token: "ghs_repo_token", full_name: "org/repo" })),
   configureGithubAuth: vi.fn(async () => "configured"),
+  detectRuntime: vi.fn(() => "codex" as string | null),
+  loginLeaderAgent: vi.fn(async () => ({
+    identity: { agent_id: "leader-1", name: "Codex Leader" },
+    sessionId: "leader-session-1",
+    reusedIdentity: false,
+  })),
 }));
 
 vi.mock("../src/nativeAuth.js", () => ({
@@ -32,11 +38,13 @@ vi.mock("../src/client/machine.js", () => ({
   },
 }));
 vi.mock("../src/agent/leader.js", () => ({
+  loginLeaderAgent: mocks.loginLeaderAgent,
   createClient: () => ({
     getRepository: mocks.getRepository,
     createRepositoryGithubToken: mocks.createRepositoryGithubToken,
   }),
 }));
+vi.mock("../src/agent/runtime.js", () => ({ detectRuntime: mocks.detectRuntime }));
 vi.mock("../src/commands/github.js", () => ({ configureGithubAuth: mocks.configureGithubAuth }));
 
 const { registerAuthCommand } = await import("../src/commands/auth.js");
@@ -57,6 +65,7 @@ beforeEach(() => {
   delete process.env.AMA_WORKSPACE;
   delete process.env.AMA_WORKSPACE_HOME;
   mocks.fromEnv.mockResolvedValue(null);
+  mocks.detectRuntime.mockReturnValue("codex");
   mocks.getCredentials.mockReturnValue({
     apiUrl: "https://ak.example.test",
     issuer: "https://id.realmroot.dev/api/auth",
@@ -78,7 +87,7 @@ describe("ak auth Realmroot commands", () => {
     const cli = program();
     const login = cli.commands.find((command) => command.name() === "auth")?.commands.find((command) => command.name() === "login");
 
-    expect(login?.description()).toBe("Authenticate this CLI through Realmroot loopback PKCE");
+    expect(login?.description()).toBe("Authenticate this CLI or create an AK leader Agent session");
 
     await cli.parseAsync(
       ["auth", "login", "--api-url", "https://ak.example.test/", "--client-id", "ak-cli", "--issuer", "https://id.realmroot.dev/api/auth"],
@@ -103,6 +112,46 @@ describe("ak auth Realmroot commands", () => {
     } finally {
       if (previous !== undefined) process.env.AK_REALMROOT_CLIENT_ID = previous;
     }
+  });
+
+  it("still requires an explicit API URL for native Realmroot login", async () => {
+    await expect(program().parseAsync(["auth", "login", "--client-id", "ak-cli"], { from: "user" })).rejects.toThrow(/--api-url/);
+
+    expect(mocks.loginWithRealmroot).not.toHaveBeenCalled();
+    expect(mocks.loginLeaderAgent).not.toHaveBeenCalled();
+  });
+
+  it("creates a leader Agent session for the detected runtime without starting Native login", async () => {
+    await program().parseAsync(["auth", "login", "--leader-agent", "--username", "codex-leader", "--name", "Codex Leader"], {
+      from: "user",
+    });
+
+    expect(mocks.loginLeaderAgent).toHaveBeenCalledWith({ runtime: "codex", username: "codex-leader", name: "Codex Leader" });
+    expect(mocks.loginWithRealmroot).not.toHaveBeenCalled();
+  });
+
+  it("rejects leader Agent login when no supported runtime is active", async () => {
+    mocks.detectRuntime.mockReturnValue(null);
+
+    await expect(program().parseAsync(["auth", "login", "--leader-agent", "--username", "leader"], { from: "user" })).rejects.toThrow(/runtime/i);
+
+    expect(mocks.loginLeaderAgent).not.toHaveBeenCalled();
+  });
+
+  it("requires a username for leader Agent login", async () => {
+    await expect(program().parseAsync(["auth", "login", "--leader-agent"], { from: "user" })).rejects.toThrow(/--username/);
+
+    expect(mocks.loginLeaderAgent).not.toHaveBeenCalled();
+  });
+
+  it("propagates leader Agent login failures without falling back to Native login", async () => {
+    mocks.loginLeaderAgent.mockRejectedValueOnce(new Error("machine runner is unavailable"));
+
+    await expect(program().parseAsync(["auth", "login", "--leader-agent", "--username", "leader"], { from: "user" })).rejects.toThrow(
+      "machine runner is unavailable",
+    );
+
+    expect(mocks.loginWithRealmroot).not.toHaveBeenCalled();
   });
 
   it("deletes the current Realmroot authority from the OS keychain", async () => {

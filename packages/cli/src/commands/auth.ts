@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import type { Command } from "commander";
+import { loginLeaderAgent } from "../agent/leader.js";
+import { detectRuntime } from "../agent/runtime.js";
 import { AgentClient } from "../client/agent.js";
 import { MachineClient } from "../client/machine.js";
 import { getCredentials } from "../config.js";
@@ -21,11 +23,24 @@ export function registerAuthCommand(program: Command) {
 
   authCmd
     .command("login")
-    .description("Authenticate this CLI through Realmroot loopback PKCE")
-    .requiredOption("--api-url <url>", "AK API server URL")
+    .description("Authenticate this CLI or create an AK leader Agent session")
+    .option("--api-url <url>", "AK API server URL")
     .option("--client-id <id>", "Realmroot AK CLI Application id", process.env.AK_REALMROOT_CLIENT_ID)
     .option("--issuer <url>", "Realmroot issuer", "https://id.realmroot.dev/api/auth")
+    .option("--leader-agent", "Create a leader Agent session for the current runtime")
+    .option("--username <username>", "Leader Agent username")
+    .option("--name <name>", "Leader Agent display name")
     .action(async (opts) => {
+      if (opts.leaderAgent) {
+        if (!opts.username) throw new Error("--username is required with --leader-agent");
+        const runtime = detectRuntime();
+        if (!runtime) throw new Error("No supported Agent runtime found. Run this command from inside an Agent runtime.");
+        const session = await loginLeaderAgent({ runtime, username: opts.username, name: opts.name });
+        console.log(`${session.reusedIdentity ? "Using" : "Created"} AK leader Agent identity ${session.identity.agent_id}`);
+        console.log(`Created AK leader Agent session ${session.sessionId}`);
+        return;
+      }
+      if (!opts.apiUrl) throw new Error("--api-url is required for Realmroot Native login");
       if (!opts.clientId) throw new Error("--client-id or AK_REALMROOT_CLIENT_ID is required");
       await loginWithRealmroot({ apiUrl: opts.apiUrl, clientId: opts.clientId, issuer: opts.issuer });
       console.log(`Authenticated ${new URL(opts.apiUrl).host} through Realmroot`);

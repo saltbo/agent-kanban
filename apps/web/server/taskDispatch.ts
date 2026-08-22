@@ -55,6 +55,9 @@ export const AK_SESSION_CREDENTIAL_PREFIX = "ak-session-";
 const GH_USERNAME_DATA_KEY = "GH_USERNAME";
 const GH_TOKEN_DATA_KEY = "GH_TOKEN";
 const AK_AGENT_KEY_DATA_KEY = "AK_AGENT_KEY";
+const REJECT_RESUME_MAX_ATTEMPTS = 10;
+const REJECT_RESUME_RETRY_BASE_DELAY_MS = 250;
+const REJECT_RESUME_RETRY_MAX_DELAY_MS = 2_000;
 
 export function boardMaintainerResourceName(boardId: string): string {
   return `ak-boarder-${boardId}`;
@@ -494,24 +497,29 @@ export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, tas
   if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
     return task;
   }
-  await sendAmaSessionMessage(
-    env,
-    ownerId,
-    projectId,
-    sessionId,
-    [
-      `Task was rejected by reviewer.${reason ? ` Reason: ${reason}` : ""}`,
-      "",
-      `Resume task ${task.id}. It is already assigned to you and already in progress.`,
-      "Do not run `ak task claim` again.",
-      "Inspect the current task, repository, and pull request state. Fix the reviewer rejection in the working branch, commit and push any required code changes, rerun the smallest meaningful checks, then submit the task for review again.",
-      `When the fix is complete, add a Completion Summary note with what changed and what passed, then run: ak task review ${task.id}`,
-      "In AK, in_review does not only mean completed work is waiting for review. It is the task's only paused or handed-off state, including waits for blockers, prerequisites, external actions, or later continuation. in_progress means this worker session is actively running.",
-      `Even if this rejection or wake-up was a mistake and there is no actionable work, do not simply report that and exit. Write the Completion Summary and resubmit task ${task.id} using its existing PR URL.`,
-      "If the rejection reason says this task is blocked by another task, PR, migration, infrastructure repair, or maintainer action, do not stop and wait in in_progress. In the Completion Summary, state that there is no actionable worker work yet and tell the reviewer to keep this task in review until the prerequisite finishes, then reject it again only when you have an immediate action to perform.",
-      `Under all circumstances, the final task operation before ending this session must be \`ak task review ${task.id}\`, with \`--pr-url <existing PR URL>\` when the task has a PR. If it fails, correct the error and retry; do not end the session without a successful review submission.`,
-    ].join("\n"),
-  );
+  const message = [
+    `Task was rejected by reviewer.${reason ? ` Reason: ${reason}` : ""}`,
+    "",
+    `Resume task ${task.id}. It is already assigned to you and already in progress.`,
+    "Do not run `ak task claim` again.",
+    "Inspect the current task, repository, and pull request state. Fix the reviewer rejection in the working branch, commit and push any required code changes, rerun the smallest meaningful checks, then submit the task for review again.",
+    `When the fix is complete, add a Completion Summary note with what changed and what passed, then run: ak task review ${task.id}`,
+    "In AK, in_review does not only mean completed work is waiting for review. It is the task's only paused or handed-off state, including waits for blockers, prerequisites, external actions, or later continuation. in_progress means this worker session is actively running.",
+    `Even if this rejection or wake-up was a mistake and there is no actionable work, do not simply report that and exit. Write the Completion Summary and resubmit task ${task.id} using its existing PR URL.`,
+    "If the rejection reason says this task is blocked by another task, PR, migration, infrastructure repair, or maintainer action, do not stop and wait in in_progress. In the Completion Summary, state that there is no actionable worker work yet and tell the reviewer to keep this task in review until the prerequisite finishes, then reject it again only when you have an immediate action to perform.",
+    `Under all circumstances, the final task operation before ending this session must be \`ak task review ${task.id}\`, with \`--pr-url <existing PR URL>\` when the task has a PR. If it fails, correct the error and retry; do not end the session without a successful review submission.`,
+  ].join("\n");
+  const commandId = `reject_resume_${crypto.randomUUID()}`;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await sendAmaSessionMessage(env, ownerId, projectId, sessionId, message, commandId);
+      break;
+    } catch (error) {
+      if ((error as { status?: unknown }).status !== 409 || attempt >= REJECT_RESUME_MAX_ATTEMPTS) throw error;
+      const delayMs = Math.min(REJECT_RESUME_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), REJECT_RESUME_RETRY_MAX_DELAY_MS);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
   return await annotateTask(db, task, {
     "ama.lastCommand": "reject_resume",
     "ama.lastCommand.result": "accepted",

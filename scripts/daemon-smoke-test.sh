@@ -155,20 +155,29 @@ else console.log(result);
 "
 }
 
+run_json_query() {
+  local query="$1"
+  shift
+  local payload
+  payload=$("$@") || return $?
+  printf '%s\n' "$payload" | json_query "$query"
+}
+
 discover_board() {
-  ak get board -o json | json_query "data.find((b) => b.id === 'k847fy7k' && b.type === 'dev')?.id || data.find((b) => b.name === 'Demo' && b.type === 'dev')?.id || data.find((b) => b.type === 'dev')?.id"
+  run_json_query "data.find((b) => b.id === 'k847fy7k' && b.type === 'dev')?.id || data.find((b) => b.name === 'Demo' && b.type === 'dev')?.id || data.find((b) => b.type === 'dev')?.id || ''" \
+    ak get board -o json
 }
 
 create_board() {
-  ak create board --name "Demo" --type dev -o json | json_query "data.id"
+  run_json_query "data.id" ak create board --name "Demo" --type dev -o json
 }
 
 discover_repo() {
-  ak get repo -o json | json_query "data.find((r) => r.name === 'slink' || r.full_name === 'saltbo/slink')?.id || data[0]?.id"
+  run_json_query "data.find((r) => r.name === 'slink' || r.full_name === 'saltbo/slink')?.id || data[0]?.id || ''" ak get repo -o json
 }
 
 create_repo() {
-  ak create repo --name "slink" --url "https://github.com/saltbo/slink" -o json | json_query "data.id"
+  run_json_query "data.id" ak create repo --name "slink" --url "https://github.com/saltbo/slink" -o json
 }
 
 # Every smoke agent pins an explicit model: an empty model falls through to
@@ -176,10 +185,10 @@ create_repo() {
 runtime_default_model() {
   local runtime="$1"
   case "$runtime" in
-    codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
-    claude) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id.includes('opus'))?.id || data[0]?.id" ;;
-    ama) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
-    *) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
+    codex) run_json_query "data[0]?.id" ak get model --runtime "$runtime" -o json ;;
+    claude) run_json_query "data.find((m) => m.id.includes('opus'))?.id || data[0]?.id" ak get model --runtime "$runtime" -o json ;;
+    ama) run_json_query "data[0]?.id" ak get model --runtime "$runtime" -o json ;;
+    *) run_json_query "data[0]?.id" ak get model --runtime "$runtime" -o json ;;
   esac
 }
 
@@ -195,7 +204,7 @@ create_agent() {
     exit 1
   fi
   local id
-  id=$(ak create agent \
+  id=$(run_json_query "data.id" ak create agent \
     --name "$name" \
     --username "$username" \
     --runtime "$runtime" \
@@ -203,13 +212,13 @@ create_agent() {
     --role "fullstack-developer" \
     --bio "$bio" \
     --soul "I am a daemon smoke-test worker. Complete only the assigned smoke task, keep changes minimal, and report deterministic evidence in the task log." \
-    -o json | json_query "data.id")
+    -o json)
   echo "$id"
 }
 
 agent_field() {
   local agent_id="$1" field="$2"
-  ak get agent "$agent_id" -o json | json_query "data['$field']"
+  run_json_query "data['$field']" ak get agent "$agent_id" -o json
 }
 
 ensure_smoke_subagent() {
@@ -218,14 +227,14 @@ ensure_smoke_subagent() {
   local name="$username"
   local model
   model="$(runtime_default_model "$runtime")"
-  SUBAGENT_ID=$(ak create subagent \
+  SUBAGENT_ID=$(run_json_query "data.id" ak create subagent \
     --name "$name" \
     --username "$username" \
     --role "smoke-subagent" \
     --bio "Registered worker used by daemon smoke tests to verify task-local subagent installation" \
     --soul "I am a smoke-test helper subagent. Keep answers short and verify delegated work precisely." \
     --models "$runtime=$model" \
-    -o json | json_query "data.id")
+    -o json)
   SUBAGENT_USERNAME="$username"
   SUBAGENT_TOKEN="SMOKE-SUBAGENT-OK-$TIMESTAMP"
 }
@@ -233,7 +242,8 @@ ensure_smoke_subagent() {
 ensure_agent_subagent_link() {
   local agent_id="$1"
   local current
-  current=$(ak get agent "$agent_id" -o json | json_query "((data.subagents || []).includes('$SUBAGENT_ID') ? (data.subagents || []) : [...(data.subagents || []), '$SUBAGENT_ID']).join(',')")
+  current=$(run_json_query "((data.subagents || []).includes('$SUBAGENT_ID') ? (data.subagents || []) : [...(data.subagents || []), '$SUBAGENT_ID']).join(',')" \
+    ak get agent "$agent_id" -o json)
   ak update agent "$agent_id" --subagents "$current" >/dev/null
 }
 
@@ -435,14 +445,14 @@ run_cancel_phase() {
 
 echo "=== Daemon Smoke Test ==="
 
-if [ -z "$BOARD_ID" ]; then BOARD_ID="$(discover_board 2>/dev/null || true)"; fi
-if [ -z "$BOARD_ID" ]; then BOARD_ID="$(create_board)"; fi
-if [ -z "$REPO_ID" ]; then REPO_ID="$(discover_repo 2>/dev/null || true)"; fi
-if [ -z "$REPO_ID" ]; then REPO_ID="$(create_repo)"; fi
 if [ -z "$SMOKE_RUNTIME" ]; then
   echo "FATAL: runtime is required. Usage: ./scripts/daemon-smoke-test.sh <runtime> [board_id] [repo_id]"
   exit 1
 fi
+if [ -z "$BOARD_ID" ]; then BOARD_ID="$(discover_board)"; fi
+if [ -z "$BOARD_ID" ]; then BOARD_ID="$(create_board)"; fi
+if [ -z "$REPO_ID" ]; then REPO_ID="$(discover_repo)"; fi
+if [ -z "$REPO_ID" ]; then REPO_ID="$(create_repo)"; fi
 
 LOCAL_RUNTIME=""
 CLOUD_RUNTIME=""
