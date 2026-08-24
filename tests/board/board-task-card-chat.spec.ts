@@ -105,7 +105,7 @@ test.describe("Board Page", () => {
     await expect(card).toBeVisible();
 
     await card.getByText("Open card chat from assigned agent").click();
-    const detailSheet = page.locator('[data-slot="sheet-content"]').filter({ hasText: "Verify card click targets." });
+    const detailSheet = page.locator('[data-slot="dialog-content"]').filter({ hasText: "Verify card click targets." });
     await expect(detailSheet).toBeVisible();
     await expect(detailSheet.getByText("Activity")).toBeVisible();
     await detailSheet.getByRole("button", { name: "✕" }).click();
@@ -115,6 +115,6 @@ test.describe("Board Page", () => {
     const chatSheet = page.locator('[data-slot="sheet-content"]').filter({ hasText: "Chat history is not available for this task." });
     await expect(chatSheet).toBeVisible();
     await expect(chatSheet.locator("span").filter({ hasText: "CardChatAgent" })).toBeVisible();
-    await expect(page.locator('[data-slot="sheet-content"]').filter({ hasText: "No activity yet." })).not.toBeVisible();
+    await expect(page.locator('[data-slot="dialog-content"]').filter({ hasText: "No activity yet." })).not.toBeVisible();
   });
 });

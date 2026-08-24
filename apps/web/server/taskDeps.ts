@@ -45,6 +45,24 @@ export async function computeBlocked(db: D1, taskIds: string[]): Promise<Set<str
   return blocked;
 }
 
+export async function getDependenciesForTasks(db: D1, taskIds: string[]): Promise<Map<string, string[]>> {
+  const depsMap = new Map<string, string[]>();
+  for (let i = 0; i < taskIds.length; i += BATCH_SIZE) {
+    const chunk = taskIds.slice(i, i + BATCH_SIZE);
+    const placeholders = chunk.map(() => "?").join(",");
+    const result = await db
+      .prepare(`SELECT task_id, depends_on FROM task_dependencies WHERE task_id IN (${placeholders})`)
+      .bind(...chunk)
+      .all<{ task_id: string; depends_on: string }>();
+    for (const row of result.results) {
+      const arr = depsMap.get(row.task_id) || [];
+      arr.push(row.depends_on);
+      depsMap.set(row.task_id, arr);
+    }
+  }
+  return depsMap;
+}
+
 export async function getDependencies(db: D1, taskId: string): Promise<string[]> {
   const result = await db.prepare("SELECT depends_on FROM task_dependencies WHERE task_id = ?").bind(taskId).all<{ depends_on: string }>();
   return result.results.map((r: { depends_on: string }) => r.depends_on);

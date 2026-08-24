@@ -6,7 +6,7 @@ import { type D1, newId, parseJsonFields } from "./db";
 
 const nanoidSlug = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
 
-import { computeBlocked } from "./taskDeps";
+import { computeBlocked, getDependenciesForTasks } from "./taskDeps";
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
@@ -78,9 +78,10 @@ export async function getBoard(db: D1, boardId: string): Promise<BoardWithTasks 
 
   const taskIds = tasks.results.map((t: Task) => t.id);
   if (taskIds.length > 0) {
-    const blockedSet = await computeBlocked(db, taskIds);
+    const [blockedSet, depsMap] = await Promise.all([computeBlocked(db, taskIds), getDependenciesForTasks(db, taskIds)]);
     for (const task of tasks.results) {
       task.blocked = blockedSet.has(task.id);
+      (task as Task & { depends_on: string[] }).depends_on = depsMap.get(task.id) || [];
     }
   }
 

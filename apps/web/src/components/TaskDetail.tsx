@@ -1,3 +1,4 @@
+import { parseWorktreeConfig } from "@agent-kanban/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import duration from "dayjs/plugin/duration";
@@ -22,7 +23,6 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Separator } from "./ui/separator";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./ui/sheet";
 import { Skeleton } from "./ui/skeleton";
 
 const TASK_STATUS_LABELS: Record<string, string> = {
@@ -38,7 +38,7 @@ const REVIEW_ACTIONS = {
   complete: { label: "Complete", variant: "default" as const },
 };
 
-const TASK_DETAIL_SHEET_CLASS = "overflow-hidden p-0 gap-0 !w-[60%] max-md:!w-full";
+const TASK_DETAIL_DIALOG_CLASS = "overflow-hidden p-0 gap-0 sm:max-w-3xl w-full";
 
 interface TaskDetailProps {
   taskId: string;
@@ -61,6 +61,33 @@ function formatElapsed(ms: number): string {
 function formatPrLabel(prUrl: string): string {
   const match = prUrl.match(/\/pull\/(\d+)(?:[/?#]|$)/);
   return match ? `#${match[1]}` : "PR";
+}
+
+/** Human-readable explanation of why a todo task has not started yet. */
+export function todoPendingReason(task: any, depTasks: Record<string, { title: string; status: string }>): string {
+  const dependsOn: string[] = task.depends_on || [];
+  if (dependsOn.some((id) => !depTasks[id])) return "Loading dependency status…";
+  const unfinished = dependsOn.filter((id) => {
+    const dep = depTasks[id];
+    return dep && dep.status !== "done" && dep.status !== "cancelled";
+  });
+  if (unfinished.length > 0) {
+    const names = unfinished.map((id) => depTasks[id]?.title || id).join(", ");
+    return `Waiting on ${unfinished.length} unfinished ${unfinished.length === 1 ? "dependency" : "dependencies"}: ${names}.`;
+  }
+  if (task.blocked) return "Blocked by unfinished dependencies.";
+  if (task.scheduled_at && new Date(task.scheduled_at).getTime() > Date.now()) {
+    return `Scheduled to start at ${dayjs(task.scheduled_at).format("YYYY-MM-DD HH:mm")}.`;
+  }
+  if (!task.assigned_to) return "No agent assigned yet — waiting for assignment.";
+  return `Assigned to ${task.agent_name || task.assigned_to} — waiting for the agent to claim and start.`;
+}
+
+/** Human-readable description of the task's base worktree. */
+export function worktreeLabel(task: any): string {
+  const config = parseWorktreeConfig(task.metadata);
+  if (!config.enabled) return "Disabled — agent works directly in the repo checkout";
+  return config.name ? `ak/${config.name}` : `ak/${task.id} (auto)`;
 }
 
 function LiveDuration({ startedAt, finishedMinutes }: { startedAt: string | null; finishedMinutes: number | null }) {
@@ -107,14 +134,17 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
 
   const dependsOn: string[] = task?.depends_on || [];
 
-  const { data: depTitles = {} } = useQuery({
-    queryKey: ["dep-titles", dependsOn],
+  const { data: depTasks = {} } = useQuery({
+    queryKey: ["dep-tasks", dependsOn],
     queryFn: async () => {
-      const entries = await Promise.all(dependsOn.map((id) => api.tasks.get(id).then((t: any) => [id, t.title] as const)));
-      return Object.fromEntries(entries);
+      const entries = await Promise.all(
+        dependsOn.map((id) => api.tasks.get(id).then((t: any) => [id, { title: t.title, status: t.status }] as const)),
+      );
+      return Object.fromEntries(entries) as Record<string, { title: string; status: string }>;
     },
     enabled: dependsOn.length > 0,
   });
+  const depTitles = Object.fromEntries(Object.entries(depTasks).map(([id, dep]) => [id, dep.title]));
 
   async function reload() {
     await queryClient.invalidateQueries({ queryKey: ["task", taskId] });
@@ -158,18 +188,18 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
 
   if (content) {
     return (
-      <Sheet
+      <Dialog
         open
         onOpenChange={(open) => {
           if (!open) onClose();
         }}
       >
-        <SheetContent showCloseButton={false} className={TASK_DETAIL_SHEET_CLASS}>
-          <SheetTitle className="sr-only">Task</SheetTitle>
-          <SheetDescription className="sr-only">Task details</SheetDescription>
-          <div className="h-full overflow-y-auto overscroll-contain">{content}</div>
-        </SheetContent>
-      </Sheet>
+        <DialogContent showCloseButton={false} className={TASK_DETAIL_DIALOG_CLASS}>
+          <DialogTitle className="sr-only">Task</DialogTitle>
+          <DialogDescription className="sr-only">Task details</DialogDescription>
+          <div className="max-h-[85vh] overflow-y-auto overscroll-contain">{content}</div>
+        </DialogContent>
+      </Dialog>
     );
   }
 
@@ -225,7 +255,15 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
             />
           }
         />
+        {task.repository_id && <Field label="Worktree" value={<span className="font-mono text-[13px]">{worktreeLabel(task)}</span>} />}
       </div>
+
+      {task.status === "todo" && (
+        <div>
+          <FieldLabel>Why still in Todo</FieldLabel>
+          <p className="text-[13px] text-content-secondary">{todoPendingReason(task, depTasks)}</p>
+        </div>
+      )}
 
       {task.status === "in_review" && (
         <div className="flex gap-2">
@@ -302,17 +340,17 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
 
   return (
     <>
-      <Sheet
+      <Dialog
         open
         onOpenChange={(open) => {
           if (!open) onClose();
         }}
       >
-        <SheetContent showCloseButton={false} className={`${TASK_DETAIL_SHEET_CLASS} ${chatOpen ? "!w-[calc(60%+3rem)]" : ""}`}>
-          <SheetTitle className="sr-only">{task.title}</SheetTitle>
-          <SheetDescription className="sr-only">Task detail panel</SheetDescription>
+        <DialogContent showCloseButton={false} className={TASK_DETAIL_DIALOG_CLASS}>
+          <DialogTitle className="sr-only">{task.title}</DialogTitle>
+          <DialogDescription className="sr-only">Task detail dialog</DialogDescription>
 
-          <div className="overflow-y-auto overscroll-contain h-full">
+          <div className="max-h-[85vh] overflow-y-auto overscroll-contain">
             {/* Header */}
             <div className="flex items-start justify-between p-5 border-b border-border">
               <div className="flex-1 min-w-0 mr-4">
@@ -352,16 +390,8 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
 
             {detailsContent}
           </div>
-
-          {/* Dim mask when chat drawer is open */}
-          {chatOpen && (
-            <div
-              className="absolute inset-0 bg-black/10 backdrop-blur-xs z-10 transition-opacity duration-200 cursor-pointer"
-              onClick={() => setChatOpen(false)}
-            />
-          )}
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
 
       {task.assigned_to && (
         <TaskChatDrawer

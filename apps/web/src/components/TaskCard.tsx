@@ -63,6 +63,17 @@ export function TaskCard({ task, labels = [], onClick, onAgentClick, isNew }: Ta
           )}
         </div>
 
+        {task.depends_on?.length > 0 && (
+          <div className="mt-2 flex items-center gap-1 flex-wrap" title={`Depends on: ${task.depends_on.join(", ")}`}>
+            <span className="font-mono text-[10px] uppercase tracking-wider text-content-tertiary shrink-0">Depends on</span>
+            {task.depends_on.map((depId: string) => (
+              <span key={depId} className="font-mono text-[10px] text-content-tertiary bg-surface-tertiary rounded px-1 py-0.5">
+                {depId}
+              </span>
+            ))}
+          </div>
+        )}
+
         {task.labels?.length > 0 && (
           <div className="mt-2 flex gap-1.5 overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {task.labels.map((name: string) => {

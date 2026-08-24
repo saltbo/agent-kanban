@@ -5,7 +5,7 @@ import { getDefaultBoard } from "./boardRepo";
 import { recordBoardRepository } from "./boardRepositoryRepo";
 import { type D1, MAX_TASK_PARTITION_ROWS, newLongId, parseJsonFields } from "./db";
 import { isRuntimeAvailable } from "./machineRepo";
-import { computeBlocked, detectCycle, getDependencies, setDependencies } from "./taskDeps";
+import { computeBlocked, detectCycle, getDependencies, getDependenciesForTasks, setDependencies } from "./taskDeps";
 
 const parseTask = <T extends Task>(row: T & { result?: string | null }): T => {
   const task = parseJsonFields(row, ["labels", "input", "metadata"]) as T & { result?: string | null };
@@ -279,21 +279,7 @@ export async function listTasks(
 
   const taskIds = tasks.map((t) => t.id);
   if (taskIds.length > 0) {
-    const blockedSet = await computeBlocked(db, taskIds);
-    const depsMap = new Map<string, string[]>();
-    for (let i = 0; i < taskIds.length; i += 90) {
-      const chunk = taskIds.slice(i, i + 90);
-      const placeholders = chunk.map(() => "?").join(",");
-      const depsResult = await db
-        .prepare(`SELECT task_id, depends_on FROM task_dependencies WHERE task_id IN (${placeholders})`)
-        .bind(...chunk)
-        .all<{ task_id: string; depends_on: string }>();
-      for (const row of depsResult.results) {
-        const arr = depsMap.get(row.task_id) || [];
-        arr.push(row.depends_on);
-        depsMap.set(row.task_id, arr);
-      }
-    }
+    const [blockedSet, depsMap] = await Promise.all([computeBlocked(db, taskIds), getDependenciesForTasks(db, taskIds)]);
     for (const task of tasks) {
       task.blocked = blockedSet.has(task.id);
       (task as any).depends_on = depsMap.get(task.id) || [];
