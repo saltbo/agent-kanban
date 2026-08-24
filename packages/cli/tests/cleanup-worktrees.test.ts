@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => {
   const { mkdtempSync } = require("node:fs") as typeof import("node:fs");
@@ -31,15 +31,40 @@ vi.mock("../src/agent/usage.js", () => ({ collectUsage: vi.fn(async () => null) 
 vi.mock("../src/logger.js", () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) }));
 
 import { cleanupStaleSessions, cleanupUntrackedWorktrees } from "../src/daemon/cleanup.js";
-import { canSafelyDiscardOrphanWorkspace } from "../src/workspace/workspace.js";
+import { canSafelyDiscardOrphanWorkspace, isDirectRepoDirInUse } from "../src/workspace/workspace.js";
+
+const GIT_CONTROL_ENV_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_QUARANTINE_PATH",
+] as const;
+
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of GIT_CONTROL_ENV_VARS) delete env[key];
+  return env;
+}
+
+const savedGitControlEnv: Partial<Record<(typeof GIT_CONTROL_ENV_VARS)[number], string>> = {};
+
+beforeAll(() => {
+  for (const key of GIT_CONTROL_ENV_VARS) {
+    if (process.env[key] !== undefined) savedGitControlEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+});
 
 function git(cwd: string, ...args: string[]) {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: cleanGitEnv() }).trim();
 }
 
 function addWorktree(repo: string, name: string, branch = `ak/${name}`) {
   const cwd = join(state.root, "worktrees", name);
-  execFileSync("git", ["-C", repo, "worktree", "add", "-b", branch, cwd], { stdio: "pipe" });
+  execFileSync("git", ["-C", repo, "worktree", "add", "-b", branch, cwd], { stdio: "pipe", env: cleanGitEnv() });
   return cwd;
 }
 
@@ -66,6 +91,11 @@ describe("startup worktree cleanup", () => {
 
   afterAll(() => {
     rmSync(state.root, { recursive: true, force: true });
+    for (const key of GIT_CONTROL_ENV_VARS) {
+      const value = savedGitControlEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
   it("removes only provably empty untracked ak/* worktrees", () => {
@@ -85,19 +115,22 @@ describe("startup worktree cleanup", () => {
     cleanupUntrackedWorktrees();
 
     expect(state.cleanupWorkspace).toHaveBeenCalledOnce();
-    expect(state.cleanupWorkspace).toHaveBeenCalledWith({
-      type: "repo",
-      cwd: realpathSync(empty),
-      repoDir: realpathSync(repo),
-      branchName: `ak/${basename(empty)}`,
-    });
+    expect(state.cleanupWorkspace).toHaveBeenCalledWith(
+      {
+        type: "repo",
+        cwd: realpathSync(empty),
+        repoDir: realpathSync(repo),
+        branchName: `ak/${basename(empty)}`,
+      },
+      "proven_empty_orphan",
+    );
     expect(state.cleanupWorkspace).not.toHaveBeenCalledWith(expect.objectContaining({ cwd: realpathSync(dirty) }));
     expect(state.cleanupWorkspace).not.toHaveBeenCalledWith(expect.objectContaining({ cwd: realpathSync(committed) }));
     expect(state.cleanupWorkspace).not.toHaveBeenCalledWith(expect.objectContaining({ cwd: realpathSync(unexpected) }));
     expect(state.cleanupWorkspace).not.toHaveBeenCalledWith(expect.objectContaining({ cwd: realpathSync(tracked) }));
   });
 
-  it("cleans a stale worker workspace before removing its local session", async () => {
+  it("preserves a stale worker workspace while its task is non-terminal", async () => {
     const repo = createRepo("repo-stale");
     const cwd = addWorktree(repo, "stale");
     const workspace = { type: "repo" as const, cwd, repoDir: repo, branchName: "ak/stale" };
@@ -112,9 +145,9 @@ describe("startup worktree cleanup", () => {
 
     await cleanupStaleSessions(client as any, "machine-1");
 
-    expect(state.cleanupWorkspace).toHaveBeenCalledWith(workspace);
-    expect(state.removeSession).toHaveBeenCalledWith("session-1");
-    expect(state.cleanupWorkspace.mock.invocationCallOrder[0]).toBeLessThan(state.removeSession.mock.invocationCallOrder[0]);
+    expect(client.closeSession).not.toHaveBeenCalled();
+    expect(state.cleanupWorkspace).not.toHaveBeenCalled();
+    expect(state.removeSession).not.toHaveBeenCalled();
   });
 
   it("preserves a missing repo workspace without entering remote or git cleanup paths", async () => {
@@ -169,28 +202,47 @@ describe("startup worktree cleanup", () => {
     expect(state.removeSession).not.toHaveBeenCalled();
   });
 
-  it.each(["release", "close"])("retains local session and workspace when stale remote %s fails", async (phase) => {
-    const repo = createRepo(`repo-${phase}`);
-    const cwd = addWorktree(repo, `failure-${phase}`);
-    const workspace = { type: "repo" as const, cwd, repoDir: repo, branchName: `ak/failure-${phase}` };
+  it("retains local session and workspace when terminal remote close fails", async () => {
+    const repo = createRepo("repo-close");
+    const cwd = addWorktree(repo, "failure-close");
+    const workspace = { type: "repo" as const, cwd, repoDir: repo, branchName: "ak/failure-close" };
     state.sessions = [{ type: "worker", sessionId: "session-1", taskId: "task-1", status: "active", workspace }];
     const client = {
       listAgents: vi.fn(async () => [{ id: "agent-1" }]),
       listSessions: vi.fn(async () => [{ id: "session-1", status: "active", machine_id: "machine-1" }]),
-      getTask: vi.fn(async () => ({ status: "in_progress" })),
-      releaseTask: vi.fn(async () => {
-        if (phase === "release") throw new Error("release failed");
-      }),
+      getTask: vi.fn(async () => ({ status: "done" })),
+      releaseTask: vi.fn(async () => undefined),
       closeSession: vi.fn(async () => {
-        if (phase === "close") throw new Error("close failed");
+        throw new Error("close failed");
       }),
     };
 
     await cleanupStaleSessions(client as any, "machine-1");
 
-    expect(client.releaseTask).toHaveBeenCalledWith("task-1");
-    expect(client.closeSession).toHaveBeenCalledTimes(phase === "release" ? 0 : 1);
+    expect(client.releaseTask).not.toHaveBeenCalled();
+    expect(client.closeSession).toHaveBeenCalledOnce();
     expect(state.cleanupWorkspace).not.toHaveBeenCalled();
     expect(state.removeSession).not.toHaveBeenCalled();
+  });
+
+  it("restores direct-workspace reservations before inspecting remote sessions", async () => {
+    const repoDir = join(state.root, "direct-reservation");
+    state.sessions = [
+      {
+        type: "worker",
+        sessionId: "direct-session",
+        taskId: "direct-task",
+        status: "errored",
+        workspace: { type: "direct", cwd: repoDir, repoDir },
+      },
+    ];
+    const client = {
+      listAgents: vi.fn(async () => []),
+      listSessions: vi.fn(async () => []),
+    };
+
+    await cleanupStaleSessions(client as any, "machine-1");
+
+    expect(isDirectRepoDirInUse(repoDir)).toBe(true);
   });
 });

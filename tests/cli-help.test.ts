@@ -168,6 +168,7 @@ describe("CLI help and output options", () => {
       "task complete",
       "task reject",
       "task release",
+      "task retry",
       "agent diff",
       "get board",
       "get label",

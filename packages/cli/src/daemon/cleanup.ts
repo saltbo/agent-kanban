@@ -6,7 +6,7 @@ import type { MachineClient } from "../client/index.js";
 import { createLogger } from "../logger.js";
 import { WORKTREES_DIR } from "../paths.js";
 import { isPidAlive, listSessions, removeSession } from "../session/store.js";
-import { canSafelyDiscardOrphanWorkspace, cleanupWorkspace } from "../workspace/workspace.js";
+import { acquireDirectRepoDir, canSafelyDiscardOrphanWorkspace, cleanupWorkspace, type WorkspaceCleanupReason } from "../workspace/workspace.js";
 
 const logger = createLogger("daemon");
 
@@ -43,6 +43,9 @@ export async function cleanupLeaderSessions(client: MachineClient): Promise<void
  */
 export async function cleanupStaleSessions(client: MachineClient, machineId: string): Promise<void> {
   try {
+    for (const local of listSessions({ type: "worker" })) {
+      if (local.workspace?.type === "direct" && local.status !== "closed") acquireDirectRepoDir(local.workspace.repoDir);
+    }
     const agents = (await client.listAgents()) as any[];
     let closedCount = 0;
     for (const agent of agents) {
@@ -50,14 +53,14 @@ export async function cleanupStaleSessions(client: MachineClient, machineId: str
       for (const session of sessions) {
         if (session.status !== "active" || session.machine_id !== machineId) continue;
         const local = listSessions().find((s) => s.sessionId === session.id);
+        let cleanupReason: WorkspaceCleanupReason = "proven_empty_orphan";
 
-        // Worker sessions: in_review survives forever; everything else is
-        // orphaned at boot time (no live handle can exist yet).
+        // Worker sessions with non-terminal tasks are recovered by the daemon
+        // loop. Startup cleanup must not destroy their workspace merely because
+        // the previous runtime disappeared.
         // Leader sessions: pid liveness.
         if (local?.type === "worker") {
-          // in_review survives restarts (reject-resume entry point).
-          // closed sessions are intentionally retained for history lookup — skip.
-          if (local.status === "in_review" || local.status === "closed") continue;
+          if (local.status === "in_review" || local.status === "rate_limited" || local.status === "errored" || local.status === "closed") continue;
         } else if (local?.type === "leader") {
           if (isPidAlive(local.pid)) continue;
         }
@@ -77,14 +80,11 @@ export async function cleanupStaleSessions(client: MachineClient, machineId: str
               continue;
             }
           }
-          if (task?.status === "in_progress") {
-            try {
-              await client.releaseTask(local.taskId);
-            } catch (err: any) {
-              logger.warn(`Failed to release stale task ${local.taskId}: ${err.message}`);
-              continue;
-            }
+          if (task && task.status !== "done" && task.status !== "cancelled") {
+            logger.warn(`Preserving stale session ${session.id.slice(0, 8)} and workspace for non-terminal task ${local.taskId} (${task.status})`);
+            continue;
           }
+          cleanupReason = !task ? "task_deleted" : task.status === "done" ? "task_done" : "task_cancelled";
         }
         try {
           await client.closeSession(agent.id, session.id);
@@ -96,7 +96,7 @@ export async function cleanupStaleSessions(client: MachineClient, machineId: str
           logger.info(`Closing stale session ${session.id.slice(0, 8)} for agent ${agent.id.slice(0, 8)}`);
           if (local.type === "worker" && local.workspace) {
             try {
-              cleanupWorkspace(local.workspace);
+              cleanupWorkspace(local.workspace, cleanupReason);
             } catch (err) {
               logger.warn(`Failed to clean stale workspace ${local.workspace.cwd}; preserving local session: ${(err as Error).message}`);
               continue;
@@ -144,7 +144,7 @@ export function cleanupUntrackedWorktrees(): void {
         logger.warn(`Preserving untracked worktree ${cwd}; it is not provably empty`);
         continue;
       }
-      cleanupWorkspace(workspace);
+      cleanupWorkspace(workspace, "proven_empty_orphan");
       logger.info(`Removed empty untracked worktree ${cwd}`);
     } catch (err) {
       logger.warn(`Could not reconcile untracked worktree ${cwd}; preserving it: ${(err as Error).message}`);

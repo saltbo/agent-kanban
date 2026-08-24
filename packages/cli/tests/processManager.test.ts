@@ -91,6 +91,7 @@ function makeTunnel(): TunnelClient & { sendEvent: Mock; sendStatus: Mock } {
 function makeApiClient(overrides: Partial<ApiClient> = {}): ApiClient {
   return {
     getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+    failTask: vi.fn().mockResolvedValue({ status: "error" }),
     releaseTask: vi.fn().mockResolvedValue(undefined),
     closeSession: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -660,7 +661,7 @@ describe("ProcessManager — spawnAgent provider failure", () => {
 // ── onCrash path ──────────────────────────────────────────────────────────────
 
 describe("ProcessManager — crash path", () => {
-  it("releases the task when the event iterator throws", async () => {
+  it("moves the task to error when the event iterator throws", async () => {
     const throwingHandle: AgentHandle = {
       // biome-ignore lint/correctness/useYield: generator must throw without yielding to test crash path
       events: (async function* () {
@@ -680,7 +681,13 @@ describe("ProcessManager — crash path", () => {
     await flushPromises();
     await flushPromises();
 
-    expect(apiClient.releaseTask).toHaveBeenCalledWith("task-crash");
+    await vi.waitFor(() =>
+      expect(apiClient.failTask).toHaveBeenCalledWith(
+        "task-crash",
+        expect.objectContaining({ code: "ITERATOR_CRASH", attempt_id: expect.any(String) }),
+      ),
+    );
+    expect(apiClient.releaseTask).not.toHaveBeenCalled();
     expect(callbacks.onSlotFreed).toHaveBeenCalled();
   });
 });
@@ -868,7 +875,7 @@ describe("ProcessManager — onComplete skips cleanup when session is in_review"
     const handle = makeHandle([resultEvent]);
     const onCleanup = vi.fn();
     // agentClient.getTask returns in_review → taskInReview=true → state machine → in_review
-    const pm = makePool(makeApiClient(), makeCallbacks(), 0, tunnel);
+    const pm = makePool(makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) }), makeCallbacks(), 0, tunnel);
     writeSession(makeWorkerSession("sess-review", { taskId: "task-review" }));
 
     await pm.spawnAgent({
@@ -893,7 +900,7 @@ describe("ProcessManager — onComplete skips cleanup when session is in_review"
     const resultEvent: AgentEvent = { type: "turn.end", cost: 0.001 };
     const handle = makeHandle([resultEvent]);
 
-    const pm = makePool(makeApiClient(), makeCallbacks(), 0, tunnel);
+    const pm = makePool(makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) }), makeCallbacks(), 0, tunnel);
     writeSession(makeWorkerSession("sess-review-done", { taskId: "task-review-done" }));
 
     await pm.spawnAgent({
@@ -909,7 +916,7 @@ describe("ProcessManager — onComplete skips cleanup when session is in_review"
     await flushPromises();
     await flushPromises();
 
-    expect(tunnel.sendStatus).toHaveBeenCalledWith("sess-review-done", "done");
+    await vi.waitFor(() => expect(tunnel.sendStatus).toHaveBeenCalledWith("sess-review-done", "done"));
   });
 
   it("does NOT remove the session file when getTask returns in_review", async () => {
@@ -917,7 +924,7 @@ describe("ProcessManager — onComplete skips cleanup when session is in_review"
     const resultEvent: AgentEvent = { type: "turn.end", cost: 0.001 };
     const handle = makeHandle([resultEvent]);
 
-    const pm = makePool(makeApiClient(), makeCallbacks(), 0, tunnel);
+    const pm = makePool(makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) }), makeCallbacks(), 0, tunnel);
     writeSession(makeWorkerSession("sess-review-no-remove", { taskId: "task-review-no-remove" }));
 
     await pm.spawnAgent({
@@ -938,8 +945,8 @@ describe("ProcessManager — onComplete skips cleanup when session is in_review"
   });
 });
 
-describe("ProcessManager — onComplete normal completion invokes cleanup", () => {
-  it("preserves worktree when agent finishes with result (session stays in_review)", async () => {
+describe("ProcessManager — terminal server state invokes cleanup", () => {
+  it("cleans the workspace when the server task is done", async () => {
     const tunnel = makeTunnel();
     const resultEvent: AgentEvent = { type: "turn.end", cost: 0.001 };
     const handle = makeHandle([resultEvent]);
@@ -963,11 +970,10 @@ describe("ProcessManager — onComplete normal completion invokes cleanup", () =
     await flushPromises();
     await flushPromises();
 
-    // resultReceived=true → worktree preserved, cleanup deferred to daemon loop
-    expect(onCleanup).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(onCleanup).toHaveBeenCalledOnce());
   });
 
-  it("session stays in in_review when agent finishes with result", async () => {
+  it("session closes when the server task is done", async () => {
     const tunnel = makeTunnel();
     const resultEvent: AgentEvent = { type: "turn.end", cost: 0.001 };
     const handle = makeHandle([resultEvent]);
@@ -989,10 +995,7 @@ describe("ProcessManager — onComplete normal completion invokes cleanup", () =
     await flushPromises();
     await flushPromises();
 
-    // Session preserved for daemon loop to clean up later
-    const session = readSession("sess-normal-keep");
-    expect(session).not.toBeNull();
-    expect(session?.status).toBe("in_review");
+    await vi.waitFor(() => expect(readSession("sess-normal-keep")?.status).toBe("closed"));
   });
 });
 
@@ -1071,12 +1074,10 @@ describe("rate-limited iterator crash preserves worktree (no cleanup)", () => {
     await flushPromises();
     await flushPromises();
 
-    const session = readSession("sess-rl-crash-2");
-    expect(session).not.toBeNull();
-    expect(session?.status).toBe("rate_limited");
+    await vi.waitFor(() => expect(readSession("sess-rl-crash-2")?.status).toBe("rate_limited"));
   });
 
-  it("DOES invoke onCleanup when non-rate-limited iterator throws (real crash)", async () => {
+  it("preserves work when a non-rate-limited iterator throws", async () => {
     const turnEndEvent: AgentEvent = { type: "turn.end", cost: 0.001 };
 
     const handle: AgentHandle = {
@@ -1108,13 +1109,15 @@ describe("rate-limited iterator crash preserves worktree (no cleanup)", () => {
     await flushPromises();
     await flushPromises();
 
-    expect(onCleanup).toHaveBeenCalled();
+    await vi.waitFor(() => expect(apiClient.failTask).toHaveBeenCalled());
+    expect(onCleanup).not.toHaveBeenCalled();
+    expect(readSession("sess-crash-no-rl")?.status).toBe("errored");
   });
 });
 
 // ── transient API error preserves worktree (no cleanup) ──────────────────────
 
-describe("transient API error (500) preserves worktree — no crash-loop", () => {
+describe("transient API error (500) enters Error for manual handling", () => {
   it("does NOT invoke onCleanup when iterator throws SDK error with status 500", async () => {
     const handle: AgentHandle = {
       events: (async function* () {
@@ -1149,7 +1152,7 @@ describe("transient API error (500) preserves worktree — no crash-loop", () =>
     expect(onCleanup).not.toHaveBeenCalled();
   });
 
-  it("session lands in rate_limited state (not terminal) after API 500 crash", async () => {
+  it("session lands in errored state after API 500 crash", async () => {
     const handle: AgentHandle = {
       events: (async function* () {
         yield { type: "turn.end", cost: 0 } as AgentEvent;
@@ -1177,9 +1180,11 @@ describe("transient API error (500) preserves worktree — no crash-loop", () =>
     await flushPromises();
     await flushPromises();
 
-    const session = readSession("sess-api500-2");
-    expect(session).not.toBeNull();
-    expect(session?.status).toBe("rate_limited");
+    await vi.waitFor(() => expect(readSession("sess-api500-2")?.status).toBe("errored"));
+    expect(apiClient.failTask).toHaveBeenCalledWith(
+      "task-api500-2",
+      expect.objectContaining({ category: "provider", http_status: 500, retryable: true, attempt_id: expect.any(String) }),
+    );
   });
 
   it("does NOT call releaseTask for transient API 502 crash", async () => {
@@ -1214,7 +1219,7 @@ describe("transient API error (500) preserves worktree — no crash-loop", () =>
     expect(releaseTask).not.toHaveBeenCalled();
   });
 
-  it("DOES invoke onCleanup for non-transient crash (real bug)", async () => {
+  it("moves a non-transient crash to error without cleanup", async () => {
     const handle: AgentHandle = {
       events: (async function* () {
         yield { type: "turn.end", cost: 0 } as AgentEvent;
@@ -1244,13 +1249,71 @@ describe("transient API error (500) preserves worktree — no crash-loop", () =>
     await flushPromises();
     await flushPromises();
 
-    expect(onCleanup).toHaveBeenCalled();
+    await vi.waitFor(() => expect(apiClient.failTask).toHaveBeenCalled());
+    expect(onCleanup).not.toHaveBeenCalled();
+    expect(readSession("sess-real-crash")?.status).toBe("errored");
   });
 });
 
 // ── duplicate rate-limit deduplication via mapSDKMessageStream ────────────────
 
 describe("duplicate rate-limit signal deduplication through mapSDKMessageStream", () => {
+  it("never fails the task for the observed Kimi 403 quota sequence followed by a failed result", async () => {
+    const sdkMessages = [
+      {
+        type: "assistant",
+        error: "authentication_failed",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: 'Failed to authenticate. API Error: 403 {"error":{"type":"permission_error","message":"You\'ve reached your usage limit for this billing cycle."}}',
+            },
+          ],
+        },
+        parent_tool_use_id: null,
+      },
+      {
+        type: "result",
+        subtype: "error_during_execution",
+        errors: ["authentication_failed"],
+        total_cost_usd: 0,
+        usage: {},
+      },
+    ];
+    const handle: AgentHandle = {
+      events: (async function* () {
+        const turnOpen = { value: false };
+        const rateLimitSeen = { value: false };
+        const failureSeen = { value: false };
+        for (const msg of sdkMessages) {
+          yield* mapSDKMessageStream(msg as any, turnOpen, rateLimitSeen, failureSeen);
+        }
+      })(),
+      abort: vi.fn().mockResolvedValue(undefined),
+      send: vi.fn().mockResolvedValue(undefined),
+    };
+    const callbacks = makeCallbacks();
+    const apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_progress" }) });
+    const pm = makePool(apiClient, callbacks);
+
+    writeSession(makeWorkerSession("sess-kimi-quota", { taskId: "task-kimi-quota" }));
+    await pm.spawnAgent({
+      provider: makeProvider(handle),
+      taskId: "task-kimi-quota",
+      sessionId: "sess-kimi-quota",
+      cwd: "/tmp",
+      taskContext: "ctx",
+      agentClient: makeAgentClient("a1", "sess-kimi-quota", "in_progress"),
+      agentEnv: {},
+    });
+
+    await vi.waitFor(() => expect(readSession("sess-kimi-quota")?.status).toBe("rate_limited"));
+    expect(callbacks.onRateLimited).toHaveBeenCalledOnce();
+    expect(apiClient.failTask).not.toHaveBeenCalled();
+  });
+
   it("calls onRateLimited exactly once when SDK emits both rate_limit_event and assistant error:rate_limit", async () => {
     const realResetEpoch = Math.floor(Date.now() / 1000) + 420; // 7 minutes from now
 

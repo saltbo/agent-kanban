@@ -1,4 +1,16 @@
-import type { BoardAction, CreateTaskInput, IdentityType, Task, TaskAction, TaskActionType, TaskStatus, TaskWithNotes } from "@agent-kanban/shared";
+import type {
+  AnyAgentRuntime,
+  BoardAction,
+  CreateTaskInput,
+  IdentityType,
+  Task,
+  TaskAction,
+  TaskError,
+  TaskFailure,
+  TaskStatus,
+  TaskTransition,
+  TaskWithNotes,
+} from "@agent-kanban/shared";
 import { hasNoScheduleTaint, validateTransition } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getDefaultBoard } from "./boardRepo";
@@ -55,8 +67,8 @@ async function assertDependenciesExist(db: D1, ownerId: string, depIds: string[]
   if (missing.length > 0) throw new HTTPException(400, { message: `Dependency task not found: ${missing.join(", ")}` });
 }
 
-function enforceTransition(action: TaskActionType, currentStatus: TaskStatus, identity: IdentityType): void {
-  const error = validateTransition(action as any, currentStatus, identity);
+function enforceTransition(action: TaskTransition, currentStatus: TaskStatus, identity: IdentityType): void {
+  const error = validateTransition(action, currentStatus, identity);
   if (error) {
     const status = error.code === "FORBIDDEN" ? 403 : 409;
     throw new HTTPException(status, { message: error.message });
@@ -637,6 +649,148 @@ export async function cancelTask(
   return parseTask({ ...task, status: "cancelled" as const, assigned_to: null, updated_at: now });
 }
 
+export async function failTask(
+  db: D1,
+  taskId: string,
+  actorId: string,
+  failure: TaskFailure,
+  sessionId: string | null,
+  runtime: AnyAgentRuntime | null,
+  machineId: string,
+  attemptId: string,
+): Promise<Task | null> {
+  const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<Task>();
+  if (!task) return null;
+  enforceTransition("fail", task.status as TaskStatus, "machine");
+  if (!task.assigned_to || !sessionId) {
+    throw new HTTPException(409, { message: "Runtime failure requires an assigned task session" });
+  }
+  const boundSession = await db
+    .prepare("SELECT 1 FROM agent_sessions WHERE id = ? AND machine_id = ? AND agent_id = ?")
+    .bind(sessionId, machineId, task.assigned_to)
+    .first();
+  if (!boundSession) {
+    throw new HTTPException(409, { message: "Task failure session is not bound to this machine and assigned agent" });
+  }
+
+  const now = new Date().toISOString();
+  const errorId = attemptId;
+  const actionId = newLongId();
+  const detail = JSON.stringify({ ...failure, attempt_id: attemptId });
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE tasks SET status = 'error', updated_at = ?,
+          metadata = json_set(
+            json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
+            '$.annotations."runtime.failToken"', ?
+          )
+         WHERE id = ? AND status IN ('todo', 'in_progress') AND assigned_to = ?`,
+      )
+      .bind(now, errorId, taskId, task.assigned_to),
+    db
+      .prepare(
+        `INSERT INTO task_errors
+          (id, task_id, session_id, runtime, category, code, message, http_status, retryable, reset_at, created_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM tasks
+         WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.failToken"') = ?`,
+      )
+      .bind(
+        errorId,
+        taskId,
+        sessionId,
+        runtime,
+        failure.category,
+        failure.code ?? null,
+        failure.message,
+        failure.http_status ?? null,
+        failure.retryable ? 1 : 0,
+        failure.reset_at ?? null,
+        now,
+        taskId,
+        errorId,
+      ),
+    db
+      .prepare(
+        `INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at)
+         SELECT ?, ?, 'machine', ?, 'failed', ?, ?, ? FROM tasks
+         WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.failToken"') = ?`,
+      )
+      .bind(actionId, taskId, actorId, detail, sessionId, now, taskId, errorId),
+    db
+      .prepare(
+        `UPDATE tasks SET metadata = json_remove(metadata, '$.annotations."runtime.failToken"') WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.failToken"') = ?`,
+      )
+      .bind(taskId, errorId),
+  ]);
+  if ((results[0]?.meta?.changes ?? 0) === 0) {
+    throw new HTTPException(409, { message: "Task status changed before failure was recorded" });
+  }
+  return parseTask({ ...task, status: "error" as const, updated_at: now });
+}
+
+export async function retryTask(
+  db: D1,
+  taskId: string,
+  actorType: string,
+  actorId: string,
+  identity: IdentityType,
+  sessionId: string | null = null,
+): Promise<Task | null> {
+  const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<Task>();
+  if (!task) return null;
+  enforceTransition("retry", task.status as TaskStatus, identity);
+
+  const now = new Date().toISOString();
+  const actionId = newLongId();
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE tasks SET status = 'in_progress', updated_at = ?,
+          metadata = json_set(
+            json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
+            '$.annotations."runtime.retryToken"', ?
+          )
+         WHERE id = ? AND status = 'error'`,
+      )
+      .bind(now, actionId, taskId),
+    db
+      .prepare(
+        `UPDATE task_errors SET resolved_at = ? WHERE task_id = ? AND resolved_at IS NULL
+         AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.retryToken"') = ?)`,
+      )
+      .bind(now, taskId, taskId, actionId),
+    db
+      .prepare(
+        `INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at)
+         SELECT ?, ?, ?, ?, 'retried', NULL, ?, ? FROM tasks
+         WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.retryToken"') = ?`,
+      )
+      .bind(actionId, taskId, actorType, actorId, sessionId, now, taskId, actionId),
+    db
+      .prepare(
+        `UPDATE tasks SET metadata = json_remove(metadata, '$.annotations."runtime.retryToken"') WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.retryToken"') = ?`,
+      )
+      .bind(taskId, actionId),
+  ]);
+  if ((results[0]?.meta?.changes ?? 0) === 0) {
+    throw new HTTPException(409, { message: "Task status changed before retry" });
+  }
+  return parseTask({ ...task, status: "in_progress" as const, updated_at: now });
+}
+
+export async function getTaskErrors(db: D1, taskId: string): Promise<TaskError[]> {
+  const rows = await db
+    .prepare(
+      `SELECT id, task_id, session_id, runtime, category, code, message,
+              http_status, retryable, reset_at, created_at, resolved_at
+       FROM task_errors WHERE task_id = ? ORDER BY created_at DESC`,
+    )
+    .bind(taskId)
+    .all<Omit<TaskError, "retryable"> & { retryable: number }>();
+  return rows.results.map((row) => ({ ...row, retryable: row.retryable === 1 }));
+}
+
 export async function reviewTask(
   db: D1,
   taskId: string,
@@ -766,10 +920,13 @@ export async function getTaskActions(db: D1, taskId: string, since?: string, lim
     "SELECT n.*, ag.name as actor_name, ag.public_key as actor_public_key FROM task_actions n LEFT JOIN agents ag ON n.actor_type LIKE 'agent:%' AND n.actor_id = ag.id WHERE n.task_id = ?";
 
   if (since) {
-    const result = await db.prepare(`${base} AND n.created_at > ? ORDER BY n.created_at ASC LIMIT ?`).bind(taskId, since, limit).all<TaskAction>();
+    const result = await db
+      .prepare(`${base} AND n.created_at > ? ORDER BY n.created_at ASC, n.rowid ASC LIMIT ?`)
+      .bind(taskId, since, limit)
+      .all<TaskAction>();
     return result.results;
   }
-  const result = await db.prepare(`${base} ORDER BY n.created_at DESC LIMIT ?`).bind(taskId, limit).all<TaskAction>();
+  const result = await db.prepare(`${base} ORDER BY n.created_at DESC, n.rowid DESC LIMIT ?`).bind(taskId, limit).all<TaskAction>();
   return result.results.reverse();
 }
 

@@ -107,11 +107,12 @@ async function resolveAgent(client: any, id: string, version?: string): Promise<
 }
 
 function formatDescribeBoard(board: any): string {
-  const columnOrder = ["todo", "in_progress", "in_review", "done", "cancelled"];
+  const columnOrder = ["todo", "in_progress", "in_review", "error", "done", "cancelled"];
   const columnLabels: Record<string, string> = {
     todo: "Todo",
     in_progress: "In Progress",
     in_review: "In Review",
+    error: "Error",
     done: "Done",
     cancelled: "Cancelled",
   };

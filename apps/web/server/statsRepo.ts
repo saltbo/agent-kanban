@@ -4,7 +4,7 @@ export interface SystemStats {
   users: { total: number; recent: number };
   agents: { total: number; online: number };
   machines: { total: number; online: number };
-  tasks: { todo: number; in_progress: number; in_review: number; done: number; cancelled: number };
+  tasks: { todo: number; in_progress: number; in_review: number; error: number; done: number; cancelled: number };
   boards: { total: number };
   runtime_sessions: { total: number; active: number };
 }
@@ -48,7 +48,7 @@ export async function getSystemStats(db: D1): Promise<SystemStats> {
     ),
   ]);
 
-  const taskCounts = { todo: 0, in_progress: 0, in_review: 0, done: 0, cancelled: 0 };
+  const taskCounts = { todo: 0, in_progress: 0, in_review: 0, error: 0, done: 0, cancelled: 0 };
   for (const row of tasksByStatus.results as TaskStatusRow[]) {
     const s = row.status as keyof typeof taskCounts;
     if (s in taskCounts) taskCounts[s] = row.count;

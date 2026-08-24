@@ -1,7 +1,8 @@
-import type { AgentRuntime, LeaderAgentRuntime } from "@agent-kanban/shared";
+import type { AgentRuntime, LeaderAgentRuntime, TaskFailure } from "@agent-kanban/shared";
 import type { WorkspaceInfo } from "../types.js";
+import type { WorkspaceCleanupReason } from "../workspace/workspace.js";
 
-export type SessionStatus = "active" | "rate_limited" | "in_review" | "completing" | "closed";
+export type SessionStatus = "active" | "rate_limited" | "in_review" | "errored" | "completing" | "closed";
 
 /**
  * Persisted session file.
@@ -36,6 +37,15 @@ export interface SessionFile {
   model?: string;
   reasoningEffort?: string;
   providerResumeToken?: string;
+  lastFailure?: TaskFailure;
+  /** Correlates this local failure with the server-side failed action. */
+  failureAttemptId?: string;
+  /** Last rejection action already consumed by a resume, preventing repeated resumes from stale notes. */
+  lastRejectionActionId?: string;
+  /** Rejection selected for resume; promoted to consumed only after the runtime starts successfully. */
+  pendingRejectionActionId?: string;
+  /** Epoch ms when this local session most recently entered errored. */
+  errorAt?: number;
   gpgSubkeyId?: string | null;
   agentUsername?: string;
   agentName?: string;
@@ -54,10 +64,9 @@ export interface SessionFile {
   resumeAfter?: number;
 
   /**
-   * Consecutive relay-quota suspensions (mid-run 403/429 on a quota-managed
-   * relay endpoint). Capped — a permanent 403 (plan/region/model block) must
-   * not loop forever burning relay quota. Reset when the session produces a
-   * result (reaches in_review).
+   * Legacy diagnostic count from older daemons. It is retained for session
+   * file compatibility but is never used as a retry or deletion limit. A
+   * successful review resets it to zero.
    */
   quotaSuspensions?: number;
 
@@ -67,6 +76,7 @@ export interface SessionFile {
    * otherwise-terminal session means it's waiting on a retriable cleanup.
    */
   cleanupPending?: boolean;
+  cleanupReason?: WorkspaceCleanupReason;
 }
 
 export interface SessionFilter {

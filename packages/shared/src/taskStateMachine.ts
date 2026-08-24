@@ -7,8 +7,10 @@ export type TaskTransition =
   | "review" // in_progress → in_review
   | "reject" // in_review → in_progress
   | "complete" // in_review → done
-  | "cancel" // todo|in_progress|in_review → cancelled
-  | "release"; // in_progress → todo (machine only, stale timeout)
+  | "cancel" // todo|in_progress|in_review|error → cancelled
+  | "release" // in_progress → todo (machine only, stale timeout)
+  | "fail" // assigned todo|in_progress → error (runtime only)
+  | "retry"; // error → in_progress (explicit user/lead action)
 
 interface TransitionDef {
   from: TaskStatus[];
@@ -23,8 +25,10 @@ const TRANSITIONS: Record<TaskTransition, TransitionDef> = {
   complete: { from: ["in_review"], to: "done", allow: ["user", "machine", "agent:leader", "agent:maintainer"] },
   // todo is cancellable too: an assigned todo task keeps getting re-dispatched
   // by the sweep, so cancel must be able to stop it before any agent claims it.
-  cancel: { from: ["todo", "in_progress", "in_review"], to: "cancelled", allow: ["user", "machine", "agent:leader", "agent:maintainer"] },
+  cancel: { from: ["todo", "in_progress", "in_review", "error"], to: "cancelled", allow: ["user", "machine", "agent:leader", "agent:maintainer"] },
   release: { from: ["in_progress"], to: "todo", allow: ["machine", "agent:leader", "agent:maintainer"] },
+  fail: { from: ["todo", "in_progress"], to: "error", allow: ["machine"] },
+  retry: { from: ["error"], to: "in_progress", allow: ["user", "agent:leader", "agent:maintainer"] },
 };
 
 export interface TransitionError {

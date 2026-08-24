@@ -22,6 +22,8 @@ const DRAG_TARGETS: Partial<Record<TaskActionType, string>> = {
   completed: "done",
   rejected: "in_progress",
   cancelled: "cancelled",
+  failed: "error",
+  retried: "in_progress",
 };
 
 interface ChoreographyStep {
@@ -56,7 +58,16 @@ const MOVE_SEQUENCE: ChoreographyStep[] = [
 
 function getSequence(action: TaskActionType): ChoreographyStep[] | null {
   if (action === "claimed") return CLAIM_SEQUENCE;
-  if (action === "review_requested" || action === "completed" || action === "rejected" || action === "cancelled") return MOVE_SEQUENCE;
+  if (
+    action === "review_requested" ||
+    action === "completed" ||
+    action === "rejected" ||
+    action === "cancelled" ||
+    action === "failed" ||
+    action === "retried"
+  ) {
+    return MOVE_SEQUENCE;
+  }
   return null;
 }
 

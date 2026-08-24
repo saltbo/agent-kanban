@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   workspaceCleanup: vi.fn(),
   sessionCreate: vi.fn(async () => {}),
   sessionForceRemove: vi.fn(async () => {}),
+  sessionPatch: vi.fn(async () => {}),
+  sessionApplyEvent: vi.fn(async () => ({ status: "errored" })),
   provider: { name: "codex", checkAvailability: vi.fn(async () => ({ status: "ready" })) },
 }));
 
@@ -35,7 +37,12 @@ vi.mock("../src/providers/registry.js", () => ({
   normalizeRuntime: (runtime: string) => runtime,
 }));
 vi.mock("../src/session/manager.js", () => ({
-  getSessionManager: () => ({ create: mocks.sessionCreate, forceRemove: mocks.sessionForceRemove }),
+  getSessionManager: () => ({
+    create: mocks.sessionCreate,
+    forceRemove: mocks.sessionForceRemove,
+    patch: mocks.sessionPatch,
+    applyEvent: mocks.sessionApplyEvent,
+  }),
 }));
 vi.mock("../src/workspace/agents.js", () => ({ ensureSubagents: mocks.ensureSubagents }));
 vi.mock("../src/workspace/repoOps.js", () => ({
@@ -110,6 +117,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     getTask: vi.fn(async () => ({ status: "in_progress" })),
     createSession: vi.fn(async () => ({ ok: true })),
     releaseTask: vi.fn(async () => undefined),
+    failTask: vi.fn(async () => ({ status: "error" })),
     closeSession: vi.fn(async () => undefined),
     ...overrides,
   };
@@ -169,29 +177,40 @@ describe("dispatcher preparation transaction", () => {
     expect(mocks.sessionCreate.mock.invocationCallOrder[0]).toBeLessThan(mocks.materializeSkillSnapshots.mock.invocationCallOrder[0]);
   });
 
-  it("cleans workspace and both local/remote session state when materialization fails", async () => {
+  it("moves a post-claim materialization failure to error and preserves local work", async () => {
     mocks.materializeSkillSnapshots.mockReturnValue(false);
     const h = harness();
 
     await expect(dispatch(h)).resolves.toBe(false);
 
-    expect(mocks.workspaceCleanup).toHaveBeenCalledOnce();
-    expect(mocks.sessionForceRemove).toHaveBeenCalledOnce();
-    expect(h.client.releaseTask).toHaveBeenCalledWith("task-1");
+    expect(mocks.workspaceCleanup).not.toHaveBeenCalled();
+    expect(mocks.sessionForceRemove).not.toHaveBeenCalled();
+    expect(h.client.failTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ code: "DISPATCH_PREPARATION_FAILED", attempt_id: expect.any(String) }),
+    );
+    expect(mocks.sessionApplyEvent).toHaveBeenCalledWith(
+      expect.any(String),
+      { type: "iterator_failed" },
+      expect.objectContaining({ lastFailure: expect.objectContaining({ code: "DISPATCH_PREPARATION_FAILED" }) }),
+    );
     expect(h.client.closeSession).toHaveBeenCalledOnce();
     expect(h.pool.spawnAgent).not.toHaveBeenCalled();
   });
 
-  it("cleans prompt, workspace, local session, and remote state when spawn fails", async () => {
+  it("cleans prompt but preserves workspace and local session when spawn fails post-claim", async () => {
     const h = harness();
     h.pool.spawnAgent.mockRejectedValueOnce(new Error("spawn failed"));
 
     await expect(dispatch(h)).resolves.toBe(false);
 
     expect(mocks.cleanupPromptFile).toHaveBeenCalledOnce();
-    expect(mocks.workspaceCleanup).toHaveBeenCalledOnce();
-    expect(mocks.sessionForceRemove).toHaveBeenCalledOnce();
-    expect(h.client.releaseTask).toHaveBeenCalledWith("task-1");
+    expect(mocks.workspaceCleanup).not.toHaveBeenCalled();
+    expect(mocks.sessionForceRemove).not.toHaveBeenCalled();
+    expect(h.client.failTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ code: "DISPATCH_PREPARATION_FAILED", attempt_id: expect.any(String) }),
+    );
     expect(h.client.closeSession).toHaveBeenCalledOnce();
   });
 

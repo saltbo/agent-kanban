@@ -107,6 +107,7 @@ function makeProvider(handle: AgentHandle): AgentProvider {
 function makeApiClient(overrides: Partial<Record<string, any>> = {}): ApiClient {
   return {
     getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+    failTask: vi.fn().mockResolvedValue({ status: "error" }),
     releaseTask: vi.fn().mockResolvedValue({}),
     closeSession: vi.fn().mockResolvedValue({}),
     ...overrides,
@@ -688,17 +689,27 @@ describe("routeTurnEnd — per-segment token reporting", () => {
     expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
-  it("resultReceived=false causes finalize to release task", async () => {
+  it("resultReceived=false moves the task to error without releasing it", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
 
-    // No turn.end → resultReceived stays false → release
+    // No turn.end means the protocol ended before review; preserve the workspace.
     const agentClient = makeAgentClient(null);
 
     await spawnAndWait(apiClient, { events: [], taskId, sessionId, agentClient });
 
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId);
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      taskId,
+      expect.objectContaining({
+        category: "protocol",
+        code: "TASK_NOT_SUBMITTED",
+        session_id: sessionId,
+        attempt_id: expect.any(String),
+      }),
+    );
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 });
 
@@ -1004,9 +1015,13 @@ describe("finalize — transient crash (iterator throws TransientError)", () => 
 
     await new Promise((r) => setTimeout(r, 10));
 
-    // transient crash goes to rate_limited state (suspends), NOT completing
-    // So releaseTask should NOT be called
+    // Non-quota transient failures require manual handling in Error.
     expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      taskId,
+      expect.objectContaining({ retryable: true, session_id: sessionId }),
+    );
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 });
 
@@ -1216,7 +1231,8 @@ describe("RuntimePool — clearTimer", () => {
 
     // If clearTimer wasn't called, the timer would leak and keep the process alive.
     // We verify indirectly by checking the agent completed normally.
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId);
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 });
 
@@ -1413,8 +1429,8 @@ describe("finalize: cost reporting when lastCostUsd > 0 (line 415 coverage)", ()
 // finalize — non-transient crash → completing (line 454)
 // ============================================================================
 
-describe("finalize — non-transient crash → completing path", () => {
-  it("calls releaseTask and logs agent-crashed warning when agent crashes with non-transient error", async () => {
+describe("finalize — non-transient crash → error queue", () => {
+  it("records a structured failure and preserves work when the agent crashes", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
@@ -1426,8 +1442,12 @@ describe("finalize — non-transient crash → completing path", () => {
     await spawnAndWait(apiClient, { handle: crashHandle, taskId, sessionId, agentClient });
     await new Promise((r) => setTimeout(r, 10));
 
-    // Non-transient crash → completing → releaseTask is called
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId);
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      taskId,
+      expect.objectContaining({ code: "ITERATOR_CRASH", session_id: sessionId }),
+    );
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 });
 
@@ -1471,6 +1491,7 @@ describe("finalize — applyEvent state transition error handler", () => {
     await seedActiveSession(sessions, sessionId, taskId);
 
     const agentClient = makeAgentClient(null);
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "cancelled" }) });
 
     // Make cleanup_done applyEvent throw to exercise line 465
     const originalApplyEvent = sessions.applyEvent.bind(sessions);
@@ -1481,12 +1502,11 @@ describe("finalize — applyEvent state transition error handler", () => {
       return originalApplyEvent(sid, event);
     });
 
-    // No events → iterator_done_normal → completing → releaseTask → cleanup_done throws (caught)
+    // A server-side terminal state is the only path that enters cleanup.
     await spawnAndWait(apiClient, { events: [], taskId, sessionId, agentClient });
     await new Promise((r) => setTimeout(r, 10));
 
-    // releaseTask is still called even though cleanup_done threw
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId);
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });
 
@@ -1587,7 +1607,8 @@ describe("finalize — relay quota suspension (relay active + iterator throws {s
   });
 
   function makeStatusError(status: number, headers?: Headers): Error {
-    return Object.assign(new Error(`relay responded ${status}`), { status, ...(headers ? { headers } : {}) });
+    const detail = status === 403 ? `relay responded ${status}: usage limit reached for this billing cycle` : `relay responded ${status}`;
+    return Object.assign(new Error(detail), { status, ...(headers ? { headers } : {}) });
   }
 
   async function spawnCrashWithHint(error: Error, quotaResetHint?: () => string | undefined, seedQuotaSuspensions?: number) {
@@ -1645,14 +1666,14 @@ describe("finalize — relay quota suspension (relay active + iterator throws {s
     expect(session?.resumeAfter).toBeLessThanOrEqual(after + 120_000);
   });
 
-  it("falls back to a 30-minute resume horizon when neither hint nor Retry-After exists", async () => {
+  it("falls back to a five-hour resume horizon when neither hint nor Retry-After exists", async () => {
     const before = Date.now();
     const session = await spawnCrashWithHint(makeStatusError(429));
     const after = Date.now();
 
     expect(session?.status).toBe("rate_limited");
-    expect(session?.resumeAfter).toBeGreaterThanOrEqual(before + 30 * 60_000);
-    expect(session?.resumeAfter).toBeLessThanOrEqual(after + 30 * 60_000);
+    expect(session?.resumeAfter).toBeGreaterThanOrEqual(before + 5 * 60 * 60_000);
+    expect(session?.resumeAfter).toBeLessThanOrEqual(after + 5 * 60 * 60_000);
   });
 
   it("does NOT suspend on 401 — a revoked key is terminal, not a window problem", async () => {
@@ -1660,8 +1681,11 @@ describe("finalize — relay quota suspension (relay active + iterator throws {s
 
     expect(session?.status).not.toBe("rate_limited");
     expect(session?.resumeAfter).toBeUndefined();
-    // Terminal crash on an in_progress task → released back to the board.
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ category: "authentication", http_status: 401 }),
+    );
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
   it("does NOT suspend a 429 when no relay is active", async () => {
@@ -1669,33 +1693,27 @@ describe("finalize — relay quota suspension (relay active + iterator throws {s
     const session = await spawnCrashWithHint(makeStatusError(429), () => "2026-08-20T00:00:00.000Z");
 
     expect(session?.status).not.toBe("rate_limited");
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
-  it("treats a 403 crash as terminal when quotaSuspensions has hit the cap (5)", async () => {
-    // A permanent 403 (plan/region/model block) looks identical to quota
-    // exhaustion — after MAX_QUOTA_SUSPENSIONS consecutive suspensions the
-    // crash is terminal: task released, no resumeAfter/suspension patch.
-    const patchSpy = vi.spyOn(sessions, "patch");
+  it("continues suspending confirmed quota failures without an arbitrary retry cap", async () => {
     const hint = "2026-08-20T00:00:00.000Z";
     const session = await spawnCrashWithHint(makeStatusError(403), () => hint, 5);
 
-    expect(session?.status).not.toBe("rate_limited");
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalled();
-    // No quota-suspension patch: the streak must not grow past the cap.
-    const suspensionPatch = patchSpy.mock.calls.find(([, patch]) => (patch as { quotaSuspensions?: number }).quotaSuspensions === 6);
-    expect(suspensionPatch).toBeUndefined();
-    const resumeAfterPatch = patchSpy.mock.calls.find(([, patch]) => "resumeAfter" in (patch as object));
-    expect(resumeAfterPatch).toBeUndefined();
+    expect(session?.status).toBe("rate_limited");
+    expect(session?.resumeAfter).toBe(Date.parse(hint));
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
-  it("increments quotaSuspensions on each quota suspension below the cap", async () => {
+  it("does not use quotaSuspensions as a deletion or terminal-failure counter", async () => {
     const hint = "2026-08-20T00:00:00.000Z";
     const session = await spawnCrashWithHint(makeStatusError(403), () => hint, 2);
 
     expect(session?.status).toBe("rate_limited");
     expect(session?.resumeAfter).toBe(Date.parse(hint));
-    expect(session?.quotaSuspensions).toBe(3);
+    expect(session?.quotaSuspensions).toBe(2);
     expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });
@@ -1712,6 +1730,7 @@ describe("finalize — quotaSuspensions reset on in_review", () => {
     await sessions.patch(sessionId, { quotaSuspensions: 2 });
 
     const patchSpy = vi.spyOn(sessions, "patch");
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) });
     const agentClient = makeAgentClient({ status: "in_review" });
 
     await spawnAndWait(apiClient, { events: [makeTurnEndEvent(0.001)], taskId, sessionId, agentClient });

@@ -6,10 +6,11 @@ describe("applyTransition — active", () => {
   it.each<[SessionEvent, SessionState]>([
     [{ type: "rate_limit_cleared" }, "active"],
     [{ type: "iterator_done_with_result", taskInReview: true }, "in_review"],
-    [{ type: "iterator_done_with_result", taskInReview: false }, "completing"],
+    [{ type: "iterator_done_with_result", taskInReview: false }, "errored"],
     [{ type: "iterator_done_rate_limited" }, "rate_limited"],
-    [{ type: "iterator_done_normal" }, "completing"],
-    [{ type: "iterator_crashed" }, "completing"],
+    [{ type: "iterator_done_normal" }, "errored"],
+    [{ type: "iterator_crashed" }, "errored"],
+    [{ type: "iterator_failed" }, "errored"],
     [{ type: "task_cancelled" }, "completing"],
     [{ type: "orphan_detected" }, "completing"],
   ])("active -(%o)-> %s", (event, expected) => {
@@ -22,7 +23,6 @@ describe("applyTransition — active", () => {
     "resume_failed_terminal",
     "rejected_by_reviewer",
     "cleanup_done",
-    "task_deleted",
   ])("rejects %s from active", (type) => {
     expect(() => applyTransition("active", { type } as SessionEvent)).toThrow(TransitionError);
   });
@@ -32,7 +32,7 @@ describe("applyTransition — rate_limited", () => {
   it.each<[SessionEvent, SessionState]>([
     [{ type: "resume_started" }, "active"],
     [{ type: "resume_failed_transient" }, "rate_limited"],
-    [{ type: "resume_failed_terminal" }, "completing"],
+    [{ type: "resume_failed_terminal" }, "errored"],
     [{ type: "task_cancelled" }, "completing"],
     [{ type: "task_deleted" }, "completing"],
     [{ type: "orphan_detected" }, "completing"],
@@ -56,7 +56,7 @@ describe("applyTransition — in_review", () => {
     [{ type: "rejected_by_reviewer" }, "active"],
     [{ type: "resume_started" }, "active"],
     [{ type: "resume_failed_transient" }, "in_review"],
-    [{ type: "resume_failed_terminal" }, "completing"],
+    [{ type: "resume_failed_terminal" }, "errored"],
     [{ type: "task_cancelled" }, "completing"],
     [{ type: "task_deleted" }, "completing"],
   ])("in_review -(%o)-> %s", (event, expected) => {
@@ -65,6 +65,22 @@ describe("applyTransition — in_review", () => {
 
   it("in_review sessions are never orphan-reaped", () => {
     expect(() => applyTransition("in_review", { type: "orphan_detected" })).toThrow(TransitionError);
+  });
+});
+
+describe("applyTransition — errored", () => {
+  it.each<[SessionEvent, SessionState]>([
+    [{ type: "resume_started" }, "active"],
+    [{ type: "resume_failed_transient" }, "errored"],
+    [{ type: "resume_failed_terminal" }, "errored"],
+    [{ type: "task_cancelled" }, "completing"],
+    [{ type: "task_deleted" }, "completing"],
+  ])("errored -(%o)-> %s", (event, expected) => {
+    expect(applyTransition("errored", event)).toBe(expected);
+  });
+
+  it("forbids orphan cleanup while a failed task awaits user action", () => {
+    expect(() => applyTransition("errored", { type: "orphan_detected" })).toThrow(TransitionError);
   });
 });
 

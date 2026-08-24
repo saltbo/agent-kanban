@@ -89,7 +89,7 @@ Dark is the default. Light mode uses the same hue relationships with adjusted li
 
 ## Layout
 - **Approach:** Grid-disciplined — strict columns for the kanban board, predictable alignment
-- **Grid:** 5 equal columns (kanban: Todo, In Progress, In Review, Done, Cancelled), 12-column grid for other layouts
+- **Grid:** 6 equal columns (kanban: Todo, In Progress, In Review, Error, Done, Cancelled), 12-column grid for other layouts
 - **Max content width:** 1200px
 - **Border radius:**
   - sm: 4px — badges, small chips

@@ -35,6 +35,7 @@ type AgentActivityRow = Agent & {
   todo_task_count: number;
   in_progress_task_count: number;
   in_review_task_count: number;
+  error_task_count: number;
   done_task_count: number;
   cancelled_task_count: number;
   input_tokens: number;
@@ -50,7 +51,7 @@ type AgentBaseRow = Agent & {
 
 type AgentTaskCounts = Pick<
   AgentActivityRow,
-  "todo_task_count" | "in_progress_task_count" | "in_review_task_count" | "done_task_count" | "cancelled_task_count"
+  "todo_task_count" | "in_progress_task_count" | "in_review_task_count" | "error_task_count" | "done_task_count" | "cancelled_task_count"
 >;
 
 type AgentUsageTotals = Pick<AgentActivityRow, "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_creation_tokens" | "cost_micro_usd">;
@@ -62,6 +63,7 @@ function buildAgentStatus(agent: AgentActivityRow, runtimeAvailable: boolean): A
       todo: Number(agent.todo_task_count ?? 0),
       in_progress: Number(agent.in_progress_task_count ?? 0),
       in_review: Number(agent.in_review_task_count ?? 0),
+      error: Number(agent.error_task_count ?? 0),
       done: Number(agent.done_task_count ?? 0),
       cancelled: Number(agent.cancelled_task_count ?? 0),
     },
@@ -78,6 +80,7 @@ export function withAgentStatus(agent: AgentWithActivity, runtimeAvailable: bool
         todo_task_count: agent.status.tasks.todo,
         in_progress_task_count: agent.status.tasks.in_progress,
         in_review_task_count: agent.status.tasks.in_review,
+        error_task_count: agent.status.tasks.error,
         done_task_count: agent.status.tasks.done,
         cancelled_task_count: agent.status.tasks.cancelled,
       },
@@ -94,6 +97,7 @@ function parseAgentActivity(row: AgentActivityRow): AgentWithActivity {
     todo_task_count: _todoTaskCount,
     in_progress_task_count: _inProgressTaskCount,
     in_review_task_count: _inReviewTaskCount,
+    error_task_count: _errorTaskCount,
     done_task_count: _doneTaskCount,
     cancelled_task_count: _cancelledTaskCount,
     ...agent
@@ -293,6 +297,7 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
       COALESCE(tc.todo_task_count, 0) as todo_task_count,
       COALESCE(tc.in_progress_task_count, 0) as in_progress_task_count,
       COALESCE(tc.in_review_task_count, 0) as in_review_task_count,
+      COALESCE(tc.error_task_count, 0) as error_task_count,
       COALESCE(tc.done_task_count, 0) as done_task_count,
       COALESCE(tc.cancelled_task_count, 0) as cancelled_task_count,
       COALESCE(su.input_tokens, 0) as input_tokens,
@@ -306,6 +311,7 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
         SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) as todo_task_count,
         SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_task_count,
         SUM(CASE WHEN status = 'in_review' THEN 1 ELSE 0 END) as in_review_task_count,
+        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_task_count,
         SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done_task_count,
         SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_task_count
       FROM tasks
@@ -381,6 +387,7 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
         SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) as todo_task_count,
         SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_task_count,
         SUM(CASE WHEN status = 'in_review' THEN 1 ELSE 0 END) as in_review_task_count,
+        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_task_count,
         SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done_task_count,
         SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_task_count
       FROM tasks

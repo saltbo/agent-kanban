@@ -221,11 +221,12 @@ const DONE_DELAY = Math.max(...T.map((e) => e.delay)) + 1000;
 
 // ─── Hook ───
 
-const STATUSES = ["todo", "in_progress", "in_review", "done", "cancelled"] as const;
+const STATUSES = ["todo", "in_progress", "in_review", "error", "done", "cancelled"] as const;
 const LABELS: Record<string, string> = {
   todo: "Todo",
   in_progress: "In Progress",
   in_review: "In Review",
+  error: "Error",
   done: "Done",
   cancelled: "Cancelled",
 };
@@ -275,7 +276,7 @@ export function DemoBoard({ onContinue, onSkip }: { onContinue: () => void; onSk
   const { columns, avatars, done, replay } = useDemoSequence();
   return (
     <div className="relative">
-      <div className="hidden md:grid grid-cols-5 min-h-[50vh]">
+      <div className="hidden md:grid grid-cols-6 min-h-[50vh]">
         {columns.map((c) => (
           <KanbanColumn key={c.status} column={c} labels={DEMO_LABELS} onTaskClick={() => {}} />
         ))}

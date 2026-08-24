@@ -230,7 +230,7 @@ export class TunnelClient {
     this.send({ type: "agent:event", sessionId, event });
   }
 
-  sendStatus(sessionId: string, status: "working" | "rate_limited" | "done"): void {
+  sendStatus(sessionId: string, status: "working" | "rate_limited" | "error" | "done"): void {
     this.send({ type: "agent:status", sessionId, status });
   }
 

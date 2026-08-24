@@ -5,7 +5,7 @@ import { createClient } from "../agent/leader.js";
 
 const POLL_INTERVAL_MS = 5000;
 const TERMINAL_STATUSES: ReadonlySet<TaskStatus> = new Set(["done", "cancelled"]);
-const FILTERABLE_STATUSES: ReadonlySet<TaskStatus> = new Set(["todo", "in_progress", "in_review", "done", "cancelled"]);
+const FILTERABLE_STATUSES: ReadonlySet<TaskStatus> = new Set(["todo", "in_progress", "in_review", "error", "done", "cancelled"]);
 
 // Exit codes — see CLAUDE.md / wait design
 const EXIT_OK = 0;
@@ -100,9 +100,9 @@ export async function waitForTasks(ids: string[], opts: TaskWaitOpts): Promise<n
         lastStatus.set(id, task.status);
       }
       if (task.status !== opts.until) {
-        // cancelled is unreachable unless that's what we're waiting for
-        if (task.status === "cancelled" && opts.until !== "cancelled") {
-          process.stderr.write(`task ${id} was cancelled — target ${opts.until} unreachable\n`);
+        // cancelled/error are unreachable unless that's what we're waiting for
+        if ((task.status === "cancelled" || task.status === "error") && opts.until !== task.status) {
+          process.stderr.write(`task ${id} entered ${task.status} — target ${opts.until} unreachable\n`);
           return "unreachable";
         }
         allReached = false;

@@ -11,12 +11,14 @@
  * tick().catch(handleTickError) — this is the top-level boundary.
  */
 
+import { randomUUID } from "node:crypto";
+import type { TaskFailure } from "@agent-kanban/shared";
 import { type ApiClient, ApiError } from "../client/index.js";
 import { createLogger } from "../logger.js";
 import type { SessionManager } from "../session/manager.js";
 import { getSessionManager } from "../session/manager.js";
 import type { SessionFile } from "../session/types.js";
-import { canSafelyDiscardOrphanWorkspace, cleanupWorkspace } from "../workspace/workspace.js";
+import { cleanupWorkspace, type WorkspaceCleanupReason } from "../workspace/workspace.js";
 import { apiCallOptional, cleanupSync } from "./boundaries.js";
 import { dispatchTasks } from "./dispatcher.js";
 import { CleanupError } from "./errors.js";
@@ -29,6 +31,7 @@ import type { RuntimePool } from "./runtimePool.js";
 const logger = createLogger("loop");
 
 const RATE_LIMIT_RESUME_PROMPT = "Rate limit window has reset. Continue working on the task where you left off.";
+const ERROR_RETRY_PROMPT = "The task was explicitly retried after a runtime error. Continue from the preserved workspace and context.";
 
 // Idle exponential backoff: each tick that does no work slows the next
 // tick down by this multiplier up to MAX_IDLE_BACKOFF_MS. Any real event
@@ -153,6 +156,13 @@ export class DaemonLoop {
       (s, msg) => resumeOneSession(s, msg, this.client, this.pool),
       this.opts.maxConcurrent,
     );
+    await checkErroredSessions(
+      this.sessions,
+      this.pool,
+      this.client,
+      (s, msg) => resumeOneSession(s, msg, this.client, this.pool),
+      this.opts.maxConcurrent,
+    );
 
     await this.resumeBackoffSessions();
 
@@ -214,51 +224,95 @@ export async function reapOrphanWorkerSessions(
   pool: RuntimePool,
   client: {
     getTask(id: string): Promise<unknown>;
-    releaseTask(id: string): Promise<unknown>;
+    getTaskNotes(id: string): Promise<unknown>;
+    failTask(id: string, body: TaskFailure & { session_id?: string; runtime?: string; attempt_id: string }): Promise<unknown>;
     closeSession(agentId: string, sessionId: string): Promise<unknown>;
   },
   circuitBreaker?: RuntimeCircuitBreaker,
 ): Promise<void> {
   for (const s of sessions.list({ type: "worker", status: "active" })) {
     if (!s.taskId || pool.hasTask(s.taskId)) continue;
-    if (s.workspace && !canSafelyDiscardOrphanWorkspace(s.workspace)) {
-      logger.warn(`Preserving orphan session ${s.sessionId.slice(0, 8)} and workspace ${s.workspace.cwd}; manual recovery is required`);
-      continue;
-    }
-
     const task = (await apiCallOptional("getTask", () => client.getTask(s.taskId!))) as { status?: string } | null;
 
     if (!task) {
       logger.warn(`Task ${s.taskId} not found (deleted), reaping orphan session`);
       await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
-      await completeTerminal(sessions, s);
+      await completeTerminal(sessions, s, "task_deleted");
       continue;
     }
 
     if (task.status === "done" || task.status === "cancelled") {
       logger.info(`Reaping orphan worker session for task ${s.taskId} (status=${task.status})`);
       await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
-      await completeTerminal(sessions, s);
+      await completeTerminal(sessions, s, task.status === "done" ? "task_done" : "task_cancelled");
       continue;
     }
 
     if (task.status === "todo") {
       circuitBreaker?.recordPreClaimFailure(s.runtime, s.taskId, "orphan session found before task was claimed");
-      logger.warn(`Reaping pre-claim orphan session for task ${s.taskId} (runtime=${s.runtime}) without release`);
+      const failure = {
+        category: "protocol",
+        code: "ORPHANED_BEFORE_CLAIM",
+        message: "Daemon restarted or lost the runtime before the assigned task was claimed",
+        retryable: true,
+      } as const;
+      const failureAttemptId = randomUUID();
+      await sessions.patch(s.sessionId, { failureAttemptId, lastFailure: failure });
+      await apiCallOptional("failPreClaimOrphanTask", () =>
+        client.failTask(s.taskId!, { ...failure, session_id: s.sessionId, runtime: s.runtime, attempt_id: failureAttemptId }),
+      );
       await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
-      await completeTerminal(sessions, s);
+      await sessions.applyEvent(s.sessionId, { type: "iterator_failed" }, { lastFailure: failure, failureAttemptId, errorAt: Date.now() });
+      logger.warn(`Moved pre-claim orphan task ${s.taskId} to error queue and preserved its workspace`);
       continue;
     }
 
     if (task.status === "in_progress") {
-      await apiCallOptional("releaseOrphanTask", () => client.releaseTask(s.taskId!));
+      const failure = {
+        category: "protocol",
+        code: "ORPHANED_RUNTIME",
+        message: "Daemon restarted or lost the live runtime before the task reached review",
+        retryable: true,
+      } as const;
+      const failureAttemptId = randomUUID();
+      await sessions.patch(s.sessionId, { failureAttemptId, lastFailure: failure });
+      await apiCallOptional("failOrphanTask", () =>
+        client.failTask(s.taskId!, { ...failure, session_id: s.sessionId, runtime: s.runtime, attempt_id: failureAttemptId }),
+      );
       await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
-      logger.info(`Released orphan task ${s.taskId} and reaped its session`);
+      await sessions.applyEvent(s.sessionId, { type: "iterator_failed" }, { lastFailure: failure, failureAttemptId, errorAt: Date.now() });
+      logger.warn(`Moved orphan task ${s.taskId} to error queue and preserved its workspace`);
+    } else if (task.status === "in_review") {
+      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
+      await sessions.applyEvent(s.sessionId, { type: "iterator_done_with_result", taskInReview: true });
+      logger.info(`Recovered orphan session for task ${s.taskId} in review; preserving workspace`);
+    } else if (task.status === "error") {
+      const failure = {
+        category: "unknown",
+        code: "RECOVERED_ERROR_STATE",
+        message: "Recovered server-side error state after daemon restart",
+        retryable: true,
+      } as const;
+      const notes = (await apiCallOptional("getOrphanTaskNotes", () => client.getTaskNotes(s.taskId!))) as Array<{
+        action?: string;
+        detail?: string | null;
+      }> | null;
+      const latestFailed = [...(notes ?? [])].reverse().find((note) => note.action === "failed" && failureActionAttemptId(note.detail));
+      const failureAttemptId = failureActionAttemptId(latestFailed?.detail);
+      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
+      await sessions.applyEvent(
+        s.sessionId,
+        { type: "iterator_failed" },
+        {
+          lastFailure: failure,
+          failureAttemptId: failureAttemptId ?? undefined,
+          errorAt: Date.now(),
+        },
+      );
+      logger.warn(`Recovered orphan error session for task ${s.taskId}; preserving workspace`);
     } else {
-      logger.warn(`Reaping orphan session for task ${s.taskId} with unexpected status ${task.status ?? "unknown"} without release`);
-      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
+      logger.warn(`Preserving orphan session for task ${s.taskId} with status ${task.status ?? "unknown"}`);
     }
-    await completeTerminal(sessions, s);
   }
 }
 
@@ -271,7 +325,11 @@ export async function reapCleanupPending(sessions: SessionManager): Promise<void
     if (!s.cleanupPending) continue;
     logger.info(`Retrying cleanup for session ${s.sessionId.slice(0, 8)}`);
     try {
-      if (s.workspace) cleanupSync("workspace-retry", () => cleanupWorkspace(s.workspace!));
+      if (!s.cleanupReason) {
+        logger.warn(`Cleanup retry for ${s.sessionId.slice(0, 8)} has no terminal reason; preserving workspace`);
+        continue;
+      }
+      if (s.workspace) cleanupSync("workspace-retry", () => cleanupWorkspace(s.workspace!, s.cleanupReason!));
       await sessions.applyEvent(s.sessionId, { type: "cleanup_done" });
     } catch (err) {
       logger.warn(`Cleanup retry failed for ${s.sessionId.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
@@ -285,15 +343,15 @@ export async function reapCleanupPending(sessions: SessionManager): Promise<void
  * If workspace cleanup fails (CleanupError), marks the session with
  * cleanupPending so reapCleanupPending retries on the next tick.
  */
-async function completeTerminal(sessions: SessionManager, s: SessionFile): Promise<void> {
+async function completeTerminal(sessions: SessionManager, s: SessionFile, reason: WorkspaceCleanupReason): Promise<void> {
   await sessions.applyEvent(s.sessionId, { type: "orphan_detected" });
   try {
-    if (s.workspace) cleanupSync("workspace", () => cleanupWorkspace(s.workspace!));
+    if (s.workspace) cleanupSync("workspace", () => cleanupWorkspace(s.workspace!, reason));
     await sessions.applyEvent(s.sessionId, { type: "cleanup_done" });
   } catch (err) {
     if (err instanceof CleanupError) {
       logger.warn(`Workspace cleanup failed for ${s.sessionId.slice(0, 8)}, will retry: ${err.message}`);
-      await sessions.patch(s.sessionId, { cleanupPending: true });
+      await sessions.patch(s.sessionId, { cleanupPending: true, cleanupReason: reason });
       return;
     }
     // Non-cleanup error (shouldn't happen in practice) — still try to terminate
@@ -304,7 +362,7 @@ async function completeTerminal(sessions: SessionManager, s: SessionFile): Promi
 
 // ---- Review watching ----
 
-type ResumeCallback = (session: SessionFile, message: string) => Promise<void>;
+type ResumeCallback = (session: SessionFile, message: string) => Promise<boolean>;
 
 /**
  * Scan in_review sessions and handle rejected reviews, completed tasks,
@@ -327,30 +385,125 @@ export async function checkRejectedReviews(
 
     if (!task) {
       logger.warn(`Task ${s.taskId} not found (deleted), cleaning up review session`);
-      await completeTerminalFromReview(sessions, s, { type: "task_deleted" });
+      await completeTerminalFromReview(sessions, s, { type: "task_deleted" }, "task_deleted");
       continue;
     }
 
     if (task.status === "done" || task.status === "cancelled") {
       logger.info(`Cleaning up review session for task ${s.taskId} (task status=${task.status})`);
-      await completeTerminalFromReview(sessions, s, { type: "task_cancelled" });
+      await completeTerminalFromReview(sessions, s, { type: "task_cancelled" }, task.status === "done" ? "task_done" : "task_cancelled");
       continue;
     }
 
     if (task.status === "in_progress") {
-      const notes = (await client.getTaskNotes(s.taskId)) as Array<{ action?: string; detail?: string }>;
-      const rejectLog = [...notes].reverse().find((l) => l.action === "rejected");
+      const notes = (await client.getTaskNotes(s.taskId)) as Array<{ id?: string; action?: string; detail?: string }>;
+      if (s.failureAttemptId) {
+        const failedIndex = notes.findIndex((note) => note.action === "failed" && failureActionAttemptId(note.detail) === s.failureAttemptId);
+        if (failedIndex >= 0 && notes.slice(failedIndex + 1).some((note) => note.action === "retried")) {
+          await resumeOne(s, ERROR_RETRY_PROMPT);
+          continue;
+        }
+      }
+      const latestReviewIndex = notes.map((note) => note.action).lastIndexOf("review_requested");
+      const rejectLog =
+        latestReviewIndex >= 0
+          ? [...notes.slice(latestReviewIndex + 1)].reverse().find((note) => note.action === "rejected" && note.id !== s.lastRejectionActionId)
+          : undefined;
       if (rejectLog) {
         const reason = rejectLog.detail || "No reason provided";
-        const message = `Task rejected. Reason: ${reason}\n\nPlease fix the issues and submit for review again.`;
-        await resumeOne(s, message);
+        const message = `Task rejected. Reason: ${reason}\n\nThe task is already assigned to this session and is already in_progress. Do not run ak task claim again. Continue directly in the preserved workspace, fix the issues, and submit the task for review again.`;
+        const pendingRejectionActionId = rejectLog.id;
+        if (pendingRejectionActionId) await sessions.patch(s.sessionId, { pendingRejectionActionId });
+        await resumeOne({ ...s, pendingRejectionActionId }, message);
       } else {
-        // Agent finished with result but never submitted for review — release.
-        logger.info(`Task ${s.taskId} in_progress without reject, releasing orphan review session`);
-        await completeTerminalFromReview(sessions, s, { type: "task_cancelled" });
+        const failure = {
+          category: "protocol",
+          code: "TASK_NOT_SUBMITTED",
+          message: "Agent returned a result without moving the task to review",
+          retryable: true,
+        } as const;
+        const failureAttemptId = randomUUID();
+        await sessions.patch(s.sessionId, { failureAttemptId, lastFailure: failure });
+        await client.failTask(s.taskId, { ...failure, session_id: s.sessionId, runtime: s.runtime, attempt_id: failureAttemptId });
+        await sessions.applyEvent(s.sessionId, { type: "iterator_failed" }, { lastFailure: failure, failureAttemptId, errorAt: Date.now() });
+        logger.warn(`Moved task ${s.taskId} to error queue and preserved its review workspace`);
       }
+    } else if (task.status === "error") {
+      const notes = (await client.getTaskNotes(s.taskId)) as Array<{ action?: string; detail?: string | null }>;
+      const latestFailed = [...notes].reverse().find((note) => note.action === "failed" && failureActionAttemptId(note.detail));
+      const failureAttemptId = failureActionAttemptId(latestFailed?.detail) ?? s.failureAttemptId;
+      const failure =
+        s.lastFailure ??
+        ({
+          category: "unknown",
+          code: "RECOVERED_ERROR_STATE",
+          message: "Recovered server-side error state after daemon restart",
+          retryable: true,
+        } as const);
+      await sessions.applyEvent(s.sessionId, { type: "iterator_failed" }, { lastFailure: failure, failureAttemptId, errorAt: Date.now() });
+      logger.warn(`Recovered review session for task ${s.taskId} in error; preserving workspace`);
     }
   }
+}
+
+/** Resume only after a user/lead explicitly moves an error task back to in_progress. */
+export async function checkErroredSessions(
+  sessions: SessionManager,
+  pool: RuntimePool,
+  client: ApiClient,
+  resumeOne: ResumeCallback,
+  maxConcurrent: number,
+): Promise<void> {
+  for (const s of sessions.list({ type: "worker", status: "errored" })) {
+    if (!s.taskId || pool.hasTask(s.taskId)) continue;
+    const task = (await apiCallOptional("getTask", () => client.getTask(s.taskId!))) as { status?: string } | null;
+    if (!task) {
+      await completeTerminalFromError(sessions, s, { type: "task_deleted" }, "task_deleted");
+    } else if (task.status === "done" || task.status === "cancelled") {
+      await completeTerminalFromError(sessions, s, { type: "task_cancelled" }, task.status === "done" ? "task_done" : "task_cancelled");
+    } else if (task.status === "todo" || task.status === "in_progress") {
+      if (task.status === "in_progress" && pool.activeCountForRuntime(s.runtime) < maxConcurrent) {
+        const notes = (await client.getTaskNotes(s.taskId)) as Array<{ action?: string; detail?: string | null }>;
+        const failedIndex = notes.findIndex((note) => note.action === "failed" && failureActionAttemptId(note.detail) === s.failureAttemptId);
+        const explicitlyRetried = failedIndex >= 0 && notes.slice(failedIndex + 1).some((note) => note.action === "retried");
+        if (explicitlyRetried) {
+          await resumeOne(s, ERROR_RETRY_PROMPT);
+          continue;
+        }
+      }
+      const failure = s.lastFailure ?? {
+        category: "unknown",
+        code: "FAILURE_PERSISTENCE_RETRY",
+        message: "Runtime failed before the control plane recorded the error",
+        retryable: true,
+      };
+      const failureAttemptId = s.failureAttemptId ?? randomUUID();
+      if (!s.failureAttemptId) await sessions.patch(s.sessionId, { failureAttemptId });
+      await client.failTask(s.taskId, { ...failure, session_id: s.sessionId, runtime: s.runtime, attempt_id: failureAttemptId });
+      logger.warn(`Reconciled missing error state for task ${s.taskId}; workspace remains preserved`);
+    }
+  }
+}
+
+function failureActionAttemptId(detail: string | null | undefined): string | null {
+  if (!detail) return null;
+  try {
+    const parsed = JSON.parse(detail) as { attempt_id?: unknown };
+    return typeof parsed.attempt_id === "string" ? parsed.attempt_id : null;
+  } catch {
+    return null;
+  }
+}
+
+async function completeTerminalFromError(
+  sessions: SessionManager,
+  s: SessionFile,
+  event: { type: "task_cancelled" | "task_deleted" },
+  reason: WorkspaceCleanupReason,
+): Promise<void> {
+  await sessions.applyEvent(s.sessionId, event);
+  if (s.workspace) cleanupWorkspace(s.workspace, reason);
+  await sessions.applyEvent(s.sessionId, { type: "cleanup_done" });
 }
 
 /** Drive an in_review session through the state machine to terminal. */
@@ -358,11 +511,12 @@ async function completeTerminalFromReview(
   sessions: SessionManager,
   s: SessionFile,
   event: { type: "task_cancelled" | "task_deleted" },
+  reason: WorkspaceCleanupReason,
 ): Promise<void> {
   await sessions.applyEvent(s.sessionId, event).catch((e) => {
     logger.warn(`Review session event failed for ${s.sessionId}: ${errMessage(e)}`);
   });
-  if (s.workspace) cleanupWorkspace(s.workspace);
+  if (s.workspace) cleanupWorkspace(s.workspace, reason);
   await sessions.applyEvent(s.sessionId, { type: "cleanup_done" }).catch((e) => {
     logger.warn(`Review session cleanup failed for ${s.sessionId}: ${errMessage(e)}`);
   });

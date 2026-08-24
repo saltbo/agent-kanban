@@ -46,7 +46,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { claudeProvider, mapSDKMessage } from "../packages/cli/src/providers/claude.js";
+import { classifyClaudeFailure, claudeProvider, mapSDKMessage } from "../packages/cli/src/providers/claude.js";
 
 // ---------------------------------------------------------------------------
 // Host-environment isolation
@@ -325,7 +325,7 @@ describe("mapSDKMessage — assistant with error field", () => {
     expect(result[0]?.type).toBe("turn.rate_limit");
   });
 
-  it("rate_limit resetAt for string error is roughly 1 hour from now", () => {
+  it("rate_limit resetAt for string error uses the five-hour quota fallback", () => {
     const before = Date.now();
     const msg = {
       type: "assistant",
@@ -341,12 +341,12 @@ describe("mapSDKMessage — assistant with error field", () => {
     expect(result[0]?.type).toBe("turn.rate_limit");
     if (result[0]?.type === "turn.rate_limit") {
       const resetMs = new Date(result[0].resetAt!).getTime();
-      expect(resetMs).toBeGreaterThanOrEqual(before + 60 * 60 * 1000 - 100);
-      expect(resetMs).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 100);
+      expect(resetMs).toBeGreaterThanOrEqual(before + 5 * 60 * 60 * 1000 - 100);
+      expect(resetMs).toBeLessThanOrEqual(after + 5 * 60 * 60 * 1000 + 100);
     }
   });
 
-  it("returns error event when error is a non-rate-limit string", () => {
+  it("returns a structured failure when error is a non-rate-limit string", () => {
     const msg = {
       type: "assistant",
       error: "authentication_error",
@@ -357,10 +357,46 @@ describe("mapSDKMessage — assistant with error field", () => {
     } as unknown as SDKMessage;
     const result = mapSDKMessage(msg);
     expect(result).toHaveLength(1);
-    expect(result[0]?.type).toBe("turn.error");
-    if (result[0]?.type === "turn.error") {
+    expect(result[0]?.type).toBe("turn.failure");
+    if (result[0]?.type === "turn.failure") {
       expect(result[0].code).toBe("authentication_error");
+      expect(result[0].category).toBe("authentication");
+      expect(result[0].retryable).toBe(false);
     }
+  });
+
+  it("classifies the observed Kimi 403 usage-limit response as quota suspension", () => {
+    const before = Date.now();
+    const msg = {
+      type: "assistant",
+      error: "authentication_failed",
+      message: {
+        content: [
+          {
+            type: "text",
+            text: 'Failed to authenticate. API Error: 403 {"error":{"type":"permission_error","message":"You\'ve reached your usage limit for this billing cycle."}}',
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+      uuid: "u1",
+      session_id: "s1",
+    } as unknown as SDKMessage;
+
+    const [event] = mapSDKMessage(msg);
+    expect(event?.type).toBe("turn.rate_limit");
+    if (event?.type === "turn.rate_limit") {
+      expect(new Date(event.resetAt!).getTime()).toBeGreaterThanOrEqual(before + 5 * 60 * 60 * 1000 - 100);
+    }
+  });
+
+  it("classifies a non-quota 403 as authentication failure, not rate limit", () => {
+    expect(classifyClaudeFailure("authentication_failed", "Failed to authenticate. API Error: 403 permission denied")).toMatchObject({
+      category: "authentication",
+      code: "authentication_failed",
+      http_status: 403,
+      retryable: false,
+    });
   });
 });
 
@@ -967,7 +1003,7 @@ describe("mapSDKMessageStream — result message emits turn.end and closes turn"
     expect(turnOpen.value).toBe(false);
   });
 
-  it("sets result text to undefined for non-success subtype", () => {
+  it("emits a structured failure for a non-success result subtype", () => {
     const msg = {
       type: "result",
       subtype: "error_max_turns",
@@ -978,9 +1014,9 @@ describe("mapSDKMessageStream — result message emits turn.end and closes turn"
     const turnOpen = { value: true };
     const events = [...mapSDKMessageStream(msg, turnOpen)];
 
-    expect(events[0].type).toBe("turn.end");
-    if (events[0].type === "turn.end") {
-      expect(events[0].text).toBeUndefined();
+    expect(events[0].type).toBe("turn.failure");
+    if (events[0].type === "turn.failure") {
+      expect(events[0]).toMatchObject({ category: "unknown", code: "error_max_turns", retryable: false });
     }
   });
 });
@@ -1021,7 +1057,7 @@ describe("mapSDKMessageStream — assistant error resets turnOpen", () => {
     const turnOpen = { value: false };
     const events = [...mapSDKMessageStream(msg, turnOpen)];
 
-    expect(events[0].type).toBe("turn.error");
+    expect(events[0].type).toBe("turn.failure");
   });
 });
 
@@ -1215,7 +1251,7 @@ describe("mapSDKMessageStream — rateLimitSeen deduplication", () => {
     expect(events[0].type).toBe("turn.rate_limit");
   });
 
-  it("uses 60-min fallback resetAt when assistant error fires alone (no prior rate_limit_event)", () => {
+  it("uses five-hour fallback resetAt when assistant error fires alone (no prior rate_limit_event)", () => {
     const before = Date.now();
     const turnOpen = { value: false };
     const rateLimitSeen = { value: false };
@@ -1226,8 +1262,8 @@ describe("mapSDKMessageStream — rateLimitSeen deduplication", () => {
     expect(event.type).toBe("turn.rate_limit");
     if (event.type === "turn.rate_limit") {
       const resetMs = new Date(event.resetAt!).getTime();
-      expect(resetMs).toBeGreaterThanOrEqual(before + 60 * 60 * 1000 - 100);
-      expect(resetMs).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 100);
+      expect(resetMs).toBeGreaterThanOrEqual(before + 5 * 60 * 60 * 1000 - 100);
+      expect(resetMs).toBeLessThanOrEqual(after + 5 * 60 * 60 * 1000 + 100);
     }
   });
 
@@ -1307,6 +1343,44 @@ describe("mapSDKMessageStream — rateLimitSeen deduplication", () => {
     const secondTurnEvents = [...mapSDKMessageStream(assistantRateLimitMsg, turnOpen, rateLimitSeen)];
     expect(secondTurnEvents).toHaveLength(1);
     expect(secondTurnEvents[0].type).toBe("turn.rate_limit");
+  });
+
+  it("treats the observed Kimi 403 assistant-plus-failed-result sequence as quota only", () => {
+    const assistantMsg = {
+      type: "assistant",
+      error: "authentication_failed",
+      message: {
+        content: [
+          {
+            type: "text",
+            text: 'Failed to authenticate. API Error: 403 {"error":{"type":"permission_error","message":"You\'ve reached your usage limit for this billing cycle."}}',
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+      uuid: "kimi-quota",
+      session_id: "s1",
+    } as unknown as SDKMessage;
+    const failedResultMsg = {
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["authentication_failed"],
+      total_cost_usd: 0,
+      usage: {},
+    } as unknown as SDKMessage;
+    const turnOpen = { value: false };
+    const rateLimitSeen = { value: false };
+    const failureSeen = { value: false };
+
+    const events = [
+      ...mapSDKMessageStream(assistantMsg, turnOpen, rateLimitSeen, failureSeen),
+      ...mapSDKMessageStream(failedResultMsg, turnOpen, rateLimitSeen, failureSeen),
+    ];
+
+    expect(events.map(({ type }) => type)).toEqual(["turn.rate_limit"]);
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "turn.failure" }));
+    expect(failureSeen.value).toBe(false);
+    expect(rateLimitSeen.value).toBe(false);
   });
 });
 

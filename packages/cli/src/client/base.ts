@@ -109,6 +109,15 @@ export abstract class ApiClient {
   releaseTask(id: string) {
     return this.request("POST", `/api/tasks/${id}/release`);
   }
+  failTask(id: string, body: import("@agent-kanban/shared").TaskFailure & { session_id?: string; runtime?: string; attempt_id: string }) {
+    return this.request("POST", `/api/tasks/${id}/fail`, body);
+  }
+  retryTask(id: string) {
+    return this.request("POST", `/api/tasks/${id}/retry`);
+  }
+  getTaskErrors(id: string) {
+    return this.request<import("@agent-kanban/shared").TaskError[]>("GET", `/api/tasks/${id}/errors`);
+  }
   cancelTask(id: string, body: Record<string, unknown> = {}) {
     return this.request("POST", `/api/tasks/${id}/cancel`, body);
   }

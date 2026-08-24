@@ -2,22 +2,12 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import type { SubtaskStatus } from "@agent-kanban/shared";
+import type { AgentEvent, SubtaskStatus, TaskFailure } from "@agent-kanban/shared";
 import { ToolName } from "@agent-kanban/shared";
 import type { SDKAssistantMessage, SDKMessage, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createLogger } from "../logger.js";
 import { detectRelay, fetchRelayUsage, type RelayKind } from "./relayUsage.js";
-import type {
-  AgentEvent,
-  AgentHandle,
-  AgentProvider,
-  ContentBlock,
-  ExecuteOpts,
-  HistoryEvent,
-  RuntimeModel,
-  UsageInfo,
-  UsageWindow,
-} from "./types.js";
+import type { AgentHandle, AgentProvider, ContentBlock, ExecuteOpts, HistoryEvent, RuntimeModel, UsageInfo, UsageWindow } from "./types.js";
 import { availabilityFromUsage, availabilityFromUsageError, parseRetryAfterMs, UsageFetchError } from "./types.js";
 
 async function sdk() {
@@ -50,6 +40,31 @@ const CLAUDE_WINDOW_LABELS: Record<string, string> = {
   seven_day_sonnet: "7-Day Sonnet",
   seven_day_opus: "7-Day Opus",
 };
+
+const QUOTA_FALLBACK_MS = 5 * 60 * 60 * 1000;
+
+export function classifyClaudeFailure(code: string | undefined, detail: string): TaskFailure | { quotaResetAt: string } {
+  const statusMatch = detail.match(/(?:API Error|HTTP(?: status)?)[\s:]*(\d{3})/i);
+  const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
+  const quota =
+    httpStatus === 429 || /(?:usage|rate|spend|credit|token)\s*(?:limit|quota)|quota\s*(?:exhausted|exceeded)|billing cycle/i.test(detail);
+  if (quota && (httpStatus === 403 || httpStatus === 429 || code === "rate_limit")) {
+    return { quotaResetAt: new Date(Date.now() + QUOTA_FALLBACK_MS).toISOString() };
+  }
+
+  let category: TaskFailure["category"] = "unknown";
+  if (httpStatus === 401 || httpStatus === 403 || /authenticat|unauthori|invalid api key|permission/i.test(detail)) category = "authentication";
+  else if (httpStatus === 400 || /invalid (?:request|model|configuration)|model not found|unsupported model/i.test(detail))
+    category = "configuration";
+  else if (httpStatus !== undefined || /provider|upstream|service unavailable/i.test(detail)) category = "provider";
+  return {
+    category,
+    code,
+    message: detail,
+    ...(httpStatus !== undefined ? { http_status: httpStatus } : {}),
+    retryable: httpStatus === 408 || httpStatus === 425 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504,
+  };
+}
 
 let cachedToken: string | null = null;
 
@@ -313,7 +328,7 @@ export function mapSDKMessage(msg: SDKMessage): AgentEvent[] {
 
     case "assistant": {
       if (msg.error === "rate_limit") {
-        return [{ type: "turn.rate_limit", status: "rejected", resetAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() }];
+        return [{ type: "turn.rate_limit", status: "rejected", resetAt: new Date(Date.now() + QUOTA_FALLBACK_MS).toISOString() }];
       }
       if (msg.error) {
         const contentText = (msg.message?.content ?? [])
@@ -322,7 +337,11 @@ export function mapSDKMessage(msg: SDKMessage): AgentEvent[] {
           .join(" ")
           .slice(0, 500);
         const detail = contentText || msg.error;
-        return [{ type: "turn.error", code: msg.error, detail }];
+        const failure = classifyClaudeFailure(msg.error, detail);
+        if ("quotaResetAt" in failure) {
+          return [{ type: "turn.rate_limit", status: "rejected", resetAt: failure.quotaResetAt }];
+        }
+        return [{ type: "turn.failure", ...failure }];
       }
       const parentId = msg.parent_tool_use_id;
       const blocks = (msg.message.content ?? []).map((b) => mapContentBlock(b, parentId)).filter((b): b is ContentBlock => b !== null);
@@ -341,6 +360,13 @@ export function mapSDKMessage(msg: SDKMessage): AgentEvent[] {
     }
 
     case "result": {
+      if (msg.subtype !== "success") {
+        const detail = Array.isArray((msg as any).errors) ? (msg as any).errors.join("; ") : `Claude result: ${msg.subtype}`;
+        const failure = classifyClaudeFailure(msg.subtype, detail);
+        return "quotaResetAt" in failure
+          ? [{ type: "turn.rate_limit", status: "rejected", resetAt: failure.quotaResetAt }]
+          : [{ type: "turn.failure", ...failure }];
+      }
       const text = msg.subtype === "success" ? msg.result : undefined;
       return [{ type: "turn.end", text, cost: msg.total_cost_usd || 0, usage: msg.usage as Record<string, any> }];
     }
@@ -382,7 +408,12 @@ function mapStreamBlock(block: { type: string; [k: string]: unknown }, parentId:
  * One turn.start per query() call. Blocks stream in between.
  * turn.end emitted when SDK yields `result`.
  */
-export function* mapSDKMessageStream(msg: SDKMessage, turnOpen: { value: boolean }, rateLimitSeen?: { value: boolean }): Generator<AgentEvent> {
+export function* mapSDKMessageStream(
+  msg: SDKMessage,
+  turnOpen: { value: boolean },
+  rateLimitSeen?: { value: boolean },
+  failureSeen?: { value: boolean },
+): Generator<AgentEvent> {
   if (msg.type === "stream_event") {
     const partial = msg as SDKPartialAssistantMessage;
     const evt = partial.event;
@@ -413,7 +444,11 @@ export function* mapSDKMessageStream(msg: SDKMessage, turnOpen: { value: boolean
       if (assistantMsg.error === "rate_limit" && rateLimitSeen?.value) {
         return;
       }
-      yield* mapSDKMessage(msg);
+      for (const event of mapSDKMessage(msg)) {
+        if (event.type === "turn.rate_limit" && rateLimitSeen) rateLimitSeen.value = true;
+        if (event.type === "turn.failure" && failureSeen) failureSeen.value = true;
+        yield event;
+      }
       return;
     }
 
@@ -443,9 +478,17 @@ export function* mapSDKMessageStream(msg: SDKMessage, turnOpen: { value: boolean
   }
 
   if (msg.type === "result") {
-    // Turn complete — reset per-turn state and emit turn.end
+    // Failed SDK results are not successful turn completion. The assistant
+    // error normally carries the useful detail; only synthesize a failure if
+    // no earlier event did so.
     turnOpen.value = false;
+    const quotaAlreadySeen = rateLimitSeen?.value ?? false;
     if (rateLimitSeen !== undefined) rateLimitSeen.value = false;
+    if ((msg as any).subtype !== "success") {
+      if (quotaAlreadySeen) return;
+      if (!failureSeen?.value) yield* mapSDKMessage(msg);
+      return;
+    }
     const text = (msg as any).subtype === "success" ? (msg as any).result : undefined;
     yield { type: "turn.end", text, cost: (msg as any).total_cost_usd || 0, usage: (msg as any).usage };
     return;
@@ -551,12 +594,13 @@ export const claudeProvider: AgentProvider = {
     const events = (async function* () {
       const turnOpen = { value: false };
       const rateLimitSeen = { value: false };
+      const failureSeen = { value: false };
       let activeSubtasks = 0;
       let resultSeen = false;
       for await (const msg of q) {
         if (msg.type === "system" && (msg as any).subtype === "task_started") activeSubtasks++;
         if (msg.type === "system" && (msg as any).subtype === "task_notification") activeSubtasks = Math.max(0, activeSubtasks - 1);
-        yield* mapSDKMessageStream(msg, turnOpen, rateLimitSeen);
+        yield* mapSDKMessageStream(msg, turnOpen, rateLimitSeen, failureSeen);
         if (msg.type === "result") resultSeen = true;
         if (resultSeen && activeSubtasks <= 0) break;
       }

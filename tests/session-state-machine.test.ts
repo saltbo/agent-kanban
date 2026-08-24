@@ -129,20 +129,20 @@ describe("applyTransition — active state", () => {
     expect(applyTransition("active", { type: "rate_limit_cleared" })).toBe("active");
   });
 
-  it("active + iterator_done_normal → completing", () => {
-    expect(applyTransition("active", { type: "iterator_done_normal" })).toBe("completing");
+  it("active + iterator_done_normal → errored", () => {
+    expect(applyTransition("active", { type: "iterator_done_normal" })).toBe("errored");
   });
 
   it("active + iterator_done_rate_limited → rate_limited", () => {
     expect(applyTransition("active", { type: "iterator_done_rate_limited" })).toBe("rate_limited");
   });
 
-  it("active + iterator_crashed → completing", () => {
-    expect(applyTransition("active", { type: "iterator_crashed" })).toBe("completing");
+  it("active + iterator_crashed → errored", () => {
+    expect(applyTransition("active", { type: "iterator_crashed" })).toBe("errored");
   });
 
-  it("active + iterator_done_with_result (taskInReview=false) → completing", () => {
-    expect(applyTransition("active", { type: "iterator_done_with_result", taskInReview: false })).toBe("completing");
+  it("active + iterator_done_with_result (taskInReview=false) → errored", () => {
+    expect(applyTransition("active", { type: "iterator_done_with_result", taskInReview: false })).toBe("errored");
   });
 
   it("active + iterator_done_with_result (taskInReview=true) → in_review", () => {
@@ -171,8 +171,8 @@ describe("applyTransition — rate_limited state", () => {
     expect(applyTransition("rate_limited", { type: "resume_failed_transient" })).toBe("rate_limited");
   });
 
-  it("rate_limited + resume_failed_terminal → completing", () => {
-    expect(applyTransition("rate_limited", { type: "resume_failed_terminal" })).toBe("completing");
+  it("rate_limited + resume_failed_terminal → errored", () => {
+    expect(applyTransition("rate_limited", { type: "resume_failed_terminal" })).toBe("errored");
   });
 
   it("rate_limited + task_cancelled → completing", () => {
@@ -205,8 +205,8 @@ describe("applyTransition — in_review state", () => {
     expect(applyTransition("in_review", { type: "resume_failed_transient" })).toBe("in_review");
   });
 
-  it("in_review + resume_failed_terminal → completing", () => {
-    expect(applyTransition("in_review", { type: "resume_failed_terminal" })).toBe("completing");
+  it("in_review + resume_failed_terminal → errored", () => {
+    expect(applyTransition("in_review", { type: "resume_failed_terminal" })).toBe("errored");
   });
 
   it("in_review + task_cancelled → completing", () => {
@@ -223,6 +223,22 @@ describe("applyTransition — in_review state", () => {
 
   it("in_review + cleanup_done throws TransitionError", () => {
     expect(() => applyTransition("in_review", { type: "cleanup_done" })).toThrow(TransitionError);
+  });
+});
+
+describe("applyTransition — errored state", () => {
+  it("resumes only after an explicit retry", () => {
+    expect(applyTransition("errored", { type: "resume_started" })).toBe("active");
+  });
+
+  it("preserves the workspace on repeated failures and orphan detection", () => {
+    expect(applyTransition("errored", { type: "resume_failed_terminal" })).toBe("errored");
+    expect(() => applyTransition("errored", { type: "orphan_detected" })).toThrow(TransitionError);
+  });
+
+  it("permits cleanup only after cancellation or deletion", () => {
+    expect(applyTransition("errored", { type: "task_cancelled" })).toBe("completing");
+    expect(applyTransition("errored", { type: "task_deleted" })).toBe("completing");
   });
 });
 
@@ -276,7 +292,7 @@ describe("classifyIteratorEnd feeds into applyTransition correctly", () => {
     expect(nextState).toBe("rate_limited");
   });
 
-  it("crashed only → completing state (worktree cleaned up)", () => {
+  it("crashed only → errored state (worktree preserved)", () => {
     const event = classifyIteratorEnd({
       rateLimited: false,
       crashed: true,
@@ -285,10 +301,10 @@ describe("classifyIteratorEnd feeds into applyTransition correctly", () => {
       transient: false,
     });
     const nextState = applyTransition("active", event);
-    expect(nextState).toBe("completing");
+    expect(nextState).toBe("errored");
   });
 
-  it("crashed+transient → rate_limited state (worktree preserved)", () => {
+  it("crashed+transient → errored state for manual handling", () => {
     const event = classifyIteratorEnd({
       rateLimited: false,
       crashed: true,
@@ -297,7 +313,7 @@ describe("classifyIteratorEnd feeds into applyTransition correctly", () => {
       transient: true,
     });
     const nextState = applyTransition("active", event);
-    expect(nextState).toBe("rate_limited");
+    expect(nextState).toBe("errored");
   });
 
   it("resultReceived+taskInReview → in_review state (reject-resume path)", () => {
@@ -312,7 +328,7 @@ describe("classifyIteratorEnd feeds into applyTransition correctly", () => {
     expect(nextState).toBe("in_review");
   });
 
-  it("normal exit → completing state", () => {
+  it("normal exit → errored state so an incomplete task is preserved", () => {
     const event = classifyIteratorEnd({
       rateLimited: false,
       crashed: false,
@@ -321,6 +337,6 @@ describe("classifyIteratorEnd feeds into applyTransition correctly", () => {
       transient: false,
     });
     const nextState = applyTransition("active", event);
-    expect(nextState).toBe("completing");
+    expect(nextState).toBe("errored");
   });
 });

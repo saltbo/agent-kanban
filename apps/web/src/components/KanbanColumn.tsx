@@ -1,5 +1,5 @@
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
-import { Ban, CheckCircle2, Circle, Clock3, RotateCw } from "lucide-react";
+import { AlertTriangle, Ban, CheckCircle2, Circle, Clock3, RotateCw } from "lucide-react";
 import { TaskCard } from "./TaskCard";
 
 interface KanbanColumnProps {
@@ -13,6 +13,7 @@ const COLUMN_ICONS: Record<string, typeof Circle> = {
   todo: Circle,
   in_progress: RotateCw,
   in_review: Clock3,
+  error: AlertTriangle,
   done: CheckCircle2,
   cancelled: Ban,
 };

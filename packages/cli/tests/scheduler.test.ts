@@ -63,7 +63,7 @@ vi.mock("@agent-kanban/shared", () => ({
 
 // ── resumer + dispatcher mocks — hoisted so factory closures work ─────────────
 const { mockResumeOneSession, mockDispatchTasks } = vi.hoisted(() => ({
-  mockResumeOneSession: vi.fn().mockResolvedValue(undefined),
+  mockResumeOneSession: vi.fn().mockResolvedValue(true),
   mockDispatchTasks: vi.fn().mockResolvedValue(false),
 }));
 
@@ -111,6 +111,11 @@ function makeWorkerSession(
 let sm: SessionManager;
 
 beforeEach(() => {
+  savedGitControlEnv = {};
+  for (const key of GIT_CONTROL_ENV_VARS) {
+    if (process.env[key] !== undefined) savedGitControlEnv[key] = process.env[key];
+    delete process.env[key];
+  }
   sm = new SessionManager();
   _setSessionManagerForTest(sm);
   mockResumeOneSession.mockClear();
@@ -120,6 +125,11 @@ beforeEach(() => {
 afterEach(() => {
   _setSessionManagerForTest(null);
   rmSync(tmpRoot, { recursive: true, force: true });
+  for (const key of GIT_CONTROL_ENV_VARS) {
+    const value = savedGitControlEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,6 +140,7 @@ function makeStubs(tasks: Record<string, unknown>[] = []) {
     listRepositories: vi.fn().mockResolvedValue([]),
     getAgent: vi.fn().mockResolvedValue({ runtime: "claude" }),
     getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+    failTask: vi.fn().mockResolvedValue({ status: "error" }),
     releaseTask: vi.fn().mockResolvedValue(undefined),
     closeSession: vi.fn().mockResolvedValue(undefined),
     getTaskNotes: vi.fn().mockResolvedValue([]),
@@ -151,8 +162,26 @@ function makeRateLimiter(onResumed?: (runtime: string) => void) {
   return new RateLimiter({ onResumed: onResumed ?? vi.fn() });
 }
 
+const GIT_CONTROL_ENV_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_QUARANTINE_PATH",
+] as const;
+
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of GIT_CONTROL_ENV_VARS) delete env[key];
+  return env;
+}
+
+let savedGitControlEnv: Partial<Record<(typeof GIT_CONTROL_ENV_VARS)[number], string>> = {};
+
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: cleanGitEnv() }).trim();
 }
 
 function makeSafeRepoWorkspace(name: string) {
@@ -291,7 +320,10 @@ describe("DaemonLoop tick — in_review session resumption", () => {
 
     const stubs = makeStubs();
     stubs.client.getTask.mockResolvedValue({ status: "in_progress" });
-    stubs.client.getTaskNotes.mockResolvedValue([{ action: "rejected", detail: "needs rework" }]);
+    stubs.client.getTaskNotes.mockResolvedValue([
+      { id: "review-review", action: "review_requested" },
+      { id: "reject-review", action: "rejected", detail: "needs rework" },
+    ]);
 
     const { loop } = makeLoop(stubs);
 
@@ -300,8 +332,10 @@ describe("DaemonLoop tick — in_review session resumption", () => {
     loop.stop();
 
     expect(mockResumeOneSession).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: "sess-review" }),
-      expect.stringContaining("needs rework"),
+      expect.objectContaining({ sessionId: "sess-review", pendingRejectionActionId: "reject-review" }),
+      expect.stringMatching(
+        /Task rejected\. Reason: needs rework[\s\S]*already assigned to this session[\s\S]*already in_progress[\s\S]*Do not run ak task claim again[\s\S]*preserved workspace[\s\S]*submit the task for review again/,
+      ),
       expect.anything(),
       expect.anything(),
     );
@@ -366,7 +400,7 @@ describe("DaemonLoop tick — in_review session resumption", () => {
     expect(sm.read("sess-notfound")?.status).toBe("closed");
   });
 
-  it("cleans up session when in_progress with no rejected note", async () => {
+  it("moves session to error when in_progress has no rejected note", async () => {
     writeSession(makeWorkerSession("sess-noreason", "task-noreason", "in_review"));
 
     const stubs = makeStubs();
@@ -379,16 +413,20 @@ describe("DaemonLoop tick — in_review session resumption", () => {
     await new Promise((r) => setTimeout(r, 100));
     loop.stop();
 
-    // No reject action → don't resume, clean up instead
+    // No reject action means the local review state was invalid; preserve evidence.
     expect(mockResumeOneSession).not.toHaveBeenCalled();
-    expect(sm.read("sess-noreason")?.status).toBe("closed");
+    expect(stubs.client.failTask).toHaveBeenCalledWith(
+      "task-noreason",
+      expect.objectContaining({ code: "TASK_NOT_SUBMITTED", attempt_id: expect.any(String) }),
+    );
+    expect(sm.read("sess-noreason")?.status).toBe("errored");
   });
 });
 
 // ── tick — orphaned active session cleanup ────────────────────────────────────
 
 describe("DaemonLoop tick — orphaned active session cleanup", () => {
-  it("releases and cleans up an orphaned active session whose task is still viable", async () => {
+  it("moves an orphaned active session to error and preserves its workspace", async () => {
     writeSession(
       makeWorkerSession("sess-orphan", "task-orphan", "active", {
         workspace: makeSafeRepoWorkspace("orphan"),
@@ -405,10 +443,13 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
     await new Promise((r) => setTimeout(r, 100));
     loop.stop();
 
-    expect(stubs.client.releaseTask).toHaveBeenCalledWith("task-orphan");
+    expect(stubs.client.releaseTask).not.toHaveBeenCalled();
+    expect(stubs.client.failTask).toHaveBeenCalledWith(
+      "task-orphan",
+      expect.objectContaining({ code: "ORPHANED_RUNTIME", attempt_id: expect.any(String) }),
+    );
     expect(stubs.client.closeSession).toHaveBeenCalledWith("agent-1", "sess-orphan");
-    // Session file must be gone after terminal cleanup
-    expect(sm.read("sess-orphan")?.status).toBe("closed");
+    expect(sm.read("sess-orphan")?.status).toBe("errored");
   });
 
   it("cleans up orphaned active session without releasing when task is done", async () => {
@@ -454,7 +495,7 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
     expect(stubs.client.closeSession).toHaveBeenCalledWith("agent-1", "sess-orphan-404");
   });
 
-  it("closes but does not release a pre-claim todo orphan", async () => {
+  it("moves a pre-claim todo orphan to error without release", async () => {
     writeSession(
       makeWorkerSession("sess-orphan-todo", "task-orphan-todo", "active", {
         workspace: makeSafeRepoWorkspace("orphan-todo"),
@@ -469,8 +510,9 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
     loop.stop();
 
     expect(stubs.client.releaseTask).not.toHaveBeenCalled();
+    expect(stubs.client.failTask).toHaveBeenCalledWith("task-orphan-todo", expect.objectContaining({ code: "ORPHANED_BEFORE_CLAIM" }));
     expect(stubs.client.closeSession).toHaveBeenCalledWith("agent-1", "sess-orphan-todo");
-    expect(sm.read("sess-orphan-todo")?.status).toBe("closed");
+    expect(sm.read("sess-orphan-todo")?.status).toBe("errored");
   });
 });
 

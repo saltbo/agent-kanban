@@ -1,9 +1,10 @@
-export const TASK_STATUSES = ["todo", "in_progress", "in_review", "done", "cancelled"] as const;
+export const TASK_STATUSES = ["todo", "in_progress", "in_review", "error", "done", "cancelled"] as const;
 
 export const TASK_STATUS_LABELS: Record<string, string> = {
   todo: "Todo",
   in_progress: "In Progress",
   in_review: "In Review",
+  error: "Error",
   done: "Done",
   cancelled: "Cancelled",
 };
@@ -24,6 +25,8 @@ export const TASK_ACTIONS = [
   "review_requested",
   "dispatched",
   "dispatch_failed",
+  "failed",
+  "retried",
 ] as const;
 
 export const AGENT_STATUSES = ["online", "offline"] as const;

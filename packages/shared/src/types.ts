@@ -27,7 +27,27 @@ export interface BoardWithTasks extends Board {
 
 // ─── Task ───
 
-export type TaskStatus = "todo" | "in_progress" | "in_review" | "done" | "cancelled";
+export type TaskStatus = "todo" | "in_progress" | "in_review" | "error" | "done" | "cancelled";
+
+export type TaskFailureCategory = "quota" | "authentication" | "configuration" | "provider" | "protocol" | "unknown";
+
+export interface TaskFailure {
+  category: TaskFailureCategory;
+  message: string;
+  code?: string;
+  http_status?: number;
+  retryable: boolean;
+  reset_at?: string;
+}
+
+export interface TaskError extends TaskFailure {
+  id: string;
+  task_id: string;
+  session_id: string | null;
+  runtime: AnyAgentRuntime | null;
+  created_at: string;
+  resolved_at: string | null;
+}
 
 export interface Task {
   id: string;
@@ -78,7 +98,9 @@ export type TaskActionType =
   | "rejected"
   | "review_requested"
   | "dispatched"
-  | "dispatch_failed";
+  | "dispatch_failed"
+  | "failed"
+  | "retried";
 
 export type ActorType = "user" | "machine" | "agent:worker" | "agent:leader" | "system";
 
@@ -193,6 +215,7 @@ export interface AgentStatus {
     todo: number;
     in_progress: number;
     in_review: number;
+    error: number;
     done: number;
     cancelled: number;
   };
@@ -429,6 +452,7 @@ export type AgentEvent =
   | { type: "turn.start" }
   | { type: "turn.end"; text?: string; cost?: number; usage?: Record<string, number | undefined> }
   | { type: "turn.error"; code?: string; detail: string }
+  | ({ type: "turn.failure" } & TaskFailure)
   | {
       type: "turn.rate_limit";
       status: "rejected" | "allowed";

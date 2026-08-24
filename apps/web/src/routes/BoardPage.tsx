@@ -12,12 +12,13 @@ import { Button } from "../components/ui/button";
 import { useAgentPresence } from "../hooks/useAgentPresence";
 import { useBoard } from "../hooks/useBoard";
 
-const TASK_STATUSES = ["todo", "in_progress", "in_review", "done", "cancelled"] as const;
+const TASK_STATUSES = ["todo", "in_progress", "in_review", "error", "done", "cancelled"] as const;
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   todo: "Todo",
   in_progress: "In Progress",
   in_review: "In Review",
+  error: "Error",
   done: "Done",
   cancelled: "Cancelled",
 };
@@ -70,8 +71,8 @@ export function BoardPage() {
     return (
       <div className="min-h-screen bg-surface-primary">
         <Header />
-        <div className="grid gap-0 p-4" style={{ gridTemplateColumns: `repeat(5, minmax(0, 1fr))` }}>
-          {[0, 1, 2, 3, 4].map((i) => (
+        <div className="grid gap-0 p-4" style={{ gridTemplateColumns: `repeat(6, minmax(0, 1fr))` }}>
+          {[0, 1, 2, 3, 4, 5].map((i) => (
             <div key={i} className="p-4 space-y-3">
               <div className="h-4 w-20 bg-surface-tertiary rounded animate-pulse" />
               {[0, 1].map((j) => (
@@ -134,7 +135,7 @@ export function BoardPage() {
         ))}
       </div>
 
-      {/* Desktop: 5-column grid */}
+      {/* Desktop: 6-column grid */}
       <div className="hidden md:grid flex-1 overflow-hidden" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
         {columns.map((col) => (
           <KanbanColumn key={col.status} column={col} labels={board.labels ?? []} onTaskClick={setSelectedTask} onAgentClick={setChatTask} />

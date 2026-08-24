@@ -6,6 +6,8 @@
  * finalization through the session state machine.
  */
 
+import { randomUUID } from "node:crypto";
+import type { TaskFailure } from "@agent-kanban/shared";
 import { cleanupPromptFile } from "../agent/systemPrompt.js";
 import type { AgentClient, ApiClient } from "../client/index.js";
 import { withoutControlPlaneSecrets } from "../controlPlaneEnv.js";
@@ -15,19 +17,12 @@ import type { AgentEvent, AgentHandle, AgentProvider } from "../providers/types.
 import { parseRetryAfterMs } from "../providers/types.js";
 import { getSessionManager } from "../session/manager.js";
 import { classifyIteratorEnd, type SessionEvent } from "../session/stateMachine.js";
+import type { WorkspaceCleanupReason } from "../workspace/workspace.js";
 import { apiCallOptional, apiFireAndForget, providerExecute } from "./boundaries.js";
 import { classify, sdkErrorStatus } from "./errors.js";
 import { RuntimeCircuitBreaker } from "./runtimeCircuitBreaker.js";
 
 const logger = createLogger("runtime-pool");
-
-/**
- * Cap on consecutive relay-quota suspensions per session. A transient quota
- * window (429 / exhausted 5h window) resolves; a permanent 403 (plan, region,
- * or model block) never will — after this many suspensions we classify the
- * crash as terminal instead of suspending forever.
- */
-const MAX_QUOTA_SUSPENSIONS = 5;
 
 // ---- Types ----
 
@@ -40,10 +35,11 @@ export interface AgentProcess {
   timeoutTimer?: ReturnType<typeof setTimeout>;
   rateLimited: boolean;
   resultReceived: boolean;
+  failure?: TaskFailure;
   /** Cumulative cost reported by the last SDK result event. */
   lastCostUsd: number;
   persistedResumeToken?: string;
-  onCleanup?: () => void;
+  onCleanup?: (reason: WorkspaceCleanupReason) => void;
 }
 
 export interface RuntimeContext {
@@ -70,7 +66,7 @@ export interface SpawnRequest {
   agentEnv: Record<string, string>;
   systemPromptFile?: string;
   resume?: boolean;
-  onCleanup?: () => void;
+  onCleanup?: (reason: WorkspaceCleanupReason) => void;
   model?: string;
   reasoningEffort?: string;
 }
@@ -85,6 +81,7 @@ export interface AgentFlags {
   providerName: string;
   rateLimited: boolean;
   resultReceived: boolean;
+  failure?: TaskFailure;
   lastCostUsd: number;
 }
 
@@ -172,6 +169,7 @@ export class RuntimePool {
       agentClient,
       rateLimited: false,
       resultReceived: false,
+      failure: undefined,
       lastCostUsd: 0,
       onCleanup: req.onCleanup,
     };
@@ -279,6 +277,11 @@ async function routeEvent(
       return;
     case "turn.error":
       logger.warn(`Agent error on task ${agent.taskId} (${agent.providerName}): ${event.detail}`);
+      agent.failure = { category: "unknown", code: event.code, message: event.detail, retryable: false };
+      return;
+    case "turn.failure":
+      logger.warn(`Agent failure on task ${agent.taskId} (${agent.providerName}/${event.category}): ${event.message}`);
+      agent.failure = event;
       return;
     case "message":
       archiveMessage(agentClient, agent.taskId, event);
@@ -401,6 +404,7 @@ async function consumeEvents(agent: AgentProcess, ctx: RuntimeContext): Promise<
     providerName: agent.providerName,
     rateLimited: agent.rateLimited,
     resultReceived: agent.resultReceived,
+    failure: agent.failure,
     lastCostUsd: agent.lastCostUsd,
   };
 
@@ -418,6 +422,7 @@ async function consumeEvents(agent: AgentProcess, ctx: RuntimeContext): Promise<
     // to decouple event routing from the full process record.
     agent.rateLimited = flags.rateLimited;
     agent.resultReceived = flags.resultReceived;
+    agent.failure = flags.failure;
     agent.lastCostUsd = flags.lastCostUsd;
   }
 }
@@ -446,23 +451,12 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
 
   let transient = false;
   let relayQuotaResetAt: string | null = null;
-  let priorQuotaSuspensions = 0;
   if (opts.crashed) {
     const err = opts.error as { exitCode?: number; stderr?: string; message?: string } | undefined;
     transient = classify(opts.error, "iterator").kind === "transient";
     relayQuotaResetAt = relayQuotaResumeAt(opts.error, agent, ctx);
     if (relayQuotaResetAt) {
-      // Cap consecutive quota suspensions: a permanent relay 403 (plan,
-      // region, or model block) looks identical to quota exhaustion — without
-      // a cap the session would resume-and-403 every 30 minutes forever,
-      // burning relay quota each cycle.
-      priorQuotaSuspensions = sessions.read(sessionId)?.quotaSuspensions ?? 0;
-      if (priorQuotaSuspensions >= MAX_QUOTA_SUSPENSIONS) {
-        logger.error(`Task ${taskId} hit relay quota suspension cap (${MAX_QUOTA_SUSPENSIONS}) — treating as terminal; check the relay plan/key`);
-        relayQuotaResetAt = null;
-      } else {
-        logger.warn(`Relay quota exhausted on task ${taskId} (${agent.providerName}), suspending until ${relayQuotaResetAt}`);
-      }
+      logger.warn(`Relay quota exhausted on task ${taskId} (${agent.providerName}), suspending until ${relayQuotaResetAt}`);
     }
     if (!relayQuotaResetAt && transient) {
       logger.warn(`Agent hit transient error on task ${taskId} (${agent.providerName}): ${err?.message ?? ""}`);
@@ -490,25 +484,82 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
     );
   }
 
-  // Agent produced a result → preserve worktree. The work product lives in
-  // the worktree and must survive for review, reject-resume, or completion
-  // cleanup. The daemon loop handles all post-finalize lifecycle:
-  //   - in_review → wait for human review
-  //   - in_progress + rejected → resume agent
-  //   - in_progress + no reject → release (agent forgot to submit review)
-  //   - done/cancelled → cleanup
-  const taskInReview = agent.resultReceived && !opts.crashed;
+  const task = (await apiCallOptional("getTask", () => ctx.client.getTask(taskId))) as { status?: string } | null;
+  let rejectedBeforeFinalize = false;
+  if (task?.status === "in_progress" && agent.resultReceived && !opts.crashed) {
+    const notes = (await apiCallOptional("getTaskNotes", () => ctx.client.getTaskNotes(taskId))) as Array<{
+      id?: string;
+      action?: string;
+    }> | null;
+    const orderedNotes = notes ?? [];
+    const latestReviewIndex = orderedNotes.map((note) => note.action).lastIndexOf("review_requested");
+    const rejection =
+      latestReviewIndex >= 0 ? [...orderedNotes.slice(latestReviewIndex + 1)].reverse().find((note) => note.action === "rejected") : undefined;
+    const localSession = sessions.read(sessionId);
+    rejectedBeforeFinalize = Boolean(
+      rejection?.id && rejection.id !== localSession?.lastRejectionActionId && rejection.id !== localSession?.pendingRejectionActionId,
+    );
+  }
+  const taskInReview = task?.status === "in_review" || rejectedBeforeFinalize;
+  let failure = agent.failure;
+  const confirmedQuota = agent.rateLimited || relayQuotaResetAt !== null;
+  if (confirmedQuota) failure = undefined;
+  if (!failure && opts.crashed && !relayQuotaResetAt && !agent.rateLimited) {
+    const status = sdkErrorStatus(opts.error);
+    failure = {
+      category: status === 401 || status === 403 ? "authentication" : "provider",
+      code: status ? `HTTP_${status}` : "ITERATOR_CRASH",
+      message: errMessage(opts.error),
+      ...(status ? { http_status: status } : {}),
+      retryable: transient,
+    };
+  }
+  if (
+    !failure &&
+    !agent.rateLimited &&
+    !relayQuotaResetAt &&
+    !rejectedBeforeFinalize &&
+    (task?.status === "todo" || task?.status === "in_progress")
+  ) {
+    failure = {
+      category: "protocol",
+      code: "TASK_NOT_SUBMITTED",
+      message: agent.resultReceived
+        ? "Agent returned a result without moving the task to review"
+        : "Agent event stream ended without a successful result",
+      retryable: true,
+    };
+  }
+
+  if (failure && !confirmedQuota && (task?.status === "todo" || task?.status === "in_progress")) {
+    const failureAttemptId = randomUUID();
+    await sessions.patch(sessionId, { failureAttemptId, lastFailure: failure }).catch(() => {});
+    await ctx.client
+      .failTask(taskId, { ...failure, session_id: sessionId, runtime: agent.providerName, attempt_id: failureAttemptId })
+      .catch((e) => logger.error(`Failed to place task ${taskId} in error queue: ${errMessage(e)}`));
+  }
+
   const providerResumeToken = agent.handle.getResumeToken?.();
+  let event: SessionEvent;
+  if (!task) event = { type: "task_deleted" };
+  else if (task.status === "done" || task.status === "cancelled") event = { type: "task_cancelled" };
+  else if (taskInReview) event = { type: "iterator_done_with_result", taskInReview: true };
+  else if (failure && !confirmedQuota) event = { type: "iterator_failed" };
+  else {
+    event = classifyIteratorEnd({
+      resultReceived: agent.resultReceived,
+      rateLimited: agent.rateLimited || relayQuotaResetAt !== null,
+      taskInReview,
+      crashed: opts.crashed,
+      transient,
+    });
+  }
 
-  const event: SessionEvent = classifyIteratorEnd({
-    resultReceived: agent.resultReceived,
-    rateLimited: agent.rateLimited || relayQuotaResetAt !== null,
-    taskInReview,
-    crashed: opts.crashed,
-    transient,
-  });
-
-  const next = await sessions.applyEvent(sessionId, event, providerResumeToken ? { providerResumeToken } : undefined).catch((e) => {
+  const transitionPatch = {
+    ...(providerResumeToken ? { providerResumeToken } : {}),
+    ...(event.type === "iterator_failed" ? { lastFailure: failure, errorAt: Date.now() } : {}),
+  };
+  const next = await sessions.applyEvent(sessionId, event, transitionPatch).catch((e) => {
     logger.error(`State transition failed for ${sessionId}: ${errMessage(e)}`);
     return null;
   });
@@ -517,7 +568,8 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
 
   if (nextStatus === "completing") {
     await handleCompletingTask(agent, opts, ctx);
-    if (await runCleanup(agent, ctx.tunnel)) {
+    const cleanupReason: WorkspaceCleanupReason = !task ? "task_deleted" : task.status === "done" ? "task_done" : "task_cancelled";
+    if (await runCleanup(agent, ctx.tunnel, cleanupReason)) {
       await sessions.applyEvent(sessionId, { type: "cleanup_done" }).catch((e) => {
         logger.warn(`Cleanup transition failed for ${sessionId}: ${errMessage(e)}`);
       });
@@ -528,12 +580,15 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
     await sessions.patch(sessionId, { quotaSuspensions: 0 }).catch(() => {});
     (ctx.tunnel as TunnelSink & { sendStatus?: (sid: string, s: string) => void })?.sendStatus?.(sessionId, "done");
     logger.info(`Task ${taskId} in review, preserving worktree`);
+  } else if (nextStatus === "errored") {
+    (ctx.tunnel as TunnelSink & { sendStatus?: (sid: string, s: string) => void })?.sendStatus?.(sessionId, "error");
+    logger.warn(`Task ${taskId} moved to error queue; preserving worktree and branch`);
   } else if (nextStatus === "rate_limited") {
     if (relayQuotaResetAt) {
       // Quota suspension: hold until the exhausted window's reset (or the
       // 429's Retry-After), then resumeBackoffSessions picks it up.
       const resumeAfter = new Date(relayQuotaResetAt).getTime();
-      await sessions.patch(sessionId, { resumeAfter, quotaSuspensions: priorQuotaSuspensions + 1 }).catch(() => {});
+      await sessions.patch(sessionId, { resumeAfter }).catch(() => {});
     } else if (transient) {
       const backoffMs = 30_000;
       await sessions.patch(sessionId, { resumeBackoffMs: backoffMs, resumeAfter: Date.now() + backoffMs }).catch(() => {});
@@ -557,11 +612,15 @@ function relayQuotaResumeAt(err: unknown, agent: AgentProcess, ctx: RuntimeConte
   if (agent.providerName !== "claude" || !activeRelayKind()) return null;
   const status = sdkErrorStatus(err);
   if (status !== 403 && status !== 429) return null;
+  if (status === 403) {
+    const detail = `${errMessage(err)} ${(err as { stderr?: unknown } | null)?.stderr ?? ""}`;
+    if (!/(?:usage|rate|spend|credit|token)\s*(?:limit|quota)|quota\s*(?:exhausted|exceeded)|billing cycle/i.test(detail)) return null;
+  }
   if (status === 429) {
     const retryAfterMs = parseRetryAfterMs(sdkErrorHeader(err, "retry-after"));
     if (retryAfterMs !== undefined) return new Date(Date.now() + retryAfterMs).toISOString();
   }
-  return ctx.quotaResetHint?.(agent.providerName) ?? new Date(Date.now() + 30 * 60_000).toISOString();
+  return ctx.quotaResetHint?.(agent.providerName) ?? new Date(Date.now() + 5 * 60 * 60_000).toISOString();
 }
 
 function sdkErrorHeader(err: unknown, name: string): string | null {
@@ -617,7 +676,7 @@ async function finalizeCancelled(agent: AgentProcess, ctx: RuntimeContext): Prom
   await sessions.applyEvent(agent.sessionId, { type: "task_cancelled" }).catch((e) => {
     logger.warn(`task_cancelled transition failed for ${agent.sessionId}: ${errMessage(e)}`);
   });
-  if (await runCleanup(agent, ctx.tunnel)) {
+  if (await runCleanup(agent, ctx.tunnel, "task_cancelled")) {
     await sessions.applyEvent(agent.sessionId, { type: "cleanup_done" }).catch((e) => {
       logger.warn(`cleanup_done transition failed for ${agent.sessionId}: ${errMessage(e)}`);
     });
@@ -631,15 +690,15 @@ async function finalizeCancelled(agent: AgentProcess, ctx: RuntimeContext): Prom
 
 // ---- Helpers ----
 
-async function runCleanup(agent: AgentProcess, tunnel: TunnelSink | null): Promise<boolean> {
+async function runCleanup(agent: AgentProcess, tunnel: TunnelSink | null, reason: WorkspaceCleanupReason): Promise<boolean> {
   (tunnel as TunnelSink & { sendStatus?: (sid: string, s: string) => void })?.sendStatus?.(agent.sessionId, "done");
   try {
-    agent.onCleanup?.();
+    agent.onCleanup?.(reason);
     return true;
   } catch (err) {
     logger.warn(`Workspace cleanup failed for ${agent.sessionId.slice(0, 8)}, preserving session for retry: ${errMessage(err)}`);
     await getSessionManager()
-      .patch(agent.sessionId, { cleanupPending: true })
+      .patch(agent.sessionId, { cleanupPending: true, cleanupReason: reason })
       .catch(() => {});
     return false;
   }

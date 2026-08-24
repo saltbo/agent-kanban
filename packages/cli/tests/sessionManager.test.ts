@@ -82,15 +82,15 @@ describe("SessionManager — applyEvent (state transitions)", () => {
     expect(next?.status).toBe("in_review");
   });
 
-  it("active + iterator_done_with_result(false) → completing (intermediate)", async () => {
+  it("active + iterator_done_with_result(false) → errored", async () => {
     await sm.create(makeWorkerFile("s-b"));
     const next = await sm.applyEvent("s-b", { type: "iterator_done_with_result", taskInReview: false });
-    expect(next?.status).toBe("completing");
+    expect(next?.status).toBe("errored");
   });
 
   it("completing + cleanup_done → closed (file retained)", async () => {
     await sm.create(makeWorkerFile("s-c"));
-    await sm.applyEvent("s-c", { type: "iterator_done_normal" });
+    await sm.applyEvent("s-c", { type: "task_cancelled" });
     await sm.applyEvent("s-c", { type: "cleanup_done" });
     expect(sm.read("s-c")?.status).toBe("closed");
   });
@@ -148,9 +148,9 @@ describe("SessionManager — concurrent mutations are serialized", () => {
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(TransitionError);
   });
 
-  it("applyEvent then cleanup_done results in closed state", async () => {
+  it("terminal task event then cleanup_done results in closed state", async () => {
     await sm.create(makeWorkerFile("s-seq"));
-    await sm.applyEvent("s-seq", { type: "iterator_done_normal" });
+    await sm.applyEvent("s-seq", { type: "task_cancelled" });
     const closed = await sm.applyEvent("s-seq", { type: "cleanup_done" });
     expect(closed?.status).toBe("closed");
     expect(sm.read("s-seq")?.status).toBe("closed");

@@ -10,6 +10,9 @@ import { createWorktree, removeWorktree } from "./repoOps.js";
 const logger = createLogger("workspace");
 
 export type { WorkspaceInfo };
+export type WorkspaceCleanupReason = "task_done" | "task_cancelled" | "task_deleted" | "dispatch_rollback" | "proven_empty_orphan";
+
+const CLEANUP_REASONS = new Set<WorkspaceCleanupReason>(["task_done", "task_cancelled", "task_deleted", "dispatch_rollback", "proven_empty_orphan"]);
 
 // ---- Direct-mode serialization ----
 
@@ -36,7 +39,7 @@ export function acquireDirectRepoDir(repoDir: string): void {
 export interface Workspace {
   readonly cwd: string;
   readonly info: WorkspaceInfo;
-  cleanup(): void;
+  cleanup(reason: WorkspaceCleanupReason): void;
 }
 
 // ---- Create ----
@@ -44,32 +47,33 @@ export interface Workspace {
 export function createRepoWorkspace(repoDir: string, sessionId: string, worktreeName?: string): Workspace {
   const { worktreeDir, branchName } = createWorktree(repoDir, sessionId, worktreeName);
   const info: WorkspaceInfo = { type: "repo", cwd: worktreeDir, repoDir, branchName };
-  return { cwd: worktreeDir, info, cleanup: () => cleanupWorkspace(info) };
+  return { cwd: worktreeDir, info, cleanup: (reason) => cleanupWorkspace(info, reason) };
 }
 
 /** Worktree disabled: run directly in the repo checkout (caller serializes access). */
 export function createDirectRepoWorkspace(repoDir: string): Workspace {
   logger.warn(`Worktree disabled — working directly in ${repoDir}`);
   const info: WorkspaceInfo = { type: "direct", cwd: repoDir, repoDir };
-  return { cwd: repoDir, info, cleanup: () => cleanupWorkspace(info) };
+  return { cwd: repoDir, info, cleanup: (reason) => cleanupWorkspace(info, reason) };
 }
 
 export function createTempWorkspace(sessionId: string): Workspace {
   const cwd = mkdtempSync(join(tmpdir(), `ak-${sessionId.slice(0, 8)}-`));
   logger.info(`Created temp workspace ${cwd}`);
   const info: WorkspaceInfo = { type: "temp", cwd };
-  return { cwd, info, cleanup: () => cleanupWorkspace(info) };
+  return { cwd, info, cleanup: (reason) => cleanupWorkspace(info, reason) };
 }
 
 // ---- Restore from persisted info (crash recovery / resume) ----
 
 export function restoreWorkspace(info: WorkspaceInfo): Workspace {
-  return { cwd: info.cwd, info, cleanup: () => cleanupWorkspace(info) };
+  return { cwd: info.cwd, info, cleanup: (reason) => cleanupWorkspace(info, reason) };
 }
 
 // ---- Cleanup ----
 
-export function cleanupWorkspace(info: WorkspaceInfo): void {
+export function cleanupWorkspace(info: WorkspaceInfo, reason: WorkspaceCleanupReason): void {
+  if (!CLEANUP_REASONS.has(reason)) throw new Error(`Workspace cleanup refused for non-terminal reason: ${String(reason)}`);
   if (info.type === "repo") {
     removeWorktree(info.repoDir, info.cwd, info.branchName);
     if (existsSync(info.cwd)) throw new Error(`Worktree still exists after cleanup: ${info.cwd}`);

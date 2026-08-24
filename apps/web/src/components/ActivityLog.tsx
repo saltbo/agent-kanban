@@ -23,6 +23,8 @@ const actionStyles: Record<string, string> = {
   review_requested: "text-accent",
   dispatched: "text-content-tertiary",
   dispatch_failed: "text-error",
+  failed: "text-error",
+  retried: "text-accent",
 };
 
 const dotColors: Record<string, string> = {
@@ -39,6 +41,8 @@ const dotColors: Record<string, string> = {
   moved: "bg-zinc-500 border-zinc-500/30",
   dispatched: "bg-zinc-500 border-zinc-500/30",
   dispatch_failed: "bg-error border-error/30",
+  failed: "bg-error border-error/30",
+  retried: "bg-accent border-accent/30",
 };
 
 const bodyActions = new Set(["commented", "rejected", "completed", "cancelled"]);
@@ -81,6 +85,10 @@ function buildSentence(log: any): { actionText: string; suffix: string } {
       return { actionText: "dispatched this task to the runtime", suffix: "" };
     case "dispatch_failed":
       return { actionText: "couldn't dispatch this task", suffix: log.detail ? `— ${log.detail}` : "" };
+    case "failed":
+      return { actionText: "moved this task to the error queue", suffix: "" };
+    case "retried":
+      return { actionText: "retried this task", suffix: "" };
     default:
       return { actionText: log.action, suffix: bodyActions.has(log.action) ? "" : (log.detail ?? "") };
   }

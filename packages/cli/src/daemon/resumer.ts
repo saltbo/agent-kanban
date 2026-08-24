@@ -29,16 +29,14 @@ export async function resumeSession(session: SessionFile, message: string, clien
   const sessions = getSessionManager();
 
   if (!existsSync(workspace.cwd)) {
-    logger.warn(`Workspace ${workspace.cwd} missing for session ${session.sessionId}, releasing task ${taskId}`);
-    await sessions.forceRemove(session.sessionId);
-    await apiCallOptional("releaseTask", () => client.releaseTask(taskId));
+    logger.error(`Workspace ${workspace.cwd} missing for session ${session.sessionId}; preserving task and session for manual recovery`);
     return false;
   }
 
   const task = (await apiCallOptional("getTask", () => client.getTask(taskId))) as { status?: string } | null;
   if (!task || task.status === "cancelled" || task.status === "done") {
     logger.info(`Task ${taskId} is ${task?.status ?? "missing"}, cleaning up resume session`);
-    workspace.cleanup();
+    workspace.cleanup(!task ? "task_deleted" : task.status === "done" ? "task_done" : "task_cancelled");
     await sessions.forceRemove(session.sessionId);
     return false;
   }
@@ -80,8 +78,8 @@ export async function resumeSession(session: SessionFile, message: string, clien
     agentClient,
     agentEnv,
     resume: true,
-    onCleanup: () => {
-      workspace.cleanup();
+    onCleanup: (reason) => {
+      workspace.cleanup(reason);
       cleanupGnupgHome(gnupgHome);
     },
     model: session.model,
@@ -106,7 +104,7 @@ export async function resumeSession(session: SessionFile, message: string, clien
  *   - TerminalError / other → log, set backoff, do NOT rethrow (one bad
  *     session must not kill the whole tick)
  */
-export async function resumeOneSession(session: SessionFile, message: string, client: ApiClient, pool: RuntimePool): Promise<void> {
+export async function resumeOneSession(session: SessionFile, message: string, client: ApiClient, pool: RuntimePool): Promise<boolean> {
   const sessions = getSessionManager();
   let ok: boolean;
   try {
@@ -120,12 +118,22 @@ export async function resumeOneSession(session: SessionFile, message: string, cl
     ok = false;
   }
   if (ok) {
-    await sessions.patch(session.sessionId, { resumeBackoffMs: undefined, resumeAfter: undefined }).catch(() => {});
-    return;
+    await sessions
+      .patch(session.sessionId, {
+        resumeBackoffMs: undefined,
+        resumeAfter: undefined,
+        errorAt: undefined,
+        lastFailure: undefined,
+        failureAttemptId: undefined,
+        ...(session.pendingRejectionActionId ? { lastRejectionActionId: session.pendingRejectionActionId, pendingRejectionActionId: undefined } : {}),
+      })
+      .catch(() => {});
+    return true;
   }
   const prev = session.resumeBackoffMs ?? 5000;
   const next = Math.min(prev * 2, 5 * 60_000);
   const resumeAfter = Date.now() + next;
   await sessions.patch(session.sessionId, { resumeBackoffMs: next, resumeAfter }).catch(() => {});
   logger.warn(`Resume backoff for session ${session.sessionId.slice(0, 8)} → ${Math.round(next / 1000)}s`);
+  return false;
 }

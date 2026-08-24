@@ -291,7 +291,7 @@ describe("mapSDKMessage — assistant message", () => {
     expect(mapSDKMessage(msg)[0]?.type).toBe("turn.rate_limit");
   });
 
-  it("returns turn.error event for non-rate-limit string error", () => {
+  it("returns turn.failure event for non-rate-limit string error", () => {
     const msg = {
       type: "assistant",
       error: "authentication_error",
@@ -300,7 +300,7 @@ describe("mapSDKMessage — assistant message", () => {
       uuid: "u1",
       session_id: "s1",
     } as unknown as SDKMessage;
-    expect(mapSDKMessage(msg)[0]?.type).toBe("turn.error");
+    expect(mapSDKMessage(msg)[0]?.type).toBe("turn.failure");
   });
 });
 

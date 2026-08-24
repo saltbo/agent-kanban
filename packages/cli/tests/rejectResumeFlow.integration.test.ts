@@ -560,7 +560,7 @@ describe("Scenario 3 (Fix 3): cleanupStaleSessions skips in_review sessions", ()
 // ═════════════════════════════════════════════════════════════════════════════
 
 describe("Scenario 4 (Fix 5): resumeSession bails out when workspace.cwd is missing", () => {
-  it("removes the session, calls releaseTask, and returns false when cwd does not exist", async () => {
+  it("preserves the session and task for manual recovery when cwd does not exist", async () => {
     const taskId = "task-s4";
     const missingCwd = join(tmpdir(), `ak-gone-${randomUUID()}`);
     // Do NOT create missingCwd — it intentionally does not exist
@@ -587,11 +587,11 @@ describe("Scenario 4 (Fix 5): resumeSession bails out when workspace.cwd is miss
     // (a) returns false
     expect(result).toBe(false);
 
-    // (b) session file is removed
-    expect(readSession(session.sessionId)).toBeNull();
+    // (b) session evidence remains available for manual recovery
+    expect(readSession(session.sessionId)).toMatchObject({ status: "in_review", taskId });
 
-    // (c) releaseTask was called with the right taskId
-    expect(client._releaseTaskCalls).toContain(taskId);
+    // (c) the task is not released into another runtime without its workspace
+    expect(client._releaseTaskCalls).not.toContain(taskId);
 
     // (d) no spawnAgent / execute was invoked
     expect(fake.executeCalls).toHaveLength(0);
@@ -801,13 +801,12 @@ describe("Scenario 7 (Fix 2): onComplete skips onCleanup when real session file 
 
     await flushPromises(8);
 
-    // Agent produced result → worktree preserved for potential reject-resume.
-    // Cleanup is deferred to daemon loop (checkRejectedReviews detects done → cleans up).
-    expect(cleanupInvoked).toBe(false);
+    // Server-side done is terminal, so cleanup is allowed.
+    expect(cleanupInvoked).toBe(true);
 
-    // Session stays in in_review (daemon loop handles terminal cleanup)
+    // Session is retained as closed history.
     const session = readSession(sessionId);
     expect(session).not.toBeNull();
-    expect(session?.status).toBe("in_review");
+    expect(session?.status).toBe("closed");
   });
 });

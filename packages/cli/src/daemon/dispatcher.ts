@@ -329,10 +329,14 @@ async function dispatchOne(
 
   logger.info(`Session ${sessionId.slice(0, 8)} for agent ${agentId} on task ${task.id}: ${task.title}`);
   const sessions = getSessionManager();
-  let workspace: { cwd: string; info: import("../workspace/workspace.js").WorkspaceInfo; cleanup(): void } | null = null;
+  let workspace: {
+    cwd: string;
+    info: import("../workspace/workspace.js").WorkspaceInfo;
+    cleanup(reason: import("../workspace/workspace.js").WorkspaceCleanupReason): void;
+  } | null = null;
   let localSessionCreated = false;
   let promptCreated = false;
-  const abort = async () => {
+  const abort = async (cause: unknown) => {
     let remoteCompensationComplete = true;
     try {
       await apiCallOptional("closeSession", () => client.closeSession(agentId, sessionId));
@@ -353,17 +357,33 @@ async function dispatchOne(
     // tick can retry. Release is only legal after the worker claimed it.
     if (taskStatus === "in_progress") {
       try {
-        await apiCallOptional("releaseTask", () => client.releaseTask(task.id));
+        const failure = {
+          category: "configuration" as const,
+          code: "DISPATCH_PREPARATION_FAILED",
+          message: cause instanceof Error ? cause.message : String(cause),
+          retryable: true,
+        };
+        const failureAttemptId = randomUUID();
+        if (localSessionCreated) await sessions.patch(sessionId, { failureAttemptId, lastFailure: failure });
+        await apiCallOptional("failTask", () =>
+          client.failTask(task.id, { ...failure, session_id: sessionId, runtime: providerName, attempt_id: failureAttemptId }),
+        );
+        if (localSessionCreated) {
+          await sessions.applyEvent(sessionId, { type: "iterator_failed" }, { lastFailure: failure, failureAttemptId, errorAt: Date.now() });
+        }
+        // Preserve the workspace and local session for explicit retry.
+        workspace = null;
+        localSessionCreated = false;
       } catch (err) {
         remoteCompensationComplete = false;
-        logger.warn(`Failed to release aborted task ${task.id}: ${(err as Error).message}`);
+        logger.warn(`Failed to record aborted task ${task.id} in error queue: ${(err as Error).message}`);
       }
     }
 
     let workspaceCleaned = true;
     if (workspace && remoteCompensationComplete) {
       try {
-        workspace.cleanup();
+        workspace.cleanup("dispatch_rollback");
         workspace = null;
       } catch (err) {
         workspaceCleaned = false;
@@ -451,9 +471,9 @@ async function dispatchOne(
       agentClient,
       agentEnv,
       systemPromptFile,
-      onCleanup: () => {
+      onCleanup: (reason) => {
         try {
-          ownedWorkspace.cleanup();
+          ownedWorkspace.cleanup(reason);
         } finally {
           cleanupGnupgHome(gnupgHome);
         }
@@ -468,7 +488,7 @@ async function dispatchOne(
     return true;
   } catch (err) {
     logger.error(`Dispatch preparation failed for task ${task.id}: ${(err as Error).message}`);
-    await abort();
+    await abort(err);
     return false;
   }
 }

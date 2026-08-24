@@ -119,7 +119,7 @@ import {
   TransientError,
   CleanupError as WorkspaceCleanupError,
 } from "../src/daemon/errors.js";
-import { checkRejectedReviews, reapCleanupPending, reapOrphanWorkerSessions } from "../src/daemon/loop.js";
+import { checkErroredSessions, checkRejectedReviews, reapCleanupPending, reapOrphanWorkerSessions } from "../src/daemon/loop.js";
 import { RateLimiter } from "../src/daemon/rateLimiter.js";
 import { resumeOneSession } from "../src/daemon/resumer.js";
 import type { RuntimePool } from "../src/daemon/runtimePool.js";
@@ -133,6 +133,11 @@ import { cleanupWorkspace } from "../src/workspace/workspace.js";
 let sm: SessionManager;
 
 beforeEach(() => {
+  savedGitControlEnv = {};
+  for (const key of GIT_CONTROL_ENV_VARS) {
+    if (process.env[key] !== undefined) savedGitControlEnv[key] = process.env[key];
+    delete process.env[key];
+  }
   mkdirSync(testSessionsDir, { recursive: true });
   sm = new SessionManager();
   _setSessionManagerForTest(sm);
@@ -142,6 +147,11 @@ afterEach(() => {
   _setSessionManagerForTest(null);
   rmSync(testSessionsDir, { recursive: true, force: true });
   vi.clearAllMocks();
+  for (const key of GIT_CONTROL_ENV_VARS) {
+    const value = savedGitControlEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 // ── Shared factories ──────────────────────────────────────────────────────────
@@ -184,6 +194,7 @@ function makeApiClient(overrides: Record<string, unknown> = {}) {
   };
   return {
     getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+    failTask: vi.fn().mockResolvedValue({ status: "error" }),
     releaseTask: vi.fn().mockResolvedValue(undefined),
     closeSession: vi.fn().mockResolvedValue(undefined),
     getTaskNotes: vi.fn().mockResolvedValue([]),
@@ -193,8 +204,26 @@ function makeApiClient(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const GIT_CONTROL_ENV_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_QUARANTINE_PATH",
+] as const;
+
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of GIT_CONTROL_ENV_VARS) delete env[key];
+  return env;
+}
+
+let savedGitControlEnv: Partial<Record<(typeof GIT_CONTROL_ENV_VARS)[number], string>> = {};
+
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: cleanGitEnv() }).trim();
 }
 
 function createPersistedRepoWorkspace(kind: "dirty" | "committed") {
@@ -221,7 +250,7 @@ function createPersistedRepoWorkspace(kind: "dirty" | "committed") {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe("orphan reaping — active session not in pool (task viable)", () => {
-  it("releases task on server, drives session to closed", async () => {
+  it("moves the task to error and preserves the session workspace", async () => {
     const sessionId = randomUUID();
     const taskId = `task-${randomUUID()}`;
     await sm.create(makeWorkerFile(sessionId, { taskId, status: "active" }));
@@ -234,8 +263,15 @@ describe("orphan reaping — active session not in pool (task viable)", () => {
 
     await reapOrphanWorkerSessions(sm, pool, client as any);
 
-    expect(client.releaseTask).toHaveBeenCalledWith(taskId);
-    expect(sm.read(sessionId)?.status).toBe("closed");
+    expect(client.failTask).toHaveBeenCalledWith(
+      taskId,
+      expect.objectContaining({ category: "protocol", code: "ORPHANED_RUNTIME", session_id: sessionId, attempt_id: expect.any(String) }),
+    );
+    expect(sm.read(sessionId)).toMatchObject({
+      status: "errored",
+      lastFailure: { category: "protocol", code: "ORPHANED_RUNTIME" },
+    });
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
   });
 });
 
@@ -257,7 +293,7 @@ describe("orphan reaping — task done on server", () => {
 
     await reapOrphanWorkerSessions(sm, pool, client as any);
 
-    expect(client.releaseTask).not.toHaveBeenCalled();
+    expect(client.failTask).not.toHaveBeenCalled();
     expect(sm.read(sessionId)?.status).toBe("closed");
   });
 });
@@ -284,6 +320,56 @@ describe("orphan reaping — task 404", () => {
   });
 });
 
+describe("orphan reaping — reconciles persisted server states", () => {
+  it("recovers an active orphan as in_review without cleanup", async () => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "active" }));
+    const client = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) });
+
+    await reapOrphanWorkerSessions(sm, makePool(), client as any);
+
+    expect(sm.read(sessionId)?.status).toBe("in_review");
+    expect(client.failTask).not.toHaveBeenCalled();
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("recovers the latest server failure attempt after an active-session crash gap and later resumes it", async () => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    const staleAttemptId = "attempt_stale_123";
+    const recoveredAttemptId = "attempt_active_123";
+    const failedNotes = [
+      { action: "failed", detail: JSON.stringify({ attempt_id: staleAttemptId }) },
+      { action: "failed", detail: JSON.stringify({ attempt_id: recoveredAttemptId }) },
+    ];
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "active" }));
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValueOnce({ status: "error" }).mockResolvedValueOnce({ status: "in_progress" }),
+      getTaskNotes: vi
+        .fn()
+        .mockResolvedValueOnce(failedNotes)
+        .mockResolvedValueOnce([...failedNotes, { action: "retried" }]),
+    });
+
+    await reapOrphanWorkerSessions(sm, makePool(), client as any);
+
+    expect(sm.read(sessionId)).toMatchObject({
+      status: "errored",
+      lastFailure: { code: "RECOVERED_ERROR_STATE" },
+      failureAttemptId: recoveredAttemptId,
+    });
+    expect(client.failTask).not.toHaveBeenCalled();
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+
+    const resumeOne = vi.fn().mockResolvedValue(undefined);
+    await checkErroredSessions(sm, makePool(), client as any, resumeOne, 1);
+
+    expect(resumeOne).toHaveBeenCalledWith(sm.read(sessionId), expect.stringContaining("explicitly retried"));
+    expect(client.failTask).not.toHaveBeenCalled();
+  });
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // 4. Orphan reaping — pool already holds the task (not an orphan)
 // ════════════════════════════════════════════════════════════════════════════
@@ -300,7 +386,7 @@ describe("orphan reaping — session held by pool is skipped", () => {
     await reapOrphanWorkerSessions(sm, pool, client as any);
 
     expect(sm.read(sessionId)).not.toBeNull();
-    expect(client.releaseTask).not.toHaveBeenCalled();
+    expect(client.failTask).not.toHaveBeenCalled();
   });
 });
 
@@ -315,13 +401,14 @@ describe("orphan reaping — persisted agent work is protected", () => {
 
     await reapOrphanWorkerSessions(sm, pool, client as any);
 
-    expect(sm.read(sessionId)?.status).toBe("active");
-    expect(client.getTask).not.toHaveBeenCalled();
+    expect(sm.read(sessionId)?.status).toBe("errored");
+    expect(client.getTask).toHaveBeenCalledWith(taskId);
+    expect(client.failTask).toHaveBeenCalledWith(taskId, expect.objectContaining({ code: "ORPHANED_RUNTIME", attempt_id: expect.any(String) }));
     expect(client.releaseTask).not.toHaveBeenCalled();
     expect(cleanupWorkspace).not.toHaveBeenCalled();
   });
 
-  it.each(["release", "close"])("retains an orphan session when remote %s fails", async (phase) => {
+  it.each(["fail", "close"])("retains an orphan session when remote %s fails", async (phase) => {
     const sessionId = randomUUID();
     const taskId = `task-${randomUUID()}`;
     await sm.create(
@@ -334,8 +421,8 @@ describe("orphan reaping — persisted agent work is protected", () => {
     const pool = makePool({ hasTask: vi.fn().mockReturnValue(false) });
     const client = makeApiClient({
       getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
-      releaseTask: vi.fn(async () => {
-        if (phase === "release") throw new Error("release failed");
+      failTask: vi.fn(async () => {
+        if (phase === "fail") throw new Error("fail failed");
       }),
       closeSession: vi.fn(async () => {
         if (phase === "close") throw new Error("close failed");
@@ -358,10 +445,10 @@ describe("cleanup retry — cleanupPending", () => {
     const sessionId = randomUUID();
     // Create session in completing state with cleanupPending
     await sm.create(makeWorkerFile(sessionId, { taskId: "t1", status: "active" }));
-    // Advance to completing via state machine
-    await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
+    // Cleanup is entered only for an explicit terminal task state.
+    await sm.applyEvent(sessionId, { type: "task_cancelled" });
     // Patch in cleanupPending
-    await sm.patch(sessionId, { cleanupPending: true });
+    await sm.patch(sessionId, { cleanupPending: true, cleanupReason: "task_cancelled" });
 
     const before = sm.read(sessionId);
     expect(before?.status).toBe("completing");
@@ -371,12 +458,13 @@ describe("cleanup retry — cleanupPending", () => {
     await reapCleanupPending(sm);
 
     expect(sm.read(sessionId)?.status).toBe("closed");
+    expect(cleanupWorkspace).toHaveBeenCalledWith(expect.anything(), "task_cancelled");
   });
 
   it("leaves session intact if cleanupPending=false", async () => {
     const sessionId = randomUUID();
     await sm.create(makeWorkerFile(sessionId, { taskId: "t1", status: "active" }));
-    await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
+    await sm.applyEvent(sessionId, { type: "task_cancelled" });
     // Do NOT set cleanupPending
 
     await reapCleanupPending(sm);
@@ -396,8 +484,8 @@ describe("concurrent applyEvent — mutex serializes writes", () => {
     const sessionId = randomUUID();
     await sm.create(makeWorkerFile(sessionId, { status: "active" }));
 
-    const first = sm.applyEvent(sessionId, { type: "iterator_done_normal" });
-    const second = sm.applyEvent(sessionId, { type: "iterator_done_normal" });
+    const first = sm.applyEvent(sessionId, { type: "task_cancelled" });
+    const second = sm.applyEvent(sessionId, { type: "task_cancelled" });
 
     const results = await Promise.allSettled([first, second]);
     const fulfilled = results.filter((r) => r.status === "fulfilled");
@@ -507,19 +595,114 @@ describe("review watcher — task rejected (in_progress)", () => {
     const pool = makePool({ hasTask: vi.fn().mockReturnValue(false), activeCount: 0 } as any);
     const client = makeApiClient({
       getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
-      getTaskNotes: vi.fn().mockResolvedValue([{ action: "rejected", detail: "wrong approach" }]),
+      getTaskNotes: vi.fn().mockResolvedValue([
+        { id: "review-current", action: "review_requested" },
+        { id: "reject-current", action: "rejected", detail: "wrong approach" },
+      ]),
     });
 
-    const resumeOne = vi.fn().mockResolvedValue(undefined);
+    const resumeOne = vi.fn(async (session: SessionFile) => {
+      await sm.patch(session.sessionId, {
+        lastRejectionActionId: session.pendingRejectionActionId,
+        pendingRejectionActionId: undefined,
+      });
+      return true;
+    });
     await checkRejectedReviews(sm, pool, client as any, resumeOne, 5);
 
     expect(resumeOne).toHaveBeenCalledOnce();
     const [calledSession, message] = resumeOne.mock.calls[0];
     expect(calledSession.sessionId).toBe(sessionId);
-    expect(message).toContain("wrong approach");
+    expect(calledSession.pendingRejectionActionId).toBe("reject-current");
+    expect(message).toBe(
+      "Task rejected. Reason: wrong approach\n\n" +
+        "The task is already assigned to this session and is already in_progress. " +
+        "Do not run ak task claim again. " +
+        "Continue directly in the preserved workspace, fix the issues, and submit the task for review again.",
+    );
+    expect(sm.read(sessionId)?.lastRejectionActionId).toBe("reject-current");
+    expect(sm.read(sessionId)?.pendingRejectionActionId).toBeUndefined();
   });
 
-  it("cleans up session when in_progress with no rejection note (agent never submitted review)", async () => {
+  it("retries the same rejection after transient resume failure and backoff instead of failing the task", async () => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "in_review" }));
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      getTaskNotes: vi.fn().mockResolvedValue([
+        { id: "review-retry", action: "review_requested" },
+        { id: "reject-retry", action: "rejected", detail: "retry this feedback" },
+      ]),
+    });
+    const resumeOne = vi
+      .fn()
+      .mockImplementationOnce(async (session: SessionFile) => {
+        await sm.patch(session.sessionId, { resumeBackoffMs: 10_000, resumeAfter: Date.now() + 10_000 });
+        return false;
+      })
+      .mockImplementationOnce(async (session: SessionFile) => {
+        await sm.patch(session.sessionId, {
+          lastRejectionActionId: session.pendingRejectionActionId,
+          pendingRejectionActionId: undefined,
+          resumeBackoffMs: undefined,
+          resumeAfter: undefined,
+        });
+        return true;
+      });
+
+    await checkRejectedReviews(sm, makePool(), client as any, resumeOne, 5);
+    expect(sm.read(sessionId)).toMatchObject({ pendingRejectionActionId: "reject-retry", resumeBackoffMs: 10_000 });
+    expect(sm.read(sessionId)?.lastRejectionActionId).toBeUndefined();
+    expect(client.failTask).not.toHaveBeenCalled();
+
+    // The immediate poll is suppressed by persisted backoff.
+    await checkRejectedReviews(sm, makePool(), client as any, resumeOne, 5);
+    expect(resumeOne).toHaveBeenCalledOnce();
+
+    // Once backoff expires, the same pending rejection remains eligible.
+    await sm.patch(sessionId, { resumeAfter: Date.now() - 1 });
+    await checkRejectedReviews(sm, makePool(), client as any, resumeOne, 5);
+
+    expect(resumeOne).toHaveBeenCalledTimes(2);
+    expect(resumeOne.mock.calls[1][0]).toMatchObject({ pendingRejectionActionId: "reject-retry" });
+    expect(sm.read(sessionId)?.lastRejectionActionId).toBe("reject-retry");
+    expect(sm.read(sessionId)?.pendingRejectionActionId).toBeUndefined();
+    expect(client.failTask).not.toHaveBeenCalled();
+  });
+
+  it("consumes only the rejection from the latest review cycle", async () => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "in_review", lastRejectionActionId: "reject-old" }));
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      getTaskNotes: vi.fn().mockResolvedValue([
+        { id: "review-old", action: "review_requested" },
+        { id: "reject-old", action: "rejected", detail: "obsolete feedback" },
+        { id: "review-current", action: "review_requested" },
+        { id: "reject-current-cycle", action: "rejected", detail: "current feedback" },
+      ]),
+    });
+    const resumeOne = vi.fn(async (session: SessionFile) => {
+      await sm.patch(session.sessionId, {
+        lastRejectionActionId: session.pendingRejectionActionId,
+        pendingRejectionActionId: undefined,
+      });
+      return true;
+    });
+
+    await checkRejectedReviews(sm, makePool(), client as any, resumeOne, 5);
+
+    expect(resumeOne).toHaveBeenCalledOnce();
+    expect(resumeOne.mock.calls[0][0]).toMatchObject({ pendingRejectionActionId: "reject-current-cycle" });
+    expect(resumeOne.mock.calls[0][1]).toContain("current feedback");
+    expect(resumeOne.mock.calls[0][1]).not.toContain("obsolete feedback");
+    expect(sm.read(sessionId)?.lastRejectionActionId).toBe("reject-current-cycle");
+    expect(client.failTask).not.toHaveBeenCalled();
+  });
+
+  it("moves task to error and preserves session when no rejection note exists", async () => {
     const sessionId = randomUUID();
     const taskId = `task-${randomUUID()}`;
     await sm.create(makeWorkerFile(sessionId, { taskId, status: "in_review" }));
@@ -533,9 +716,143 @@ describe("review watcher — task rejected (in_progress)", () => {
     const resumeOne = vi.fn().mockResolvedValue(undefined);
     await checkRejectedReviews(sm, pool, client as any, resumeOne, 5);
 
-    // No reject action → don't resume, clean up instead
+    // No reject action means the local in_review claim was false; preserve all work for diagnosis.
     expect(resumeOne).not.toHaveBeenCalled();
-    expect(sm.read(sessionId)?.status).toBe("closed");
+    expect(client.failTask).toHaveBeenCalledWith(
+      taskId,
+      expect.objectContaining({ category: "protocol", code: "TASK_NOT_SUBMITTED", session_id: sessionId, attempt_id: expect.any(String) }),
+    );
+    expect(sm.read(sessionId)?.status).toBe("errored");
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("recovers an in_review crash gap when fail API succeeded before the local error transition", async () => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    const failureAttemptId = "attempt_review_123";
+    const lastFailure = {
+      category: "protocol" as const,
+      code: "TASK_NOT_SUBMITTED",
+      message: "Agent returned a result without moving the task to review",
+      retryable: true,
+    };
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "in_review", failureAttemptId, lastFailure }));
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "error" }),
+      getTaskNotes: vi.fn().mockResolvedValue([{ action: "failed", detail: JSON.stringify({ ...lastFailure, attempt_id: failureAttemptId }) }]),
+    });
+    const resumeOne = vi.fn();
+
+    await checkRejectedReviews(sm, makePool(), client as any, resumeOne, 1);
+
+    expect(sm.read(sessionId)).toMatchObject({ status: "errored", failureAttemptId, lastFailure });
+    expect(resumeOne).not.toHaveBeenCalled();
+    expect(client.failTask).not.toHaveBeenCalled();
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("resumes an in_review crash gap only after retry follows its matching failed attempt", async () => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    const failureAttemptId = "attempt_review_retry_123";
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "in_review", failureAttemptId }));
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      getTaskNotes: vi
+        .fn()
+        .mockResolvedValue([
+          { action: "failed", detail: JSON.stringify({ attempt_id: "attempt_other_123" }) },
+          { action: "retried" },
+          { action: "failed", detail: JSON.stringify({ attempt_id: failureAttemptId }) },
+          { action: "retried" },
+        ]),
+    });
+    const resumeOne = vi.fn().mockResolvedValue(undefined);
+
+    await checkRejectedReviews(sm, makePool(), client as any, resumeOne, 1);
+
+    expect(resumeOne).toHaveBeenCalledWith(sm.read(sessionId), expect.stringContaining("explicitly retried"));
+    expect(client.failTask).not.toHaveBeenCalled();
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe("error queue watcher — explicit retry gate", () => {
+  it("resumes when the same failed attempt is followed by retry even if retry time predates local errorAt", async () => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    const failureAttemptId = "attempt_same_1234";
+    const errorAt = Date.parse("2026-08-24T10:00:00.000Z");
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "errored", errorAt, failureAttemptId }));
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      getTaskNotes: vi.fn().mockResolvedValue([
+        {
+          action: "failed",
+          detail: JSON.stringify({ category: "provider", attempt_id: failureAttemptId }),
+          created_at: "2026-08-24T09:00:00.000Z",
+        },
+        { action: "retried", created_at: "2026-08-24T09:00:01.000Z" },
+      ]),
+    });
+    const resumeOne = vi.fn().mockResolvedValue(undefined);
+
+    await checkErroredSessions(sm, makePool(), client as any, resumeOne, 1);
+
+    expect(resumeOne).toHaveBeenCalledOnce();
+    expect(resumeOne).toHaveBeenCalledWith(sm.read(sessionId), expect.stringContaining("explicitly retried"));
+    expect(client.failTask).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", []],
+    [
+      "different attempt",
+      [
+        { action: "failed", detail: JSON.stringify({ attempt_id: "attempt_other_123" }) },
+        { action: "retried", created_at: "2026-08-24T10:00:01.000Z" },
+      ],
+    ],
+  ])("does not resume without a matching failed attempt (%s)", async (_case, notes) => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    const failureAttemptId = "attempt_local_123";
+    await sm.create(
+      makeWorkerFile(sessionId, {
+        taskId,
+        status: "errored",
+        errorAt: Date.parse("2026-08-24T10:00:00.000Z"),
+        failureAttemptId,
+        lastFailure: {
+          category: "provider",
+          code: "HTTP_500",
+          message: "provider failed before server persistence completed",
+          http_status: 500,
+          retryable: true,
+        },
+      }),
+    );
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      getTaskNotes: vi.fn().mockResolvedValue(notes),
+    });
+    const resumeOne = vi.fn();
+
+    await checkErroredSessions(sm, makePool(), client as any, resumeOne, 1);
+
+    expect(resumeOne).not.toHaveBeenCalled();
+    expect(client.failTask).toHaveBeenCalledWith(taskId, {
+      category: "provider",
+      code: "HTTP_500",
+      message: "provider failed before server persistence completed",
+      http_status: 500,
+      retryable: true,
+      session_id: sessionId,
+      runtime: "claude",
+      attempt_id: failureAttemptId,
+    });
+    expect(sm.read(sessionId)?.status).toBe("errored");
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
   });
 });
 
@@ -654,6 +971,7 @@ describe("resumeOneSession — backoff on failure", () => {
       taskId,
       status: "in_review",
       workspace: { type: "temp", cwd: workDir },
+      pendingRejectionActionId: "reject-transient",
     });
     await sm.create(session);
 
@@ -673,6 +991,8 @@ describe("resumeOneSession — backoff on failure", () => {
     expect(afterFirst?.resumeBackoffMs).toBeDefined();
     expect(afterFirst!.resumeBackoffMs).toBeGreaterThan(0);
     expect(afterFirst?.resumeAfter).toBeDefined();
+    expect(afterFirst?.pendingRejectionActionId).toBe("reject-transient");
+    expect(afterFirst?.lastRejectionActionId).toBeUndefined();
 
     // Second failure — backoff should double
     const prevBackoff = afterFirst!.resumeBackoffMs!;
@@ -704,8 +1024,8 @@ describe("state machine — full lifecycle active→in_review→active→complet
     const s2 = await sm.applyEvent(sessionId, { type: "rejected_by_reviewer" });
     expect(s2?.status).toBe("active");
 
-    // active → completing
-    const s3 = await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
+    // active → completing only after an explicit terminal task state
+    const s3 = await sm.applyEvent(sessionId, { type: "task_cancelled" });
     expect(s3?.status).toBe("completing");
 
     // completing → closed (file retained with status: "closed")
@@ -732,8 +1052,8 @@ describe("state machine — rate limit lifecycle", () => {
     const s2 = await sm.applyEvent(sessionId, { type: "resume_started" });
     expect(s2?.status).toBe("active");
 
-    // active → completing
-    const s3 = await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
+    // active → completing after cancellation
+    const s3 = await sm.applyEvent(sessionId, { type: "task_cancelled" });
     expect(s3?.status).toBe("completing");
 
     // completing → closed (file retained with status: "closed")
@@ -742,12 +1062,12 @@ describe("state machine — rate limit lifecycle", () => {
     expect(sm.read(sessionId)?.status).toBe("closed");
   });
 
-  it("transitions rate_limited→completing via resume_failed_terminal", async () => {
+  it("transitions rate_limited→errored via resume_failed_terminal", async () => {
     const sessionId = randomUUID();
     await sm.create(makeWorkerFile(sessionId, { status: "rate_limited" }));
 
     const s1 = await sm.applyEvent(sessionId, { type: "resume_failed_terminal" });
-    expect(s1?.status).toBe("completing");
+    expect(s1?.status).toBe("errored");
   });
 });
 
@@ -864,7 +1184,7 @@ describe("state machine — illegal transitions throw TransitionError", () => {
   it("iterator_done_normal on completing session throws TransitionError", async () => {
     const sessionId = randomUUID();
     await sm.create(makeWorkerFile(sessionId, { status: "active" }));
-    await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
+    await sm.applyEvent(sessionId, { type: "task_cancelled" });
     // Now in completing
 
     await expect(sm.applyEvent(sessionId, { type: "iterator_done_normal" })).rejects.toThrow(TransitionError);
@@ -899,8 +1219,7 @@ describe("orphan reaping — completeTerminal: workspace cleanup CleanupError �
 
     const pool = makePool({ hasTask: vi.fn().mockReturnValue(false) });
     const client = makeApiClient({
-      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
-      releaseTask: vi.fn().mockResolvedValue(undefined),
+      getTask: vi.fn().mockResolvedValue({ status: "done" }),
     });
 
     // Make cleanupWorkspace throw CleanupError — exercises lines 88-93 in completeTerminal
@@ -935,8 +1254,8 @@ describe("orphan reaper — reapCleanupPending: cleanupWorkspace still throws �
         workspace: { type: "temp", cwd: workDir },
       }),
     );
-    await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
-    await sm.patch(sessionId, { cleanupPending: true });
+    await sm.applyEvent(sessionId, { type: "task_cancelled" });
+    await sm.patch(sessionId, { cleanupPending: true, cleanupReason: "task_cancelled" });
 
     // Make cleanupWorkspace throw CleanupError — exercises lines 71-73 in reapCleanupPending
     vi.mocked(cleanupWorkspace).mockImplementationOnce(() => {
@@ -1536,16 +1855,16 @@ describe("applyTransition — additional cases", () => {
     expect(applyTransition("active", { type: "rate_limit_cleared" })).toBe("active");
   });
 
-  it("active + iterator_crashed_transient → rate_limited", () => {
-    expect(applyTransition("active", { type: "iterator_crashed_transient" })).toBe("rate_limited");
+  it("active + iterator_crashed_transient → errored for manual handling", () => {
+    expect(applyTransition("active", { type: "iterator_crashed_transient" })).toBe("errored");
   });
 
-  it("active + iterator_crashed → completing", () => {
-    expect(applyTransition("active", { type: "iterator_crashed" })).toBe("completing");
+  it("active + iterator_crashed → errored", () => {
+    expect(applyTransition("active", { type: "iterator_crashed" })).toBe("errored");
   });
 
-  it("active + iterator_done_with_result(false) → completing", () => {
-    expect(applyTransition("active", { type: "iterator_done_with_result", taskInReview: false })).toBe("completing");
+  it("active + iterator_done_with_result(false) → errored", () => {
+    expect(applyTransition("active", { type: "iterator_done_with_result", taskInReview: false })).toBe("errored");
   });
 
   it("in_review + resume_started → active", () => {
@@ -1556,8 +1875,8 @@ describe("applyTransition — additional cases", () => {
     expect(applyTransition("in_review", { type: "resume_failed_transient" })).toBe("in_review");
   });
 
-  it("in_review + resume_failed_terminal → completing", () => {
-    expect(applyTransition("in_review", { type: "resume_failed_terminal" })).toBe("completing");
+  it("in_review + resume_failed_terminal → errored", () => {
+    expect(applyTransition("in_review", { type: "resume_failed_terminal" })).toBe("errored");
   });
 
   it("rate_limited + resume_failed_transient → rate_limited", () => {
@@ -1591,8 +1910,8 @@ describe("orphan reaper — workspace cleanup error marks cleanupPending", () =>
         workspace: { type: "temp", cwd: "/tmp/already-gone-xyz" },
       }),
     );
-    await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
-    await sm.patch(sessionId, { cleanupPending: true });
+    await sm.applyEvent(sessionId, { type: "task_cancelled" });
+    await sm.patch(sessionId, { cleanupPending: true, cleanupReason: "task_cancelled" });
 
     // reapCleanupPending retries it — cleanup succeeds (rmSync is force:true) → closed
     await reapCleanupPending(sm);
@@ -1610,8 +1929,8 @@ describe("orphan reaper — workspace cleanup error marks cleanupPending", () =>
         workspace: { type: "repo", cwd: workDir, repoDir: "/nonexistent-repo", branchName: "ak-test" },
       }),
     );
-    await sm.applyEvent(sessionId, { type: "iterator_done_normal" });
-    await sm.patch(sessionId, { cleanupPending: true });
+    await sm.applyEvent(sessionId, { type: "task_cancelled" });
+    await sm.patch(sessionId, { cleanupPending: true, cleanupReason: "task_cancelled" });
 
     await reapCleanupPending(sm);
 
@@ -1683,6 +2002,7 @@ describe("resumeOneSession — success path clears backoff", () => {
       status: "in_review",
       resumeBackoffMs: 5000,
       resumeAfter: Date.now() - 1000, // already expired
+      pendingRejectionActionId: "reject-success",
     });
 
     const client = makeApiClient({
@@ -1705,6 +2025,8 @@ describe("resumeOneSession — success path clears backoff", () => {
       // Session still exists — backoff should be cleared
       expect(after.resumeBackoffMs).toBeUndefined();
       expect(after.resumeAfter).toBeUndefined();
+      expect(after.pendingRejectionActionId).toBeUndefined();
+      expect(after.lastRejectionActionId).toBe("reject-success");
     }
     // If session is null, it was already cleaned up by the agent lifecycle — also fine
 
@@ -1750,8 +2072,8 @@ describe("resumeOneSession — success clears backoff", () => {
 // resumer.ts — workspace missing path (lines 33-37)
 // ════════════════════════════════════════════════════════════════════════════
 
-describe("resumeSession — workspace missing → forceRemove and return false", () => {
-  it("removes session and calls releaseTask when workspace cwd does not exist", async () => {
+describe("resumeSession — workspace missing → preserve for manual recovery", () => {
+  it("retains the session and task when workspace cwd does not exist", async () => {
     const sessionId = randomUUID();
     const missingCwd = join(tmpdir(), `ak-gone-${randomUUID()}`);
     // Deliberately do NOT create missingCwd
@@ -1774,8 +2096,8 @@ describe("resumeSession — workspace missing → forceRemove and return false",
     const result = await resumeSession(sm.read(sessionId)!, "msg", client as any, pool);
 
     expect(result).toBe(false);
-    expect(sm.read(sessionId)).toBeNull();
-    expect(client.releaseTask).toHaveBeenCalledWith("t-missing-ws");
+    expect(sm.read(sessionId)).toMatchObject({ status: "in_review", taskId: "t-missing-ws" });
+    expect(client.releaseTask).not.toHaveBeenCalled();
   });
 });
 

@@ -12,12 +12,13 @@
  *   in_review       agent produced a result and the task is in_review on the server.
  *                   This is the reject-resume entry point. MUST survive daemon
  *                   restart. Cleanup is forbidden in this state.
+ *   errored         provider/runtime failed; workspace is preserved until an explicit retry or cancel
  *   completing      terminal cleanup in progress (workspace cleanup pending)
  *   closed          session finished, file retained for history lookup
  *   terminal        session file removed (only via explicit purge)
  */
 
-export type SessionState = "active" | "rate_limited" | "in_review" | "completing" | "closed" | "terminal";
+export type SessionState = "active" | "rate_limited" | "in_review" | "errored" | "completing" | "closed" | "terminal";
 
 export type SessionEvent =
   // Fired while agent is live
@@ -29,12 +30,13 @@ export type SessionEvent =
   | { type: "iterator_done_rate_limited" } // agent exited before result due to rate limit
   | { type: "iterator_crashed" } // iterator threw an error
   | { type: "iterator_crashed_transient" } // iterator threw a transient error (API 5xx, network)
+  | { type: "iterator_failed" } // non-quota provider/protocol failure; preserve workspace
 
   // Fired by scheduler phases (outside the agent lifecycle)
   | { type: "rejected_by_reviewer" } // in_review → active (resume path)
   | { type: "resume_started" } // rate_limited / in_review → active
   | { type: "resume_failed_transient" } // stay in current state, retry next tick
-  | { type: "resume_failed_terminal" } // drop to completing
+  | { type: "resume_failed_terminal" } // mark errored and preserve workspace
   | { type: "orphan_detected" } // daemon restart found stale session
   | { type: "task_cancelled" } // user/reviewer cancelled task server-side
   | { type: "task_deleted" } // server returned 404
@@ -60,6 +62,8 @@ export function applyTransition(from: SessionState, event: SessionEvent): Sessio
       return rateLimitedTransitions(event);
     case "in_review":
       return inReviewTransitions(event);
+    case "errored":
+      return erroredTransitions(event);
     case "completing":
       return completingTransitions(event);
     case "closed":
@@ -73,16 +77,18 @@ function activeTransitions(event: SessionEvent): SessionState {
     case "rate_limit_cleared":
       return "active";
     case "iterator_done_with_result":
-      return event.taskInReview ? "in_review" : "completing";
+      return event.taskInReview ? "in_review" : "errored";
     case "iterator_done_rate_limited":
       return "rate_limited";
     case "iterator_done_normal":
-      return "completing";
+      return "errored";
     case "iterator_crashed":
-      return "completing";
+    case "iterator_failed":
+      return "errored";
     case "iterator_crashed_transient":
-      return "rate_limited";
+      return "errored";
     case "task_cancelled":
+    case "task_deleted":
       return "completing";
     case "orphan_detected":
       return "completing";
@@ -98,7 +104,7 @@ function rateLimitedTransitions(event: SessionEvent): SessionState {
     case "resume_failed_transient":
       return "rate_limited";
     case "resume_failed_terminal":
-      return "completing";
+      return "errored";
     case "task_cancelled":
     case "task_deleted":
     case "orphan_detected":
@@ -116,7 +122,9 @@ function inReviewTransitions(event: SessionEvent): SessionState {
     case "resume_failed_transient":
       return "in_review";
     case "resume_failed_terminal":
-      return "completing";
+      return "errored";
+    case "iterator_failed":
+      return "errored";
     case "task_cancelled":
     case "task_deleted":
       return "completing";
@@ -124,6 +132,23 @@ function inReviewTransitions(event: SessionEvent): SessionState {
     // An `orphan_detected` event on an in_review session is a bug.
     default:
       throw new TransitionError("in_review", event.type);
+  }
+}
+
+function erroredTransitions(event: SessionEvent): SessionState {
+  switch (event.type) {
+    case "resume_started":
+      return "active";
+    case "resume_failed_transient":
+    case "resume_failed_terminal":
+      return "errored";
+    case "task_cancelled":
+    case "task_deleted":
+      return "completing";
+    default:
+      // Error sessions must never be orphan-reaped. The workspace is evidence
+      // and may contain the user's only copy of uncommitted work.
+      throw new TransitionError("errored", event.type);
   }
 }
 

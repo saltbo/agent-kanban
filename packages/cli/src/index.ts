@@ -167,6 +167,17 @@ taskCmd
     output(task, fmt, (t) => `Released task ${t.id}: ${t.title} (back to todo)`);
   });
 
+taskCmd
+  .command("retry <id>")
+  .description("Retry a task from the Error queue using its preserved session and workspace")
+  .addOption(outputOption())
+  .action(async (id, opts) => {
+    const client = await createClient();
+    const task = await client.retryTask(id);
+    const fmt = getOutputFormat(opts.output);
+    output(task, fmt, (t) => `Retried task ${t.id}: ${t.title} (back to in-progress)`);
+  });
+
 // ─── Top-level CRUD ───
 
 program.commandsGroup("Agent:");

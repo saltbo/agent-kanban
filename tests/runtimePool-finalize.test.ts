@@ -99,6 +99,8 @@ function makeProvider(handle: AgentHandle): AgentProvider {
 function makeApiClient(overrides: Partial<Record<string, any>> = {}): ApiClient {
   return {
     getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+    getTaskNotes: vi.fn().mockResolvedValue([]),
+    failTask: vi.fn().mockResolvedValue({ status: "error" }),
     releaseTask: vi.fn().mockResolvedValue({}),
     closeSession: vi.fn().mockResolvedValue({}),
     ...overrides,
@@ -288,6 +290,7 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     await seedActiveSession(sessions, sessionId, taskId);
 
     // turn.end fires; agentClient.getTask returns in_review → agent.taskInReview = true
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) });
     const agentClient = makeAgentClient({ status: "in_review" });
     const handle = makeHandle([makeTurnEndEvent()]);
     const provider = makeProvider(handle);
@@ -310,6 +313,7 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     expect(circuitBreaker.tryAcquireDispatch("claude")).toBe(true);
     expect(circuitBreaker.canDispatch("claude")).toBe(false);
 
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) });
     const agentClient = makeAgentClient({ status: "in_review" });
     const handle = makeHandle([makeTurnEndEvent()]);
     const provider = makeProvider(handle);
@@ -331,16 +335,23 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
   });
 
   // --------------------------------------------------------------------------
-  // Case 2: agent finishes normally with result but task is in_progress
-  //   (e.g. rejected before finalize ran). Since agent produced a result,
-  //   worktree is preserved for resume — releaseTask must NOT be called.
+  // Case 2: agent requests review, then the server rejects before finalize.
+  //   The original iterator finishing must preserve local in_review state so
+  //   the review watcher can consume the rejection and resume the agent.
   // --------------------------------------------------------------------------
 
-  it("does NOT call releaseTask when agent produces result even if task is in_progress", async () => {
+  it("preserves local in_review when a new rejection races provider finalize", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
 
+    apiClient = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      getTaskNotes: vi.fn().mockResolvedValue([
+        { id: "review-current", action: "review_requested" },
+        { id: "reject-current", action: "rejected", detail: "needs changes" },
+      ]),
+    });
     const agentClient = makeAgentClient({ status: "in_progress" });
     const handle = makeHandle([makeTurnEndEvent()]);
     const provider = makeProvider(handle);
@@ -351,6 +362,42 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     });
 
     expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessions.read(sessionId)).toMatchObject({ status: "in_review" });
+  });
+
+  it("does not let a rejection from before the latest review suppress TASK_NOT_SUBMITTED", async () => {
+    const taskId = randomUUID();
+    const sessionId = randomUUID();
+    await seedActiveSession(sessions, sessionId, taskId);
+
+    apiClient = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      getTaskNotes: vi.fn().mockResolvedValue([
+        { id: "reject-old", action: "rejected", detail: "old review feedback" },
+        { id: "review-current", action: "review_requested" },
+      ]),
+    });
+    const handle = makeHandle([makeTurnEndEvent()]);
+
+    await new Promise<void>((resolve) => {
+      const pool = new RuntimePool(apiClient, { onSlotFreed: resolve }, { onRateLimited: vi.fn(), onRateLimitResumed: vi.fn() }, 0, null);
+      pool.spawnAgent({
+        provider: makeProvider(handle),
+        taskId,
+        sessionId,
+        cwd: "/tmp",
+        taskContext: "test",
+        agentClient: makeAgentClient({ status: "in_progress" }),
+        agentEnv: {},
+      });
+    });
+
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      taskId,
+      expect.objectContaining({ code: "TASK_NOT_SUBMITTED", attempt_id: expect.any(String) }),
+    );
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 
   // --------------------------------------------------------------------------
@@ -359,7 +406,7 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
   //   → releaseTask MUST be called (the new behavior)
   // --------------------------------------------------------------------------
 
-  it("calls releaseTask when agent exits without receiving any result", async () => {
+  it("moves the task to error when the agent exits without receiving any result", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
@@ -374,10 +421,20 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
       pool.spawnAgent({ provider, taskId, sessionId, cwd: "/tmp", taskContext: "test", agentClient, agentEnv: {} });
     });
 
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId);
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      taskId,
+      expect.objectContaining({
+        category: "protocol",
+        code: "TASK_NOT_SUBMITTED",
+        session_id: sessionId,
+        attempt_id: expect.any(String),
+      }),
+    );
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 
-  it("does NOT release todo tasks and opens the runtime circuit after pre-claim exit", async () => {
+  it("moves todo pre-claim exits to error without deleting their workspace", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
@@ -401,7 +458,8 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     });
 
     expect(apiWithTodo.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
-    expect(circuitBreaker.pauseResetAt("claude")).toEqual(expect.any(String));
+    expect(apiWithTodo.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId, expect.objectContaining({ code: "TASK_NOT_SUBMITTED" }));
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 
   // --------------------------------------------------------------------------
@@ -409,7 +467,7 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
   //   → releaseTask MUST be called (original behavior, preserved)
   // --------------------------------------------------------------------------
 
-  it("calls releaseTask when agent crashes (iterator throws)", async () => {
+  it("moves the task to error when the agent crashes", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
@@ -431,7 +489,9 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
       pool.spawnAgent({ provider, taskId, sessionId, cwd: "/tmp", taskContext: "test", agentClient, agentEnv: {} });
     });
 
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId);
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId, expect.objectContaining({ code: "ITERATOR_CRASH" }));
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessions.read(sessionId)?.status).toBe("errored");
   });
 
   // --------------------------------------------------------------------------
@@ -439,12 +499,13 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
   //   → releaseTask MUST be called because opts.crashed takes priority
   // --------------------------------------------------------------------------
 
-  it("calls releaseTask when agent crashes even though turn.end was received and task is in_review", async () => {
+  it("preserves an in_review task when the iterator crashes after turn.end", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
 
     // turn.end fires first (sets taskInReview=true), then iterator throws
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) });
     const agentClient = makeAgentClient({ status: "in_review" });
     const crashAfterResult: AgentHandle = {
       events: (async function* () {
@@ -463,7 +524,9 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
       pool.spawnAgent({ provider, taskId, sessionId, cwd: "/tmp", taskContext: "test", agentClient, agentEnv: {} });
     });
 
-    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(taskId);
+    expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(apiClient.failTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessions.read(sessionId)?.status).toBe("in_review");
   });
 
   // --------------------------------------------------------------------------
@@ -502,6 +565,7 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     await seedActiveSession(sessions, sessionId, taskId);
 
     // Normal finish with task in_review → no releaseTask but closeSession still fires
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) });
     const agentClient = makeAgentClient({ status: "in_review" });
     const handle = makeHandle([makeTurnEndEvent()]);
     const provider = makeProvider(handle);
@@ -542,12 +606,13 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
   // Case 9: onCleanup callback fires during completing path (worktree cleanup)
   // --------------------------------------------------------------------------
 
-  it("invokes onCleanup when agent completes (completing path, not in_review)", async () => {
+  it("invokes onCleanup only when the server task is terminal", async () => {
     const taskId = randomUUID();
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
 
-    const agentClient = makeAgentClient({ status: "in_progress" });
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "cancelled" }) });
+    const agentClient = makeAgentClient({ status: "cancelled" });
     const handle = makeHandle([]);
     const provider = makeProvider(handle);
     const onCleanup = vi.fn();
@@ -565,7 +630,8 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     const sessionId = randomUUID();
     await seedActiveSession(sessions, sessionId, taskId);
 
-    const agentClient = makeAgentClient({ status: "in_progress" });
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "cancelled" }) });
+    const agentClient = makeAgentClient({ status: "cancelled" });
     const provider = makeProvider(makeHandle([]));
     const onCleanup = vi.fn(() => {
       throw new Error("worktree removal failed");
@@ -592,6 +658,7 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     await seedActiveSession(sessions, sessionId, taskId);
 
     // turn.end + task in_review → state machine goes to in_review, not completing
+    apiClient = makeApiClient({ getTask: vi.fn().mockResolvedValue({ status: "in_review" }) });
     const agentClient = makeAgentClient({ status: "in_review" });
     const handle = makeHandle([makeTurnEndEvent()]);
     const provider = makeProvider(handle);

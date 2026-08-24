@@ -145,17 +145,17 @@ describe("resumeSession — missing workspace.cwd", () => {
     expect(result).toBe(false);
   });
 
-  it("calls releaseTask with the task ID when workspace.cwd is missing", async () => {
+  it("does not release the task when workspace.cwd is missing", async () => {
     const missingCwd = join(tmpdir(), `ak-nonexistent-${randomUUID()}`);
     const session = makeSession(missingCwd);
     const client = makeApiClient();
 
     await resumeSession(session, "retry", client, mockPool);
 
-    expect(client.releaseTask).toHaveBeenCalledWith(session.taskId);
+    expect(client.releaseTask).not.toHaveBeenCalled();
   });
 
-  it("calls forceRemove (removeSession) with the session ID when workspace.cwd is missing", async () => {
+  it("preserves the session when workspace.cwd is missing", async () => {
     const missingCwd = join(tmpdir(), `ak-nonexistent-${randomUUID()}`);
     const session = makeSession(missingCwd);
     const client = makeApiClient();
@@ -163,7 +163,7 @@ describe("resumeSession — missing workspace.cwd", () => {
 
     await resumeSession(session, "retry", client, mockPool);
 
-    expect(mockRemoveSession).toHaveBeenCalledWith(session.sessionId);
+    expect(mockRemoveSession).not.toHaveBeenCalled();
   });
 
   it("does NOT call spawnAgent when workspace.cwd is missing", async () => {

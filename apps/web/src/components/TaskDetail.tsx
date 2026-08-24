@@ -29,6 +29,7 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   todo: "Todo",
   in_progress: "In Progress",
   in_review: "In Review",
+  error: "Error",
   done: "Done",
   cancelled: "Cancelled",
 };
@@ -103,6 +104,12 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
     queryKey: ["repositories"],
     queryFn: () => api.repositories.list(),
     staleTime: 60_000,
+  });
+
+  const { data: taskErrors = [] } = useQuery({
+    queryKey: ["task-errors", taskId],
+    queryFn: () => api.tasks.errors(taskId),
+    enabled: task?.status === "error",
   });
 
   const dependsOn: string[] = task?.depends_on || [];
@@ -236,6 +243,18 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
               </Button>
             ),
           )}
+        </div>
+      )}
+
+      {task.status === "error" && taskErrors[0] && (
+        <div className="rounded-md border border-error/30 bg-error/10 p-3" role="status">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-error">Runtime error</span>
+            <span className="font-mono text-[11px] text-content-tertiary">{taskErrors[0].category}</span>
+          </div>
+          <p className="mt-1.5 text-[13px] text-content-secondary break-words">{taskErrors[0].message}</p>
+          {taskErrors[0].code && <p className="mt-1 font-mono text-[11px] text-content-tertiary">{taskErrors[0].code}</p>}
+          <p className="mt-2 text-[11px] text-content-tertiary">Workspace and branch are preserved. Retry with the CLI after resolving the error.</p>
         </div>
       )}
 

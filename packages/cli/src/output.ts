@@ -399,6 +399,7 @@ export function formatAgent(agent: any): string {
     lines.push(`  Todo:     ${agent.status.tasks.todo}`);
     lines.push(`  Progress: ${agent.status.tasks.in_progress}`);
     lines.push(`  Review:   ${agent.status.tasks.in_review}`);
+    lines.push(`  Error:    ${agent.status.tasks.error}`);
     lines.push(`  Done:     ${agent.status.tasks.done}`);
     lines.push(`  Cancelled:${agent.status.tasks.cancelled}`);
   }
@@ -425,11 +426,12 @@ export function formatSubagent(agent: any): string {
 }
 
 export function formatBoard(board: any): string {
-  const columnOrder = ["todo", "in_progress", "in_review", "done", "cancelled"];
+  const columnOrder = ["todo", "in_progress", "in_review", "error", "done", "cancelled"];
   const columnLabels: Record<string, string> = {
     todo: "Todo",
     in_progress: "In Progress",
     in_review: "In Review",
+    error: "Error",
     done: "Done",
     cancelled: "Cancelled",
   };

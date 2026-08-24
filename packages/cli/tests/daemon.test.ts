@@ -153,7 +153,7 @@ describe("cleanupStaleSessions — active session with dead pid IS removed", () 
     expect(client.closeSession).toHaveBeenCalledWith(session.agentId, session.sessionId);
   });
 
-  it("releases the associated task before removing an active worker session", async () => {
+  it("preserves the associated non-terminal task and local session", async () => {
     if (typeof cleanupStaleSessions !== "function") return;
 
     const session = makeWorkerSession({ pid: DEAD_PID, status: "active", taskId: "task-stale" });
@@ -162,8 +162,9 @@ describe("cleanupStaleSessions — active session with dead pid IS removed", () 
     const client = makeMachineClient(session.agentId, session.sessionId);
     await cleanupStaleSessions(client, MACHINE_ID);
 
-    expect(client.releaseTask).toHaveBeenCalledWith("task-stale");
-    expect(readSession(session.sessionId)).toBeNull();
+    expect(client.releaseTask).not.toHaveBeenCalled();
+    expect(client.closeSession).not.toHaveBeenCalled();
+    expect(readSession(session.sessionId)).not.toBeNull();
   });
 
   it("preserves an active session whose persisted repo workspace cwd is missing", async () => {

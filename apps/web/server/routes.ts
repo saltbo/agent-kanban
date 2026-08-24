@@ -29,6 +29,8 @@ import {
   type RelayEndpointInput,
   type RelayUsageResponse,
   type Task,
+  type TaskFailure,
+  type TaskFailureCategory,
   type IdentityType as TaskIdentityType,
   UsageFetchError,
   type UsageInfo,
@@ -201,12 +203,15 @@ import {
   createTask,
   deleteTask,
   deleteTaskAfterFailedDispatch,
+  failTask,
   finalizeTaskAssignment,
   getTask,
   getTaskActions,
+  getTaskErrors,
   listTasks,
   rejectTask,
   releaseTask,
+  retryTask,
   reviewTask,
   rollbackTaskAssignment,
   updateTask,
@@ -820,7 +825,7 @@ async function isCurrentTaskWorkerForRepository(
 
 async function validateTaskManagementTransition(
   c: { env: Env; get: (key: string) => any },
-  action: "complete" | "release" | "cancel" | "reject",
+  action: "complete" | "release" | "cancel" | "reject" | "retry",
   task: Pick<Task, "board_id" | "status">,
 ): Promise<TaskIdentityType> {
   const identity = await taskManagementIdentity(c, task);
@@ -2049,6 +2054,88 @@ api.post("/api/tasks/:id/release", async (c) => {
     apiOrigin: new URL(c.req.url).origin,
   });
   return c.json(dispatched);
+});
+
+const TASK_FAILURE_CATEGORIES = new Set<TaskFailureCategory>(["quota", "authentication", "configuration", "provider", "protocol", "unknown"]);
+
+api.post("/api/tasks/:id/fail", async (c) => {
+  if (c.get("identityType") !== "machine") {
+    throw new HTTPException(403, { message: "Only the owning machine runtime can report task failure" });
+  }
+  const body = await c.req.json<TaskFailure & { session_id?: string; runtime?: string; attempt_id?: string }>();
+  if (!TASK_FAILURE_CATEGORIES.has(body.category)) {
+    throw new HTTPException(400, { message: "Invalid failure category" });
+  }
+  if (body.category === "quota") {
+    throw new HTTPException(409, { message: "Quota limits must suspend the runtime session; they must not move the task to error" });
+  }
+  if (typeof body.message !== "string" || !body.message.trim()) {
+    throw new HTTPException(400, { message: "message is required" });
+  }
+  if (typeof body.retryable !== "boolean") {
+    throw new HTTPException(400, { message: "retryable must be a boolean" });
+  }
+  if (body.code !== undefined && typeof body.code !== "string") {
+    throw new HTTPException(400, { message: "code must be a string" });
+  }
+  if (body.http_status !== undefined && (!Number.isInteger(body.http_status) || body.http_status < 100 || body.http_status > 599)) {
+    throw new HTTPException(400, { message: "http_status must be a valid HTTP status" });
+  }
+  if (body.reset_at !== undefined && (typeof body.reset_at !== "string" || !parseScheduledAt(body.reset_at))) {
+    throw new HTTPException(400, { message: "reset_at must be ISO 8601 with timezone" });
+  }
+  if (body.runtime !== undefined && ![...AGENT_RUNTIMES, ...LEADER_AGENT_RUNTIMES].includes(body.runtime as never)) {
+    throw new HTTPException(400, { message: "Invalid runtime" });
+  }
+  if (typeof body.attempt_id !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(body.attempt_id)) {
+    throw new HTTPException(400, { message: "attempt_id is required and must be a stable opaque identifier" });
+  }
+
+  const ownedTask = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!ownedTask) throw new HTTPException(404, { message: "Task not found" });
+  if (taskRuntimeSource(ownedTask) !== "legacy") {
+    throw new HTTPException(409, { message: "Local machine runtime cannot fail a task routed to AMA" });
+  }
+  const { actorId, sessionId } = resolveActor(c);
+  const failureSessionId = body.session_id ?? sessionId;
+  const machineId = c.get("machineId");
+  if (!machineId || !failureSessionId) throw new HTTPException(400, { message: "machine_id and session_id are required" });
+  const failure: TaskFailure = {
+    category: body.category,
+    message: body.message.trim(),
+    retryable: body.retryable,
+    ...(body.code !== undefined ? { code: body.code } : {}),
+    ...(body.http_status !== undefined ? { http_status: body.http_status } : {}),
+    ...(body.reset_at !== undefined ? { reset_at: body.reset_at } : {}),
+  };
+  const failed = await failTask(
+    c.env.DB,
+    c.req.param("id"),
+    actorId,
+    failure,
+    failureSessionId,
+    (body.runtime as AgentRuntime | undefined) ?? null,
+    machineId,
+    body.attempt_id,
+  );
+  if (!failed) throw new HTTPException(404, { message: "Task not found" });
+  return c.json(failed);
+});
+
+api.post("/api/tasks/:id/retry", async (c) => {
+  const { actorType, actorId, sessionId } = resolveActor(c);
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  const identity = await validateTaskManagementTransition(c, "retry", task);
+  const retried = await retryTask(c.env.DB, task.id, actorType, actorId, identity, sessionId);
+  if (!retried) throw new HTTPException(404, { message: "Task not found" });
+  return c.json(retried);
+});
+
+api.get("/api/tasks/:id/errors", async (c) => {
+  const ownedTask = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!ownedTask) throw new HTTPException(404, { message: "Task not found" });
+  return c.json(await getTaskErrors(c.env.DB, c.req.param("id")));
 });
 
 api.post("/api/tasks/:id/assign", async (c) => {

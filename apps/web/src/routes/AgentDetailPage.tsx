@@ -26,6 +26,7 @@ const actionStyles: Record<string, string> = {
 const taskStatusStyles: Record<string, string> = {
   in_progress: "bg-accent/15 text-accent",
   in_review: "bg-yellow-500/15 text-yellow-500",
+  error: "bg-error/15 text-error",
   done: "bg-green-500/15 text-green-500",
   todo: "bg-zinc-500/15 text-content-tertiary",
   cancelled: "bg-red-500/15 text-red-500",
@@ -258,11 +259,12 @@ export function AgentDetailPage() {
           </div>
 
           {/* Telemetry strip — inside hero card */}
-          <div className="border-t border-border/50 grid grid-cols-5 divide-x divide-border/50">
+          <div className="border-t border-border/50 grid grid-cols-6 divide-x divide-border/50">
             {[
               { label: "TODO", value: String(taskCounts.todo) },
               { label: "PROGRESS", value: String(taskCounts.in_progress) },
               { label: "REVIEW", value: String(taskCounts.in_review) },
+              { label: "ERROR", value: String(taskCounts.error) },
               { label: "INPUT", value: formatTokens(agent.input_tokens || 0) },
               { label: "COST", value: formatCost(agent.cost_micro_usd || 0) },
             ].map((stat) => (
