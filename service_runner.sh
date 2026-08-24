@@ -13,6 +13,16 @@
 #            see scripts/install-systemd-service.sh)
 #   stop / restart / status / logs   manage the background service
 #
+# Refresh options (work with start / restart / run) — pick up new code:
+#   --pull       git pull --ff-only before starting (latest frontend+backend)
+#   --install    force pnpm install even if node_modules exists (dep changes)
+#   --build      rebuild @agent-kanban/shared (the dev server loads its dist,
+#                so shared-package changes need this to take effect)
+#   --skip-install / --skip-migrate   skip the corresponding setup step
+#
+# Typical refresh restart after pulling new code:
+#   ./service_runner.sh restart --pull --install --build
+#
 # First run also:
 #   - installs dependencies if node_modules is missing
 #   - applies D1 migrations to the local database (.wrangler/state)
@@ -26,6 +36,9 @@ PORT="${AK_PORT:-6265}"
 HOST="${AK_HOST:-0.0.0.0}"
 DO_INSTALL=1
 DO_MIGRATE=1
+FORCE_INSTALL=0
+DO_PULL=0
+DO_BUILD=0
 COMMAND=""
 
 # ---------------------------------------------------------------------------
@@ -64,6 +77,9 @@ Usage:
   ./service_runner.sh logs [-f]          # show log (tail -f with -f)
   ./service_runner.sh start --port 8080  # run on a different port
   ./service_runner.sh start --skip-install --skip-migrate
+  ./service_runner.sh restart --pull --install --build
+                                     # refresh restart: pull latest code,
+                                     # reinstall deps, rebuild shared package
   ./service_runner.sh --help
 
 The background service runs in a detached screen session named
@@ -150,12 +166,36 @@ step_prereqs() {
   info "node $(node -v), pnpm $(pnpm -v)"
 }
 
+# Fast-forward the working copy so a restart picks up the latest frontend and
+# backend code. ff-only: a dirty or diverged checkout fails loudly instead of
+# producing a surprise merge inside a service script.
+step_pull() {
+  [ "$DO_PULL" = "1" ] || return 0
+  require_cmd git
+  info "Pulling latest code (git pull --ff-only)…"
+  (cd "$ROOT" && git pull --ff-only) \
+    || fatal "git pull --ff-only failed — commit/stash local changes or pull manually, then retry."
+  info "Now on $(cd "$ROOT" && git rev-parse --short HEAD) ($(cd "$ROOT" && git branch --show-current))."
+}
+
 step_install() {
   [ "$DO_INSTALL" = "1" ] || return 0
-  [ -d "$ROOT/node_modules" ] || {
+  if [ "$FORCE_INSTALL" = "1" ]; then
+    info "Installing dependencies (--install)…"
+    (cd "$ROOT" && pnpm install --loglevel=warn)
+  elif [ ! -d "$ROOT/node_modules" ]; then
     info "Installing dependencies (first run, can take a few minutes)…"
     (cd "$ROOT" && pnpm install --loglevel=warn)
-  }
+  fi
+}
+
+# The dev server imports @agent-kanban/shared from its built dist/, so source
+# changes in packages/shared only take effect after a rebuild. Frontend and
+# server code under apps/web are compiled on the fly by vite and need no build.
+step_build() {
+  [ "$DO_BUILD" = "1" ] || return 0
+  info "Rebuilding @agent-kanban/shared…"
+  (cd "$ROOT" && pnpm --filter @agent-kanban/shared build)
 }
 
 # Returns 0 when every migration file in apps/web/migrations is recorded in the
@@ -275,7 +315,9 @@ step_banner() {
 # screen session spawned from `start`, and by the systemd unit.
 cmd_run() {
   step_prereqs
+  step_pull
   step_install
+  step_build
   step_migrate
   step_dev_vars
   step_banner
@@ -295,7 +337,9 @@ cmd_start() {
   # Run setup in the foreground so install/migrate failures surface here,
   # not buried in the log of a session that died silently.
   step_prereqs
+  step_pull
   step_install
+  step_build
   step_migrate
   step_dev_vars
 
@@ -386,7 +430,10 @@ while [ $# -gt 0 ]; do
     logs) COMMAND="logs"; shift; LOG_ARG="${1:-}"; [ $# -gt 0 ] && shift || true ;;
     --port) PORT="$2"; shift 2 ;;
     --port=*) PORT="${1#*=}"; shift ;;
-    --skip-install) DO_INSTALL=0; shift ;;
+    --pull) DO_PULL=1; shift ;;
+    --install) DO_INSTALL=1; FORCE_INSTALL=1; shift ;;
+    --build) DO_BUILD=1; shift ;;
+    --skip-install) DO_INSTALL=0; FORCE_INSTALL=0; shift ;;
     --skip-migrate) DO_MIGRATE=0; shift ;;
     --help|-h) usage ;;
     *) fatal "unknown option: $1 (try --help)" ;;
