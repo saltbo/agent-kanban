@@ -279,7 +279,7 @@ function assertModels(models: unknown) {
   }
 }
 
-const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
 function assertReasoningEffort(effort: unknown): void {
   if (effort === undefined || effort === null) return;

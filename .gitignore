@@ -53,3 +53,5 @@ test-results/
 skills-lock.json
 .secrets/
 /graphify-out/
+
+/plans/note.md

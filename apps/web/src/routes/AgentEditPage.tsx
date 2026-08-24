@@ -246,8 +246,9 @@ export function AgentEditPage() {
                       disabled={codexModelsLoading && modelOptions.length === 0}
                       onValueChange={(v) => {
                         if (!v) return;
+                        // Keep the chosen thinking effort — the effect below
+                        // clears it only when the new model doesn't support it.
                         setModel(v);
-                        setReasoningEffort("");
                       }}
                     >
                       <SelectTrigger id="edit-agent-model" className="w-full">
@@ -424,7 +425,9 @@ function includeCurrentModel(models: RuntimeModel[], current: string): RuntimeMo
 function reasoningEfforts(runtime: AnyAgentRuntime, relay: RelayEndpointConfig | undefined, modelId: string, models: RuntimeModel[]): string[] {
   if (runtime === "codex" && !relay) {
     const selected = models.find((model) => model.id === modelId);
-    return selected?.supported_reasoning_efforts?.length ? selected.supported_reasoning_efforts : ["minimal", "low", "medium", "high", "xhigh"];
+    return selected?.supported_reasoning_efforts?.length
+      ? selected.supported_reasoning_efforts
+      : ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   }
   if (runtime === "claude" && relay && (relay.kind === "kimi" || relay.kind === "deepseek")) return ["low", "medium", "high", "max"];
   return [];

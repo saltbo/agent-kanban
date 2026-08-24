@@ -44,7 +44,15 @@ describe("codexProvider.execute — reasoning effort", () => {
     });
   });
 
-  it.each(["minimal", "low", "medium", "high", "xhigh"] as const)("passes modelReasoningEffort=%s through to the thread options", async (effort) => {
+  it.each([
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+  ] as const)("passes modelReasoningEffort=%s through to the thread options", async (effort) => {
     await codexProvider.execute({ sessionId: "s1", cwd: "/tmp", env: {}, taskContext: "ctx", model: "o3", reasoningEffort: effort });
 
     expect(codexMocks.startThread).toHaveBeenCalledTimes(1);
@@ -53,13 +61,6 @@ describe("codexProvider.execute — reasoning effort", () => {
 
   it("omits modelReasoningEffort for an unrecognized reasoningEffort value", async () => {
     await codexProvider.execute({ sessionId: "s1", cwd: "/tmp", env: {}, taskContext: "ctx", model: "o3", reasoningEffort: "extreme" });
-
-    expect(lastThreadOpts()).not.toHaveProperty("modelReasoningEffort");
-  });
-
-  // max is a claude-only effort level — the codex provider must drop it.
-  it("omits modelReasoningEffort for the claude-only value max", async () => {
-    await codexProvider.execute({ sessionId: "s1", cwd: "/tmp", env: {}, taskContext: "ctx", model: "o3", reasoningEffort: "max" });
 
     expect(lastThreadOpts()).not.toHaveProperty("modelReasoningEffort");
   });
