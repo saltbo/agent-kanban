@@ -89,8 +89,11 @@ function resolveCodexModel(opts: ExecuteOpts): string | undefined {
   return opts.model;
 }
 
+// Newer Codex CLIs advertise "max"/"ultra" in models_cache.json; the SDK's
+// ModelReasoningEffort type lags behind, so validate against the full known set.
+const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 function codexReasoningEffort(value: string | undefined): ModelReasoningEffort | undefined {
-  return value && ["minimal", "low", "medium", "high", "xhigh"].includes(value) ? (value as ModelReasoningEffort) : undefined;
+  return value && CODEX_REASONING_EFFORTS.includes(value) ? (value as ModelReasoningEffort) : undefined;
 }
 
 type CodexCachedModel = {
