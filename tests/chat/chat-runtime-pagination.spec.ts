@@ -66,8 +66,8 @@ test.describe("Task chat runtime events", () => {
     await expect(taskCard).toBeVisible();
     await taskCard.getByText("chat-pagination").click();
 
-    // 7. Wait for the task detail sheet to open
-    const detailSheet = page.locator('[data-slot="sheet-content"]').first();
+    // 7. Wait for the task detail dialog to open
+    const detailSheet = page.locator('[data-slot="dialog-content"]').first();
     await expect(detailSheet).toBeVisible();
 
     // 8. Click the agent name button inside the detail sheet to open the chat drawer.
@@ -79,8 +79,8 @@ test.describe("Task chat runtime events", () => {
     await agentButton.click();
     await sessionWsRequest;
 
-    // 9. The chat drawer opens as a second sheet
-    const chatSheet = page.locator('[data-slot="sheet-content"]').nth(1);
+    // 9. The chat drawer opens as a sheet alongside the dialog
+    const chatSheet = page.locator('[data-slot="sheet-content"]').first();
     await expect(chatSheet).toBeVisible();
 
     // 10. Wait for runtime history to finish loading (must not stay on "Loading runtime history...")

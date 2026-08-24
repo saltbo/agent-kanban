@@ -34,8 +34,8 @@ test.describe("Board Page", () => {
     // Click the task card to open detail
     await page.getByText(taskTitle).first().click();
 
-    // expect: Task detail sheet is open
-    const sheet = page.locator('[data-slot="sheet-content"]');
+    // expect: Task detail dialog is open
+    const sheet = page.locator('[data-slot="dialog-content"]');
     await expect(sheet).toBeVisible();
 
     // expect: In todo status, NO action buttons should be visible
