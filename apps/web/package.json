@@ -30,7 +30,7 @@
     "clsx": "^2.1.1",
     "dayjs": "^1.11.20",
     "highlight.js": "^11.11.1",
-    "hono": "^4.12.14",
+    "hono": "^4.12.16",
     "kysely": "^0.28.15",
     "kysely-d1": "^0.4.0",
     "lucide-react": "^0.577.0",
@@ -62,7 +62,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "tailwindcss": "^4.2.2",
     "typescript": "^5.9.3",
-    "vite": "^7.3.2",
+    "vite": "^8.0.10",
     "wrangler": "^4.87.0"
   }
 }
