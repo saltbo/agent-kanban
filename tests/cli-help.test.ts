@@ -62,6 +62,8 @@ describe("CLI help and output options", () => {
 
   beforeEach(() => {
     state.createClient.mockReset();
+    state.startDaemon.mockReset();
+    state.startDaemon.mockResolvedValue(undefined);
   });
 
   it("generates top-level help from the registered Commander command tree", () => {

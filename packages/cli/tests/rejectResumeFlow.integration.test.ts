@@ -518,7 +518,7 @@ describe("Scenario 3 (Fix 3): cleanupStaleSessions skips in_review sessions", ()
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("removes a local session file when pid is dead and status is NOT in_review", async () => {
+  it("preserves an active temp workspace for manual recovery because it may contain the only output", async () => {
     const machineId = "machine-abc";
     const agentId = "agent-stale-active";
     const taskId = "task-s3-active";
@@ -546,8 +546,10 @@ describe("Scenario 3 (Fix 3): cleanupStaleSessions skips in_review sessions", ()
 
     await cleanupStaleSessions(client as unknown as MachineClient, machineId);
 
-    // Active session with dead pid must be cleaned up
-    expect(existsSync(join(testSessionsDir, `${session.sessionId}.json`))).toBe(false);
+    expect(existsSync(join(testSessionsDir, `${session.sessionId}.json`))).toBe(true);
+    expect(existsSync(workDir)).toBe(true);
+    expect(client._releaseTaskCalls).toEqual([]);
+    expect(client._closeSessionCalls).toEqual([]);
 
     rmSync(workDir, { recursive: true, force: true });
   });

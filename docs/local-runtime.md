@@ -56,8 +56,33 @@ ak logs -f
 ```
 
 Create or assign a task to a worker whose runtime is reported as ready by the
-machine. The local daemon claims the task, creates an Ed25519-authenticated
-worker session, prepares a worktree, and starts the matching local agent CLI.
+machine. The local daemon prepares agent metadata, subagent definitions, and
+skill snapshots first; only then does it create an Ed25519-authenticated worker
+session and worktree and start the matching local agent CLI.
+
+## Skill Cache and Branch Safety
+
+Configured skills are persisted below the machine's Agent Kanban data directory
+in a content-addressed cache. A task receives copies of a fixed snapshot, so a
+background update cannot change a running agent and the agent cannot modify the
+shared cache. The first cache miss can access GitHub through `npx skills`, but
+it happens before `git worktree add`. If the network is unavailable and no
+snapshot exists, dispatch is deferred without creating an `ak/*` branch.
+
+Open **Settings → Runtime** to control automatic upstream updates and the
+refresh interval (1–168 hours, 24 by default). Disabling automatic updates does
+not disable persistence or first-use cache fills. On update failure, the daemon
+continues using the last-known-good snapshot.
+
+Subagent definitions are small owner-scoped API records rather than downloaded
+packages. The daemon fetches the catalog once during task preflight and renders
+the selected definitions locally for the runtime, so edits take effect on the
+next dispatch.
+
+On startup the daemon removes an untracked worktree only when it is clean, its
+branch is exactly the matching `ak/<directory>` name, and its HEAD is unchanged
+from the repository checkout. Any dirty or committed worktree is preserved and
+reported in the daemon log for manual recovery.
 
 ## Claude Code Authentication Modes
 

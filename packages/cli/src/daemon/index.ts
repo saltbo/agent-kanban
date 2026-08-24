@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { arch, platform, release } from "node:os";
 import { AGENT_RUNTIMES, type AgentRuntime, type MachineRuntime } from "@agent-kanban/shared";
 import { MachineClient } from "../client/index.js";
@@ -9,12 +9,14 @@ import { createLogger } from "../logger.js";
 import { resolveMachineName } from "../machineName.js";
 import { PID_FILE, STATE_DIR } from "../paths.js";
 import { getAvailableProviders, getProvider } from "../providers/registry.js";
+import { setRuntimeSettings } from "../providers/runtimeSettingsState.js";
 import { setSchedulingSettings } from "../providers/schedulingState.js";
 import type { AgentProvider, HistoryEvent } from "../providers/types.js";
 import { getSessionManager } from "../session/manager.js";
 import { migrateLegacySessions } from "../session/store.js";
 import { getVersion } from "../version.js";
-import { auditOrphanedTasks, cleanupLeaderSessions, cleanupStaleSessions } from "./cleanup.js";
+import { startSkillCacheRefresh } from "../workspace/skills.js";
+import { auditOrphanedTasks, cleanupLeaderSessions, cleanupStaleSessions, cleanupUntrackedWorktrees } from "./cleanup.js";
 import { DaemonLoop } from "./loop.js";
 import { PrMonitor } from "./prMonitor.js";
 import { RateLimiter } from "./rateLimiter.js";
@@ -39,7 +41,7 @@ export interface DaemonOptions {
   maxConcurrent: number;
   pollInterval?: number;
   taskTimeout?: number;
-  onReady?: (machineId: string) => void;
+  onReady?: (machineId: string) => void | Promise<void>;
 }
 
 export async function startDaemon(opts: DaemonOptions): Promise<void> {
@@ -73,12 +75,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   const machineId = machine.id;
   logger.info(`Machine ready: ${machineId} (device: ${deviceId})`);
 
-  await client.heartbeat(machineId, {
+  const initialHeartbeat = await client.heartbeat(machineId, {
     version: machineInfo.version,
     runtimes: await buildRuntimeStates(availableProviders, rateLimiter, circuitBreaker),
   });
+  if (initialHeartbeat && typeof initialHeartbeat === "object") {
+    if ("scheduling" in initialHeartbeat) setSchedulingSettings(initialHeartbeat.scheduling);
+    if ("runtime_settings" in initialHeartbeat) setRuntimeSettings(initialHeartbeat.runtime_settings);
+  }
   migrateLegacySessions();
   await cleanupStaleSessions(client, machineId);
+  cleanupUntrackedWorktrees();
   await auditOrphanedTasks(client, machineId);
   logger.info(`Machine online: ${machineInfo.name} (${machineInfo.os}, runtimes: ${formatRuntimeNames(machineInfo.runtimes) || "none"})`);
 
@@ -98,7 +105,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     if (response && typeof response === "object" && "scheduling" in response) {
       setSchedulingSettings(response.scheduling);
     }
+    if (response && typeof response === "object" && "runtime_settings" in response) {
+      setRuntimeSettings(response.runtime_settings);
+    }
   };
+
+  const stopSkillCacheRefresh = startSkillCacheRefresh();
 
   const prMonitor = new PrMonitor(client);
 
@@ -172,6 +184,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     circuitBreaker.stop();
     prMonitor.stop();
     usageCollector.stop();
+    stopSkillCacheRefresh();
     clearInterval(heartbeatInterval);
     await pool.killAll();
     tunnel.disconnect();
@@ -189,12 +202,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   prMonitor.start();
   loop.start();
-  opts.onReady?.(machineId);
+  await opts.onReady?.(machineId);
 }
 
 function removePidFile(): void {
   try {
-    unlinkSync(PID_FILE);
+    if (readFileSync(PID_FILE, "utf-8").trim() === String(process.pid)) unlinkSync(PID_FILE);
   } catch {
     /* ignore */
   }

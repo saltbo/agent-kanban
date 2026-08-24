@@ -28,6 +28,9 @@ Changes in this fork:
 - Local Better Auth accepts explicitly allowlisted LAN origins, so signup and login work when the board is opened from another machine.
 - Machine API keys can be provided through `AK_API_KEY` and are stored with directory mode `0700` and file mode `0600`. Inherited control-plane secrets are stripped before starting the daemon, AMA compatibility runner, or task agents; the daemon reads its machine credential from the protected local config, while workers receive their own scoped Ed25519 identity.
 - Startup is reported successful only after registration, the first heartbeat, and the polling loop are ready. Invalid restart settings are rejected before a healthy runner is stopped.
+- Task dispatch now resolves agent metadata, subagents, and skills before creating a git worktree. Skills are stored once in a machine-level, content-addressed cache and copied as a fixed snapshot into each task; failed upstream refreshes retain the last-known-good version instead of creating another branch.
+- **Settings → Runtime** controls automatic skill updates and their refresh interval (24 hours by default). Settings are owner-scoped and reach local machines through the existing heartbeat.
+- Startup reconciles only provably empty, clean `ak/*` worktrees that have no local session. Dirty worktrees or branches with commits are preserved for manual recovery.
 - The machine, session, and tunnel API surfaces are supported local-runtime APIs and are no longer marked as deprecated legacy endpoints.
 - Read-only API calls retry one stale-socket transport failure (`ECONNRESET`, `EPIPE`, or `UND_ERR_SOCKET`). Mutating requests are never replayed automatically.
 
@@ -142,7 +145,7 @@ ak logs -f                # follow runtime output
 ak stop                   # shut down the task runtime
 ```
 
-The local runner polls assigned tasks, prepares worktrees, installs skills, and spawns one worker agent per task. GitHub access is separate from AK authentication; run `gh auth login` when tasks need repository, issue, or pull-request access.
+The local runner polls assigned tasks, prepares dependencies, creates isolated worktrees, and spawns one worker agent per task. The first use of a configured skill fills the local cache before a branch is created; later tasks run from the cached snapshot. Configure background updates in **Settings → Runtime**. GitHub access is separate from AK authentication; run `gh auth login` when tasks need repository, issue, or pull-request access.
 
 `ak status` only lists worker runtimes that are currently schedulable. A locally installed provider can still be unavailable because it is logged out or its account quota is exhausted; authenticate or wait for the provider's reported reset time before assigning new work to it.
 

@@ -5,6 +5,7 @@ export * from "./peakWindows.js";
 export * from "./relayEndpoints.js";
 export * from "./relayImport.js";
 export * from "./relayUsage.js";
+export * from "./runtimeSettings.js";
 export * from "./schedulingSettings.js";
 export * from "./semver.js";
 export * from "./taskStateMachine.js";

@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../logger.js";
@@ -91,7 +91,7 @@ export function prepareDirectRepo(dir: string): boolean {
 
 function branchExists(dir: string, branchName: string): boolean {
   try {
-    execSync(`git show-ref --verify "refs/heads/${branchName}"`, { cwd: dir, stdio: "pipe" });
+    execFileSync("git", ["show-ref", "--verify", `refs/heads/${branchName}`], { cwd: dir, stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -115,15 +115,15 @@ export function createWorktree(dir: string, sessionId: string, name?: string): {
     }
   }
   mkdirSync(WORKTREES_DIR, { recursive: true });
-  execSync(`git worktree add "${worktreeDir}" -b "${branchName}"`, { cwd: dir, stdio: "pipe" });
+  execFileSync("git", ["worktree", "add", worktreeDir, "-b", branchName], { cwd: dir, stdio: "pipe" });
   logger.info(`Created worktree ${worktreeDir} (branch ${branchName})`);
   return { worktreeDir, branchName };
 }
 
 export function removeWorktree(dir: string, worktreeDir: string, branchName: string): void {
   try {
-    execSync(`git worktree remove "${worktreeDir}" --force`, { cwd: dir, stdio: "pipe" });
-    execSync(`git branch -D "${branchName}"`, { cwd: dir, stdio: "pipe" });
+    execFileSync("git", ["worktree", "remove", worktreeDir, "--force"], { cwd: dir, stdio: "pipe" });
+    execFileSync("git", ["branch", "-D", branchName], { cwd: dir, stdio: "pipe" });
     logger.info(`Removed worktree ${worktreeDir}`);
   } catch (err: any) {
     logger.warn(`Failed to remove worktree ${worktreeDir}: ${err.message}`);

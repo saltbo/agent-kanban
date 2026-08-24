@@ -232,7 +232,7 @@ export function deriveUsername(name: string): string {
   return derived || "agent";
 }
 
-const SKILL_REF_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[A-Za-z0-9][A-Za-z0-9._/-]{0,127})?@[A-Za-z0-9_.-]+$/;
+const SKILL_REF_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[A-Za-z0-9][A-Za-z0-9._/-]{0,127})?@[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
 export function isValidSkillRef(value: string): boolean {
   return SKILL_REF_RE.test(value);
 }

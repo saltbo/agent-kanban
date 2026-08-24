@@ -1,6 +1,7 @@
 import {
   AGENT_RUNTIMES,
   AGENT_STATUSES,
+  DEFAULT_RUNTIME_SETTINGS,
   DEFAULT_SCHEDULING_SETTINGS,
   deriveUsername,
   findInvalidSkillRef,
@@ -10,6 +11,7 @@ import {
   isValidUsername,
   isValidWorktreeName,
   LEADER_AGENT_RUNTIMES,
+  normalizeRuntimeSettings,
   normalizeSchedulingSettings,
   PRIORITIES,
   parseWorktreeConfig,
@@ -17,6 +19,7 @@ import {
   STALE_TIMEOUT_MS,
   TASK_ACTIONS,
   toMinutes,
+  validateRuntimeSettings,
   validateSchedulingSettings,
 } from "@agent-kanban/shared";
 import { describe, expect, it } from "vitest";
@@ -97,6 +100,9 @@ describe("isValidSkillRef", () => {
     expect(isValidSkillRef("trailofbits/skills@")).toBe(false);
     expect(isValidSkillRef("trailofbits/skills@bad skill")).toBe(false);
     expect(isValidSkillRef("trailofbits/skills#@bad")).toBe(false);
+    expect(isValidSkillRef("owner/repo@.")).toBe(false);
+    expect(isValidSkillRef("owner/repo@..")).toBe(false);
+    expect(isValidSkillRef("owner/repo@../escape")).toBe(false);
   });
 
   it("returns the first invalid skill ref", () => {
@@ -331,6 +337,38 @@ describe("validateSchedulingSettings", () => {
 
   it("rejects non-object window entries", () => {
     expect(validateSchedulingSettings({ peak_windows: ["09:00-12:00"], timezone: "UTC" })).toBe("each peak window must be an object");
+  });
+});
+
+describe("runtime settings", () => {
+  it("accepts the defaults and valid boundary values", () => {
+    expect(validateRuntimeSettings(DEFAULT_RUNTIME_SETTINGS)).toBeNull();
+    expect(validateRuntimeSettings({ skill_cache_auto_update: false, skill_cache_refresh_hours: 1 })).toBeNull();
+    expect(validateRuntimeSettings({ skill_cache_auto_update: true, skill_cache_refresh_hours: 168 })).toBeNull();
+  });
+
+  it.each([
+    [null, "settings must be an object"],
+    [[], "settings must be an object"],
+    [{ skill_cache_auto_update: "yes", skill_cache_refresh_hours: 24 }, "skill_cache_auto_update must be a boolean"],
+    [{ skill_cache_auto_update: true, skill_cache_refresh_hours: 1.5 }, "skill_cache_refresh_hours must be a whole number"],
+    [{ skill_cache_auto_update: true, skill_cache_refresh_hours: 0 }, "skill_cache_refresh_hours must be between 1 and 168"],
+    [{ skill_cache_auto_update: true, skill_cache_refresh_hours: 169 }, "skill_cache_refresh_hours must be between 1 and 168"],
+  ])("rejects invalid runtime settings %#", (raw, message) => {
+    expect(validateRuntimeSettings(raw)).toBe(message);
+  });
+
+  it("normalizes valid input to a detached value", () => {
+    const raw = { skill_cache_auto_update: false, skill_cache_refresh_hours: 72 };
+    const normalized = normalizeRuntimeSettings(raw);
+    expect(normalized).toEqual(raw);
+    expect(normalized).not.toBe(raw);
+  });
+
+  it("normalizes malformed input to a detached defaults object", () => {
+    const normalized = normalizeRuntimeSettings({ skill_cache_auto_update: true, skill_cache_refresh_hours: -1 });
+    expect(normalized).toEqual(DEFAULT_RUNTIME_SETTINGS);
+    expect(normalized).not.toBe(DEFAULT_RUNTIME_SETTINGS);
   });
 });
 

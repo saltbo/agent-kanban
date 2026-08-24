@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentRuntime, type BoardType, isBoardType, parseWorktreeConfig, type WorktreeConfig } from "@agent-kanban/shared";
-import { type AgentInfo, generateSystemPrompt, writePromptFile } from "../agent/systemPrompt.js";
+import { type AgentInfo, cleanupPromptFile, generateSystemPrompt, writePromptFile } from "../agent/systemPrompt.js";
 import { AgentClient, type ApiClient } from "../client/index.js";
 import { getCredentials } from "../config.js";
 import { createLogger } from "../logger.js";
@@ -21,7 +21,7 @@ import { getSessionManager } from "../session/manager.js";
 import type { SessionFile } from "../session/types.js";
 import { ensureSubagents, type SubagentDefinition } from "../workspace/agents.js";
 import { ensureCloned, isLocalRepoUrl, prepareDirectRepo, prepareRepo, repoDir } from "../workspace/repoOps.js";
-import { ensureSkills } from "../workspace/skills.js";
+import { materializeSkillSnapshots, prepareSkillSnapshots } from "../workspace/skills.js";
 import {
   acquireDirectRepoDir,
   createDirectRepoWorkspace,
@@ -37,13 +37,19 @@ import { isRuntimeLimitIgnored } from "./runtimeOverrides.js";
 import type { RuntimePool } from "./runtimePool.js";
 
 const logger = createLogger("dispatcher");
+const preparingTaskIds = new Set<string>();
+let dispatchTickInProgress = false;
 
 async function getSubagentDetails(client: ApiClient, subagentIds: string[]): Promise<SubagentDefinition[] | null> {
+  if (subagentIds.length === 0) return [];
+  const available = (await apiCallOptional("listSubagents", () => client.listSubagents())) as SubagentDefinition[] | null;
+  if (!available) return null;
+  const byId = new Map(available.map((subagent) => [subagent.id, subagent]));
   const subagents: SubagentDefinition[] = [];
   for (const id of subagentIds) {
-    const agent = (await apiCallOptional("getSubagent", () => client.getSubagent(id))) as SubagentDefinition | null;
-    if (!agent) return null;
-    subagents.push(agent);
+    const subagent = byId.get(id);
+    if (!subagent) return null;
+    subagents.push(subagent);
   }
   return subagents;
 }
@@ -103,13 +109,16 @@ export function setupGnupgHome(armoredPrivateKey: string): string {
 
 export function cleanupGnupgHome(gnupgHome: string | null): void {
   if (!gnupgHome) return;
-  execBoundary("gpg-kill-agent", () =>
-    execFileSync("gpgconf", ["--kill", "gpg-agent"], {
-      env: { ...process.env, GNUPGHOME: gnupgHome },
-      stdio: "pipe",
-    }),
-  );
-  fsSync("rm-gnupghome", () => rmSync(gnupgHome, { recursive: true, force: true }));
+  try {
+    execBoundary("gpg-kill-agent", () =>
+      execFileSync("gpgconf", ["--kill", "gpg-agent"], {
+        env: { ...process.env, GNUPGHOME: gnupgHome },
+        stdio: "pipe",
+      }),
+    );
+  } finally {
+    fsSync("rm-gnupghome", () => rmSync(gnupgHome, { recursive: true, force: true }));
+  }
 }
 
 // ---- Dispatch pipeline ----
@@ -131,19 +140,39 @@ export async function dispatchTasks(
   opts: DispatchOpts,
   circuitBreaker?: RuntimeCircuitBreaker,
 ): Promise<boolean> {
+  // Daemon callbacks can request an immediate tick while the prior tick is
+  // still awaiting provider/API preflight. Serialize the full selection
+  // window so two ticks cannot reserve the same todo task.
+  if (dispatchTickInProgress) return false;
+  dispatchTickInProgress = true;
+  try {
+    return await dispatchTasksExclusive(client, pool, rateLimiter, prMonitor, opts, circuitBreaker);
+  } finally {
+    dispatchTickInProgress = false;
+  }
+}
+
+async function dispatchTasksExclusive(
+  client: ApiClient,
+  pool: RuntimePool,
+  rateLimiter: RateLimiter,
+  prMonitor: PrMonitor,
+  opts: DispatchOpts,
+  circuitBreaker?: RuntimeCircuitBreaker,
+): Promise<boolean> {
   const tasks = (await client.listTasks({ status: "todo" })) as any[];
   const repos = await client.listRepositories();
   const repoById = new Map(repos.map((r: any) => [r.id, r]));
 
   for (const t of tasks) {
-    if (t.blocked || !t.assigned_to || pool.hasTask(t.id) || !t.repository_id) continue;
+    if (t.blocked || !t.assigned_to || pool.hasTask(t.id) || preparingTaskIds.has(t.id) || !t.repository_id) continue;
     const repo = repoById.get(t.repository_id);
     if (repo) ensureCloned(repo);
   }
 
   const now = new Date().toISOString();
   const available = tasks.filter((t: any) => {
-    if (t.blocked || !t.assigned_to || pool.hasTask(t.id)) return false;
+    if (t.blocked || !t.assigned_to || pool.hasTask(t.id) || preparingTaskIds.has(t.id)) return false;
     if (t.scheduled_at && t.scheduled_at > now) return false;
     if (!t.repository_id) {
       if (t.board_type === "dev") {
@@ -201,42 +230,46 @@ export async function dispatchTasks(
 
   if (!task) return false;
 
-  const worktree = parseWorktreeConfig(task.metadata);
-  let dir: string | null = null;
-  let repoIsLocal = false;
-  if (task.repository_id) {
-    const repo = repoById.get(task.repository_id)!;
-    dir = repoDir(repo.url);
-    repoIsLocal = isLocalRepoUrl(repo.url);
+  preparingTaskIds.add(task.id);
+  try {
+    const worktree = parseWorktreeConfig(task.metadata);
+    let dir: string | null = null;
+    let repositoryUrl: string | null = null;
+    if (task.repository_id) {
+      const repo = repoById.get(task.repository_id)!;
+      dir = repoDir(repo.url);
+      repositoryUrl = repo.url;
+      const repoIsLocal = isLocalRepoUrl(repo.url);
 
-    if (worktree.enabled) {
-      // prepareRepo is a no-op for local repos — never stash or pull the
-      // user's own working tree; `git worktree add` branches from HEAD.
-      if (!prepareRepo(dir, { local: repoIsLocal })) {
+      if (worktree.enabled) {
+        if (!prepareRepo(dir, { local: repoIsLocal })) {
+          logger.error(`Repo not ready at ${dir}, skipping task ${task.id}`);
+          return false;
+        }
+      } else if (!repoIsLocal && !prepareDirectRepo(dir)) {
         logger.error(`Repo not ready at ${dir}, skipping task ${task.id}`);
         return false;
       }
-    } else if (!repoIsLocal && !prepareDirectRepo(dir)) {
-      // Worktree-disabled remote tasks work in the shared checkout; the mutex
-      // guarantees nothing is mid-run, so re-sync it to the default branch
-      // instead of stacking on whatever the previous direct task left behind.
-      logger.error(`Repo not ready at ${dir}, skipping task ${task.id}`);
+    }
+
+    const boardType = task.board_type;
+    if (!isBoardType(boardType)) {
+      logger.error(`Task ${task.id} has invalid board_type "${boardType}", skipping`);
       return false;
     }
+
+    if (circuitBreaker && taskRuntime && !circuitBreaker.tryAcquireDispatch(taskRuntime)) return false;
+    let dispatched = false;
+    try {
+      dispatched = await dispatchOne(task, dir, repositoryUrl, boardType, client, pool, worktree);
+    } finally {
+      if (!dispatched && circuitBreaker && taskRuntime) circuitBreaker.releaseDispatch(taskRuntime);
+    }
+    if (dispatched) prMonitor.track(task.id);
+    return dispatched;
+  } finally {
+    preparingTaskIds.delete(task.id);
   }
-
-  const boardType = task.board_type;
-  if (!isBoardType(boardType)) {
-    logger.error(`Task ${task.id} has invalid board_type "${boardType}", skipping`);
-    return false;
-  }
-
-  if (circuitBreaker && taskRuntime && !circuitBreaker.tryAcquireDispatch(taskRuntime)) return false;
-
-  const dispatched = await dispatchOne(task, dir, boardType, client, pool, worktree);
-  if (!dispatched && circuitBreaker && taskRuntime) circuitBreaker.releaseDispatch(taskRuntime);
-  if (dispatched) prMonitor.track(task.id);
-  return dispatched;
 }
 
 /**
@@ -245,6 +278,7 @@ export async function dispatchTasks(
 async function dispatchOne(
   task: any,
   repoDir: string | null,
+  repositoryUrl: string | null,
   boardType: BoardType,
   client: ApiClient,
   pool: RuntimePool,
@@ -252,6 +286,34 @@ async function dispatchOne(
 ): Promise<boolean> {
   const agentId = task.assigned_to;
   const sessionId = randomUUID();
+  // Network-backed preparation is deliberately completed before session and
+  // worktree creation. A cache miss may be slow or offline, but it cannot
+  // leave an ak/* branch behind.
+  const agentDetails = (await apiCallOptional("getAgent", () => client.getAgent(agentId))) as AgentInfo | null;
+  if (!agentDetails) {
+    logger.error(`Agent ${agentId} not found, skipping task ${task.id}`);
+    return false;
+  }
+  const providerName = normalizeRuntime(agentDetails.runtime);
+  const provider = getProvider(providerName);
+  const skillSnapshots = prepareSkillSnapshots(agentDetails.skills ?? []);
+  if (!skillSnapshots) {
+    logger.error(`Skill preflight failed for task ${task.id}; no worktree was created`);
+    return false;
+  }
+  const subagents = await getSubagentDetails(client, agentDetails.subagents ?? []);
+  if (!subagents) {
+    logger.error(`Subagent preflight failed for task ${task.id}; no worktree was created`);
+    return false;
+  }
+
+  const gpgSubkeyId = (agentDetails as any).gpg_subkey_id ?? null;
+  let armoredGpgKey: string | null = null;
+  let gnupgHome: string | null = null;
+  if (gpgSubkeyId) {
+    const gpgData = (await apiCallOptional("getAgentGpgKey", () => client.getAgentGpgKey(agentId))) as { armored_private_key: string } | null;
+    armoredGpgKey = gpgData?.armored_private_key ?? null;
+  }
 
   const { publicKey, privateKey } = (await cryptoBoundary("generateKey", () =>
     crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]),
@@ -260,142 +322,153 @@ async function dispatchOne(
   const privKeyJwk = (await cryptoBoundary("exportPrivKey", () => crypto.subtle.exportKey("jwk", privateKey))) as JsonWebKey;
 
   const created = await apiCallIdempotent("createSession", () => client.createSession(agentId, sessionId, (pubKeyJwk as JsonWebKey).x!));
-  if (!created) return false;
-
-  logger.info(`Session ${sessionId.slice(0, 8)} for agent ${agentId} on task ${task.id}: ${task.title}`);
-
-  const abort = async () => {
-    await apiCallOptional("releaseTask", () => client.releaseTask(task.id));
-    await apiCallOptional("closeSession", () => client.closeSession(agentId, sessionId));
-  };
-
-  const agentDetails = (await apiCallOptional("getAgent", () => client.getAgent(agentId))) as AgentInfo | null;
-  if (!agentDetails) {
-    logger.error(`Agent ${agentId} not found, releasing task ${task.id}`);
-    await abort();
+  if (!created) {
+    cleanupGnupgHome(gnupgHome);
     return false;
   }
 
-  const gpgSubkeyId = (agentDetails as any).gpg_subkey_id ?? null;
-  let gnupgHome: string | null = null;
-  if (gpgSubkeyId) {
-    const gpgData = (await apiCallOptional("getAgentGpgKey", () => client.getAgentGpgKey(agentId))) as { armored_private_key: string } | null;
-    if (gpgData) gnupgHome = setupGnupgHome(gpgData.armored_private_key);
-  }
+  logger.info(`Session ${sessionId.slice(0, 8)} for agent ${agentId} on task ${task.id}: ${task.title}`);
+  const sessions = getSessionManager();
+  let workspace: { cwd: string; info: import("../workspace/workspace.js").WorkspaceInfo; cleanup(): void } | null = null;
+  let localSessionCreated = false;
+  let promptCreated = false;
+  const abort = async () => {
+    let remoteCompensationComplete = true;
+    try {
+      await apiCallOptional("closeSession", () => client.closeSession(agentId, sessionId));
+    } catch (err) {
+      remoteCompensationComplete = false;
+      logger.warn(`Failed to close aborted session ${sessionId.slice(0, 8)}: ${(err as Error).message}`);
+    }
 
-  let workspace: { cwd: string; info: import("../workspace/workspace.js").WorkspaceInfo; cleanup(): void };
+    let taskStatus: string | null = null;
+    try {
+      const currentTask = (await apiCallOptional("getTask", () => client.getTask(task.id))) as { status?: string } | null;
+      taskStatus = currentTask?.status ?? null;
+    } catch (err) {
+      remoteCompensationComplete = false;
+      logger.warn(`Failed to inspect aborted task ${task.id}: ${(err as Error).message}`);
+    }
+    // Pre-claim failures normally leave the task assigned in todo so the next
+    // tick can retry. Release is only legal after the worker claimed it.
+    if (taskStatus === "in_progress") {
+      try {
+        await apiCallOptional("releaseTask", () => client.releaseTask(task.id));
+      } catch (err) {
+        remoteCompensationComplete = false;
+        logger.warn(`Failed to release aborted task ${task.id}: ${(err as Error).message}`);
+      }
+    }
+
+    let workspaceCleaned = true;
+    if (workspace && remoteCompensationComplete) {
+      try {
+        workspace.cleanup();
+        workspace = null;
+      } catch (err) {
+        workspaceCleaned = false;
+        logger.warn(`Workspace cleanup failed for task ${task.id}: ${(err as Error).message}`);
+      }
+    } else if (workspace) {
+      workspaceCleaned = false;
+    }
+    if (localSessionCreated && workspaceCleaned) {
+      await sessions.forceRemove(sessionId);
+      localSessionCreated = false;
+    } else if (localSessionCreated) {
+      await sessions.patch(sessionId, { cleanupPending: true });
+    }
+    if (promptCreated) cleanupPromptFile(sessionId);
+    cleanupGnupgHome(gnupgHome);
+    gnupgHome = null;
+  };
+
   try {
+    if (armoredGpgKey) gnupgHome = setupGnupgHome(armoredGpgKey);
     workspace = repoDir
       ? worktree.enabled
         ? fsSync("createRepoWorkspace", () => createRepoWorkspace(repoDir, sessionId, worktree.name))
         : fsSync("createDirectRepoWorkspace", () => createDirectRepoWorkspace(repoDir))
       : fsSync("createTempWorkspace", () => createTempWorkspace(sessionId));
-  } catch (err) {
-    cleanupGnupgHome(gnupgHome);
-    await abort();
-    throw err;
-  }
 
-  // Serialize direct-mode tasks on the same checkout. The slot is held for
-  // the entire session lifecycle (including suspension) and released inside
-  // cleanupWorkspace — the choke point for every termination path.
-  if (workspace.info.type === "direct") {
-    acquireDirectRepoDir(workspace.info.repoDir);
-  }
+    // Serialize direct-mode tasks for the whole session lifecycle.
+    if (workspace.info.type === "direct") acquireDirectRepoDir(workspace.info.repoDir);
 
-  const providerName = normalizeRuntime(agentDetails.runtime);
-  const provider = getProvider(providerName);
+    const sessionFile: SessionFile = {
+      type: "worker",
+      agentId,
+      sessionId,
+      runtime: providerName,
+      startedAt: Date.now(),
+      apiUrl: getCredentials().apiUrl,
+      privateKeyJwk: privKeyJwk,
+      taskId: task.id,
+      workspace: workspace.info,
+      status: "active",
+      model: agentDetails.model ?? undefined,
+      reasoningEffort: agentDetails.reasoning_effort ?? undefined,
+      gpgSubkeyId,
+      agentUsername: (agentDetails as any).username ?? agentId,
+      agentName: agentDetails.name,
+    };
+    await sessions.create(sessionFile);
+    localSessionCreated = true;
 
-  const agentSkills = agentDetails.skills ?? [];
-  if (!ensureSkills(workspace.cwd, agentSkills)) {
-    logger.error(`Skill install failed for task ${task.id}, releasing task`);
-    workspace.cleanup();
-    cleanupGnupgHome(gnupgHome);
-    await abort();
-    return false;
-  }
+    if (!materializeSkillSnapshots(workspace.cwd, skillSnapshots)) throw new Error("skill snapshot materialization failed");
+    if (!(await ensureSubagents(workspace.cwd, providerName, subagents))) throw new Error("subagent materialization failed");
 
-  const subagents = await getSubagentDetails(client, agentDetails.subagents ?? []);
-  if (!subagents || !(await ensureSubagents(workspace.cwd, providerName, subagents))) {
-    logger.error(`Subagent install failed for task ${task.id}, releasing task`);
-    workspace.cleanup();
-    cleanupGnupgHome(gnupgHome);
-    await abort();
-    return false;
-  }
+    const apiUrl = getCredentials().apiUrl;
+    const agentClient = new AgentClient(apiUrl, agentId, sessionId, privateKey);
+    const agentEnv = buildAgentEnv({
+      agentId,
+      sessionId,
+      privateKeyJwk: privKeyJwk,
+      agentName: agentDetails.name,
+      agentUsername: (agentDetails as any).username ?? agentId,
+      gpgSubkeyId,
+      gnupgHome,
+    });
+    const systemPromptFile = writePromptFile(sessionId, generateSystemPrompt(agentDetails, boardType, subagents));
+    promptCreated = true;
+    const taskContext = [
+      `Task ID: ${task.id}`,
+      `Title: ${task.title}`,
+      task.description ? `Description: ${task.description}` : null,
+      task.labels?.length ? `Labels: ${task.labels.join(", ")}` : null,
+      task.repository_id ? `Repository: ${repositoryUrl ?? task.repository_id}` : null,
+      `Board: ${task.board_id}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
-  const apiUrl = getCredentials().apiUrl;
-  const agentClient = new AgentClient(apiUrl, agentId, sessionId, privateKey);
-  const agentEnv = buildAgentEnv({
-    agentId,
-    sessionId,
-    privateKeyJwk: privKeyJwk,
-    agentName: agentDetails.name,
-    agentUsername: (agentDetails as any).username ?? agentId,
-    gpgSubkeyId,
-    gnupgHome,
-  });
-  const systemPromptFile = writePromptFile(sessionId, generateSystemPrompt(agentDetails, boardType, subagents));
-
-  const repos = await client.listRepositories();
-  const taskRepo = repos.find((r: any) => r.id === task.repository_id);
-
-  const taskContext = [
-    `Task ID: ${task.id}`,
-    `Title: ${task.title}`,
-    task.description ? `Description: ${task.description}` : null,
-    task.labels?.length ? `Labels: ${task.labels.join(", ")}` : null,
-    task.repository_id ? `Repository: ${taskRepo?.url ?? task.repository_id}` : null,
-    `Board: ${task.board_id}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  const sessions = getSessionManager();
-  const sessionFile: SessionFile = {
-    type: "worker",
-    agentId,
-    sessionId,
-    runtime: providerName,
-    startedAt: Date.now(),
-    apiUrl: getCredentials().apiUrl,
-    privateKeyJwk: privKeyJwk,
-    taskId: task.id,
-    workspace: workspace.info,
-    status: "active",
-    model: agentDetails.model ?? undefined,
-    reasoningEffort: agentDetails.reasoning_effort ?? undefined,
-    gpgSubkeyId,
-    agentUsername: (agentDetails as any).username ?? agentId,
-    agentName: agentDetails.name,
-  };
-  await sessions.create(sessionFile);
-
-  try {
+    const ownedWorkspace = workspace;
     await pool.spawnAgent({
       provider,
       taskId: task.id,
       sessionId,
-      cwd: workspace.cwd,
+      cwd: ownedWorkspace.cwd,
       taskContext,
       agentClient,
       agentEnv,
       systemPromptFile,
       onCleanup: () => {
-        workspace.cleanup();
-        cleanupGnupgHome(gnupgHome);
+        try {
+          ownedWorkspace.cleanup();
+        } finally {
+          cleanupGnupgHome(gnupgHome);
+        }
       },
       model: agentDetails.model ?? undefined,
       reasoningEffort: agentDetails.reasoning_effort ?? undefined,
     });
+    // RuntimePool now owns workspace/GPG/prompt cleanup and the local session.
+    workspace = null;
+    localSessionCreated = false;
+    promptCreated = false;
+    return true;
   } catch (err) {
-    // Spawn failed after the workspace (and direct-mode slot) were created —
-    // clean up synchronously; the orphaned session file is reaped next tick.
-    workspace.cleanup();
-    cleanupGnupgHome(gnupgHome);
+    logger.error(`Dispatch preparation failed for task ${task.id}: ${(err as Error).message}`);
     await abort();
-    throw err;
+    return false;
   }
-
-  return true;
 }

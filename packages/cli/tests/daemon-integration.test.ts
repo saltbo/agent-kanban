@@ -7,6 +7,7 @@
  * their boundaries so no actual network or subprocesses are invoked.
  */
 
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -192,6 +193,29 @@ function makeApiClient(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+}
+
+function createPersistedRepoWorkspace(kind: "dirty" | "committed") {
+  const repoDir = join(testSessionsDir, `repo-${kind}`);
+  const cwd = join(testSessionsDir, `worktree-${kind}`);
+  mkdirSync(repoDir);
+  git(repoDir, "init");
+  git(repoDir, "config", "user.email", "test@example.com");
+  git(repoDir, "config", "user.name", "Test");
+  writeFileSync(join(repoDir, "README.md"), "base\n");
+  git(repoDir, "add", "README.md");
+  git(repoDir, "commit", "-m", "base");
+  git(repoDir, "worktree", "add", "-b", `ak/orphan-${kind}`, cwd);
+  writeFileSync(join(cwd, "agent-output.txt"), "valuable output\n");
+  if (kind === "committed") {
+    git(cwd, "add", "agent-output.txt");
+    git(cwd, "commit", "-m", "agent output");
+  }
+  return { type: "repo" as const, cwd, repoDir, branchName: `ak/orphan-${kind}` };
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 1. Orphan reaping — orphanFromStore (task still viable on server)
 // ════════════════════════════════════════════════════════════════════════════
@@ -277,6 +301,51 @@ describe("orphan reaping — session held by pool is skipped", () => {
 
     expect(sm.read(sessionId)).not.toBeNull();
     expect(client.releaseTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("orphan reaping — persisted agent work is protected", () => {
+  it.each(["dirty", "committed"] as const)("preserves an orphan session with a %s worktree", async (kind) => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    const workspace = createPersistedRepoWorkspace(kind);
+    await sm.create(makeWorkerFile(sessionId, { taskId, status: "active", workspace }));
+    const pool = makePool({ hasTask: vi.fn().mockReturnValue(false) });
+    const client = makeApiClient();
+
+    await reapOrphanWorkerSessions(sm, pool, client as any);
+
+    expect(sm.read(sessionId)?.status).toBe("active");
+    expect(client.getTask).not.toHaveBeenCalled();
+    expect(client.releaseTask).not.toHaveBeenCalled();
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+  });
+
+  it.each(["release", "close"])("retains an orphan session when remote %s fails", async (phase) => {
+    const sessionId = randomUUID();
+    const taskId = `task-${randomUUID()}`;
+    await sm.create(
+      makeWorkerFile(sessionId, {
+        taskId,
+        status: "active",
+        workspace: { type: "direct", cwd: testSessionsDir, repoDir: testSessionsDir },
+      }),
+    );
+    const pool = makePool({ hasTask: vi.fn().mockReturnValue(false) });
+    const client = makeApiClient({
+      getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
+      releaseTask: vi.fn(async () => {
+        if (phase === "release") throw new Error("release failed");
+      }),
+      closeSession: vi.fn(async () => {
+        if (phase === "close") throw new Error("close failed");
+      }),
+    });
+
+    await expect(reapOrphanWorkerSessions(sm, pool, client as any)).rejects.toThrow(`${phase} failed`);
+
+    expect(sm.read(sessionId)?.status).toBe("active");
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
   });
 });
 
@@ -824,7 +893,7 @@ describe("orphan reaping — completeTerminal: workspace cleanup CleanupError �
       makeWorkerFile(sessionId, {
         taskId,
         status: "active",
-        workspace: { type: "temp", cwd: workDir },
+        workspace: { type: "direct", cwd: workDir, repoDir: workDir },
       }),
     );
 
@@ -1530,10 +1599,7 @@ describe("orphan reaper — workspace cleanup error marks cleanupPending", () =>
     expect(sm.read(sessionId)?.status).toBe("closed");
   });
 
-  it("retries cleanupPending with repo workspace type → removeWorktree swallows error → cleanup_done succeeds → closed", async () => {
-    // removeWorktree catches its own errors, so even a repo workspace cleanup
-    // will not throw. The session goes closed (cleanup succeeds from the
-    // session state machine's perspective).
+  it("keeps cleanupPending when repo worktree removal cannot be verified", async () => {
     const sessionId = randomUUID();
     const workDir = mkdtempSync(join(tmpdir(), "ak-di-cp-repo-"));
 
@@ -1549,8 +1615,7 @@ describe("orphan reaper — workspace cleanup error marks cleanupPending", () =>
 
     await reapCleanupPending(sm);
 
-    // removeWorktree swallows the error → cleanup_done fires → closed
-    expect(sm.read(sessionId)?.status).toBe("closed");
+    expect(sm.read(sessionId)).toMatchObject({ status: "completing", cleanupPending: true });
 
     rmSync(workDir, { recursive: true, force: true });
   });

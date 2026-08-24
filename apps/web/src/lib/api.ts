@@ -8,6 +8,7 @@ import type {
   RelayUsageResponse,
   Repository,
   RuntimeModel,
+  RuntimeSettings,
   SchedulingSettings,
 } from "@agent-kanban/shared";
 import { getAuthToken, refreshAuthToken } from "./auth-client";
@@ -191,6 +192,8 @@ export const api = {
   settings: {
     getScheduling: () => request<SchedulingSettings>("GET", "/settings/scheduling"),
     putScheduling: (settings: SchedulingSettings) => request<SchedulingSettings>("PUT", "/settings/scheduling", settings),
+    getRuntime: () => request<RuntimeSettings>("GET", "/settings/runtime"),
+    putRuntime: (settings: RuntimeSettings) => request<RuntimeSettings>("PUT", "/settings/runtime", settings),
   },
   relays: {
     list: () => request<RelayEndpointConfig[]>("GET", "/relays"),

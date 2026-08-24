@@ -3,6 +3,7 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -18,6 +19,7 @@ import { arch, platform, release } from "node:os";
 import { join } from "node:path";
 import type { MachineRuntime } from "@agent-kanban/shared";
 import type { Command } from "commander";
+import lockfile from "proper-lockfile";
 import { type AmaRunnerVersionInfo, resolveAmaRunnerBinary } from "../amaRunner.js";
 import { MachineClient } from "../client/machine.js";
 import { getCredentials, saveCredentials, setCurrent } from "../config.js";
@@ -135,6 +137,107 @@ function readDaemonPid(): number | null {
   if (!/^[1-9]\d*$/.test(raw)) return null;
   const pid = Number(raw);
   return isPidAlive(pid) ? pid : null;
+}
+
+interface DaemonStartReservation {
+  commit(pid: number): void;
+  release(committedPid?: number): void;
+}
+
+function pidOwner(raw: string): number | null {
+  const value = raw.startsWith("starting:") ? raw.slice("starting:".length) : raw;
+  if (!/^[1-9]\d*$/.test(value)) return null;
+  const pid = Number(value);
+  return Number.isSafeInteger(pid) ? pid : null;
+}
+
+function reclaimStalePidFile(expected: string): void {
+  const quarantine = `${PID_FILE}.reclaim-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    renameSync(PID_FILE, quarantine);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+
+  let moved: string;
+  try {
+    moved = readFileSync(quarantine, "utf-8").trim();
+  } catch (error) {
+    try {
+      unlinkSync(quarantine);
+    } catch {
+      /* preserve the original read error */
+    }
+    throw error;
+  }
+  if (moved !== expected) {
+    // Another starter replaced the stale file between our observation and the
+    // rename. Restore its marker only if the canonical path is still empty.
+    // If somebody else already owns the path, the displaced starter will see
+    // that it lost its marker and stop its child before it can persist.
+    try {
+      linkSync(quarantine, PID_FILE);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  unlinkSync(quarantine);
+}
+
+/**
+ * Reserve daemon startup before spawning. The old read-then-write PID flow
+ * allowed concurrent starts, and an older daemon could later unlink a newer
+ * daemon's PID file during shutdown. A parent-owned startup marker closes that
+ * window; commit/release only mutate the marker they created.
+ */
+function reserveDaemonStart(): DaemonStartReservation {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const marker = `starting:${process.pid}`;
+
+  for (;;) {
+    try {
+      writeFileSync(PID_FILE, marker, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let existing: string;
+      try {
+        existing = readFileSync(PID_FILE, "utf-8").trim();
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw readError;
+      }
+      const owner = pidOwner(existing);
+      if (owner !== null && isPidAlive(owner)) {
+        throw new Error(`Runtime already running or starting (PID ${owner})`);
+      }
+      reclaimStalePidFile(existing);
+    }
+  }
+
+  const ownsMarker = () => {
+    try {
+      return readFileSync(PID_FILE, "utf-8").trim() === marker;
+    } catch {
+      return false;
+    }
+  };
+
+  return {
+    commit(pid: number) {
+      if (!ownsMarker()) throw new Error("Lost Machine runner startup reservation");
+      writeFileSync(PID_FILE, String(pid), { mode: 0o600 });
+    },
+    release(committedPid?: number) {
+      try {
+        const current = readFileSync(PID_FILE, "utf-8").trim();
+        if (current === marker || (committedPid !== undefined && current === String(committedPid))) unlinkSync(PID_FILE);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    },
+  };
 }
 
 function readDaemonState(): DaemonState | null {
@@ -397,47 +500,78 @@ async function waitForLocalReady(child: ReturnType<typeof spawn>): Promise<{ mac
   });
 }
 
+async function withStartupLock<T>(operation: () => Promise<T>): Promise<T> {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const release = await lockfile.lock(PID_FILE, {
+    realpath: false,
+    stale: 30_000,
+    update: 10_000,
+    retries: { retries: 20, minTimeout: 50, maxTimeout: 250 },
+  });
+  try {
+    return await operation();
+  } finally {
+    await release();
+  }
+}
+
 async function startAmaRunner(opts: Record<string, unknown>) {
+  await applyAmaRunnerOnboarding(opts);
+  const runner = await resolveAmaRunnerBinary(typeof opts.amaRunnerVersion === "string" ? opts.amaRunnerVersion : null);
+  const env = withoutControlPlaneSecrets(process.env);
+  env.AMA_RUNNER_CREDENTIALS = AMA_RUNNER_CREDENTIALS_FILE;
+  // Device login is interactive and may take arbitrarily long. Keep it outside
+  // the startup lock so spawnSync cannot starve proper-lockfile's lease timer.
+  ensureRunnerLogin(runner.path, opts.amaOrigin as string, env);
+  const args = amaRunnerArgs(opts);
+  await withStartupLock(() => startPreparedAmaRunner(opts, runner, env, args));
+}
+
+async function startPreparedAmaRunner(
+  opts: Record<string, unknown>,
+  runner: Awaited<ReturnType<typeof resolveAmaRunnerBinary>>,
+  env: NodeJS.ProcessEnv,
+  args: string[],
+) {
   const existingPid = readDaemonPid();
   if (existingPid) {
     console.error(`Runtime already running (PID ${existingPid}). Stop it first or remove ${PID_FILE}`);
     process.exit(1);
   }
-  if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
   rotateLogs();
 
   const logFile = join(LOGS_DIR, "daemon.log");
-  await applyAmaRunnerOnboarding(opts);
-  const runner = await resolveAmaRunnerBinary(typeof opts.amaRunnerVersion === "string" ? opts.amaRunnerVersion : null);
-  const env = withoutControlPlaneSecrets(process.env);
-  env.AMA_RUNNER_CREDENTIALS = AMA_RUNNER_CREDENTIALS_FILE;
-  // Authenticate before opening the daemon log: login is interactive and writes
-  // to the terminal, while the detached runner's output belongs in the log file.
-  ensureRunnerLogin(runner.path, opts.amaOrigin as string, env);
-  const args = amaRunnerArgs(opts);
   const logFd = openSync(logFile, "a");
-  const child = spawn(runner.path, args, { detached: true, stdio: ["ignore", logFd, logFd], env, windowsHide: true });
-  let pid: number;
+  let reservation: DaemonStartReservation | null = null;
+  let child: ReturnType<typeof spawn> | null = null;
+  let pid: number | null = null;
+  let state: DaemonState | null = null;
   try {
+    reservation = reserveDaemonStart();
+    child = spawn(runner.path, args, { detached: true, stdio: ["ignore", logFd, logFd], env, windowsHide: true });
     pid = await waitForSpawn(child, runner.path);
+    reservation.commit(pid);
+    state = {
+      providers: Array.isArray(opts.providers) ? (opts.providers as string[]) : [],
+      maxConcurrent: parseInt(String(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT), 10),
+      apiUrl: opts.apiUrl as string,
+      startedAt: new Date().toISOString(),
+      runtime: "ama-runner",
+      runnerPath: runner.path,
+      runnerVersion: runner.version,
+      ...(typeof opts.machineId === "string" ? { machineId: opts.machineId } : {}),
+    };
+    writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
+    child.unref();
   } catch (error) {
-    closeSync(logFd);
+    const childPid = pid ?? child?.pid;
+    if (typeof childPid === "number" && isPidAlive(childPid)) await stopRunner(childPid);
+    reservation?.release(childPid);
     throw error;
+  } finally {
+    closeSync(logFd);
   }
-  mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(PID_FILE, String(pid));
-  const state: DaemonState = {
-    providers: Array.isArray(opts.providers) ? (opts.providers as string[]) : [],
-    maxConcurrent: parseInt(String(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT), 10),
-    apiUrl: opts.apiUrl as string,
-    startedAt: new Date().toISOString(),
-    runtime: "ama-runner",
-    runnerPath: runner.path,
-    runnerVersion: runner.version,
-    ...(typeof opts.machineId === "string" ? { machineId: opts.machineId } : {}),
-  };
-  writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
-  child.unref();
+  if (pid === null || state === null) throw new Error("AMA runner startup completed without state");
   console.log(`● Machine runner started (PID ${pid}, v${getVersion()})`);
   console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
   console.log(`  Concurrency: ${state.maxConcurrent}`);
@@ -487,62 +621,70 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
 }
 
 async function startLocalDaemon(opts: Record<string, unknown>) {
+  assertDaemonDependencies();
+  const parsed = parseLocalDaemonOptions(opts);
+  await withStartupLock(() => startPreparedLocalDaemon(opts, parsed));
+}
+
+async function startPreparedLocalDaemon(opts: Record<string, unknown>, parsed: { maxConcurrent: number; pollInterval: number; taskTimeout: number }) {
   const existingPid = readDaemonPid();
   if (existingPid) {
     console.error(`Runtime already running (PID ${existingPid}). Stop it first or remove ${PID_FILE}`);
     process.exit(1);
   }
-  if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
-
-  assertDaemonDependencies();
   rotateLogs();
 
-  const { maxConcurrent, pollInterval, taskTimeout } = parseLocalDaemonOptions(opts);
+  const { maxConcurrent, pollInterval, taskTimeout } = parsed;
   const logFile = join(LOGS_DIR, "daemon.log");
   const logFd = openSync(logFile, "a");
-  const child = spawn(
-    process.execPath,
-    [
-      process.argv[1],
-      "__daemon",
-      "--max-concurrent",
-      String(maxConcurrent),
-      "--poll-interval",
-      String(pollInterval),
-      "--task-timeout",
-      String(taskTimeout),
-    ],
-    {
-      detached: true,
-      stdio: ["ignore", logFd, logFd, "ipc"],
-      windowsHide: true,
-      env: withoutControlPlaneSecrets(process.env),
-    },
-  );
-
-  let ready: { machineId: string; pid: number };
+  let reservation: DaemonStartReservation | null = null;
+  let child: ReturnType<typeof spawn> | null = null;
+  let ready: { machineId: string; pid: number } | null = null;
+  let state: DaemonState | null = null;
   try {
+    reservation = reserveDaemonStart();
+    child = spawn(
+      process.execPath,
+      [
+        process.argv[1],
+        "__daemon",
+        "--max-concurrent",
+        String(maxConcurrent),
+        "--poll-interval",
+        String(pollInterval),
+        "--task-timeout",
+        String(taskTimeout),
+      ],
+      {
+        detached: true,
+        stdio: ["ignore", logFd, logFd, "ipc"],
+        windowsHide: true,
+        env: withoutControlPlaneSecrets(process.env),
+      },
+    );
     ready = await waitForLocalReady(child);
+    reservation.commit(ready.pid);
+    state = {
+      providers: Array.isArray(opts.providers) ? (opts.providers as string[]) : machineRuntimes().map((runtime) => runtime.name),
+      maxConcurrent,
+      pollInterval,
+      taskTimeout,
+      apiUrl: opts.apiUrl as string,
+      startedAt: new Date().toISOString(),
+      runtime: "local-daemon",
+      machineId: ready.machineId,
+    };
+    writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
+    child.unref();
   } catch (error) {
-    closeSync(logFd);
+    const childPid = ready?.pid ?? child?.pid;
+    if (typeof childPid === "number" && isPidAlive(childPid)) await stopRunner(childPid);
+    reservation?.release(childPid);
     throw error;
+  } finally {
+    closeSync(logFd);
   }
-  closeSync(logFd);
-
-  mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(PID_FILE, String(ready.pid));
-  const state: DaemonState = {
-    providers: Array.isArray(opts.providers) ? (opts.providers as string[]) : machineRuntimes().map((runtime) => runtime.name),
-    maxConcurrent,
-    pollInterval,
-    taskTimeout,
-    apiUrl: opts.apiUrl as string,
-    startedAt: new Date().toISOString(),
-    runtime: "local-daemon",
-    machineId: ready.machineId,
-  };
-  writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
-  child.unref();
+  if (ready === null || state === null) throw new Error("Local machine runner startup completed without state");
 
   const timeoutLabel = taskTimeout === 0 ? "none" : `${taskTimeout / 1000}s`;
   console.log(`● Local machine runner started (PID ${ready.pid}, v${getVersion()})`);
@@ -641,7 +783,9 @@ export function registerLocalStartCommand(program: Command) {
         try {
           setCurrent(apiUrl);
         } catch {
-          console.error(`No saved credentials for ${apiUrl}. Pass AK_API_KEY and run \`ak start\` once, or use \`ak start --api-url ${apiUrl} --api-key <key>\`.`);
+          console.error(
+            `No saved credentials for ${apiUrl}. Pass AK_API_KEY and run \`ak start\` once, or use \`ak start --api-url ${apiUrl} --api-key <key>\`.`,
+          );
           process.exit(1);
         }
       }

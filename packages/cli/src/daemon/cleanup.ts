@@ -1,7 +1,12 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { collectUsage as collectLeaderUsage } from "../agent/usage.js";
 import type { MachineClient } from "../client/index.js";
 import { createLogger } from "../logger.js";
+import { WORKTREES_DIR } from "../paths.js";
 import { isPidAlive, listSessions, removeSession } from "../session/store.js";
+import { canSafelyDiscardOrphanWorkspace, cleanupWorkspace } from "../workspace/workspace.js";
 
 const logger = createLogger("daemon");
 
@@ -57,14 +62,46 @@ export async function cleanupStaleSessions(client: MachineClient, machineId: str
           if (isPidAlive(local.pid)) continue;
         }
 
-        if (local?.type === "worker" && local.taskId) {
-          await client.releaseTask(local.taskId).catch((err: any) => {
-            logger.warn(`Failed to release stale task ${local.taskId}: ${err.message}`);
-          });
+        if (local?.type === "worker" && local.workspace && !canSafelyDiscardOrphanWorkspace(local.workspace)) {
+          logger.warn(`Preserving stale session ${session.id.slice(0, 8)} and workspace ${local.workspace.cwd}; manual recovery is required`);
+          continue;
         }
-        await client.closeSession(agent.id, session.id).catch(() => {});
+
+        if (local?.type === "worker" && local.taskId) {
+          let task: { status?: string } | null = null;
+          try {
+            task = (await client.getTask(local.taskId)) as { status?: string };
+          } catch (err: any) {
+            if (err?.status !== 404) {
+              logger.warn(`Failed to inspect stale task ${local.taskId}: ${err.message}`);
+              continue;
+            }
+          }
+          if (task?.status === "in_progress") {
+            try {
+              await client.releaseTask(local.taskId);
+            } catch (err: any) {
+              logger.warn(`Failed to release stale task ${local.taskId}: ${err.message}`);
+              continue;
+            }
+          }
+        }
+        try {
+          await client.closeSession(agent.id, session.id);
+        } catch (err: any) {
+          logger.warn(`Failed to close stale session ${session.id.slice(0, 8)}: ${err.message}`);
+          continue;
+        }
         if (local) {
           logger.info(`Closing stale session ${session.id.slice(0, 8)} for agent ${agent.id.slice(0, 8)}`);
+          if (local.type === "worker" && local.workspace) {
+            try {
+              cleanupWorkspace(local.workspace);
+            } catch (err) {
+              logger.warn(`Failed to clean stale workspace ${local.workspace.cwd}; preserving local session: ${(err as Error).message}`);
+              continue;
+            }
+          }
           removeSession(local.sessionId);
         }
         closedCount++;
@@ -73,6 +110,45 @@ export async function cleanupStaleSessions(client: MachineClient, machineId: str
     if (closedCount > 0) logger.info(`Cleaned up ${closedCount} stale session(s) from previous run`);
   } catch (err: any) {
     logger.warn(`Session cleanup failed: ${err.message}`);
+  }
+}
+
+/**
+ * Remove only provably empty worktrees left in the tiny crash window between
+ * `git worktree add` and local session persistence. Dirty worktrees, branches
+ * with commits, unexpected names, and unverifiable paths are preserved.
+ */
+export function cleanupUntrackedWorktrees(): void {
+  if (!existsSync(WORKTREES_DIR)) return;
+  const tracked = new Set(
+    listSessions({ type: "worker" })
+      .map((session) => session.workspace?.cwd)
+      .filter((cwd): cwd is string => Boolean(cwd))
+      .filter((cwd) => existsSync(cwd))
+      .map((cwd) => realpathSync(cwd)),
+  );
+
+  for (const entry of readdirSync(WORKTREES_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const cwd = realpathSync(join(WORKTREES_DIR, entry.name));
+    if (tracked.has(cwd)) continue;
+    try {
+      const topLevel = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+      const branchName = execFileSync("git", ["-C", cwd, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" }).trim();
+      const gitCommonDir = execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
+        encoding: "utf8",
+      }).trim();
+      const repoDir = dirname(gitCommonDir);
+      const workspace = { type: "repo" as const, cwd, repoDir, branchName };
+      if (realpathSync(topLevel) !== cwd || branchName !== `ak/${basename(cwd)}` || !canSafelyDiscardOrphanWorkspace(workspace)) {
+        logger.warn(`Preserving untracked worktree ${cwd}; it is not provably empty`);
+        continue;
+      }
+      cleanupWorkspace(workspace);
+      logger.info(`Removed empty untracked worktree ${cwd}`);
+    } catch (err) {
+      logger.warn(`Could not reconcile untracked worktree ${cwd}; preserving it: ${(err as Error).message}`);
+    }
   }
 }
 

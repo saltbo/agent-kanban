@@ -21,6 +21,7 @@ import {
   MAINTAINER_TAINT_KEY,
   type MachineRuntime,
   normalizeRelayEndpointInput,
+  normalizeRuntimeSettings,
   normalizeSchedulingSettings,
   parseScheduledAt,
   probeRelayQuota,
@@ -33,6 +34,7 @@ import {
   type UsageInfo,
   type UsageWindow,
   validateRelayEndpointInput,
+  validateRuntimeSettings,
   validateSchedulingSettings,
   validateTransition,
 } from "@agent-kanban/shared";
@@ -158,7 +160,7 @@ import { createMessage, listMessages } from "./messageRepo";
 import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
 import { listRuntimeModels } from "./modelCatalog";
-import { getSchedulingSettings, putSchedulingSettings } from "./ownerSettingsRepo";
+import { getRuntimeSettings, getSchedulingSettings, putRuntimeSettings, putSchedulingSettings } from "./ownerSettingsRepo";
 import {
   createRelayEndpoint,
   deleteRelayEndpoint,
@@ -1124,8 +1126,11 @@ api.post("/api/machines/:id/heartbeat", async (c) => {
 
   // Piggyback scheduling settings so daemons pick up peak-window changes on
   // their next heartbeat without a separate authenticated settings fetch.
-  const scheduling = await getSchedulingSettings(c.env.DB, c.get("ownerId"));
-  return c.json({ ...publicMachine(updated), scheduling });
+  const [scheduling, runtime_settings] = await Promise.all([
+    getSchedulingSettings(c.env.DB, c.get("ownerId")),
+    getRuntimeSettings(c.env.DB, c.get("ownerId")),
+  ]);
+  return c.json({ ...publicMachine(updated), scheduling, runtime_settings });
 });
 
 api.get("/api/settings/scheduling", async (c) => {
@@ -1142,6 +1147,20 @@ api.put("/api/settings/scheduling", async (c) => {
   // the two fields they understand.
   await putSchedulingSettings(c.env.DB, c.get("ownerId"), normalizeSchedulingSettings(body));
   return c.json(await getSchedulingSettings(c.env.DB, c.get("ownerId")));
+});
+
+api.get("/api/settings/runtime", async (c) => {
+  if (c.get("identityType") !== "user") throw new HTTPException(403, { message: "User identity required" });
+  return c.json(await getRuntimeSettings(c.env.DB, c.get("ownerId")));
+});
+
+api.put("/api/settings/runtime", async (c) => {
+  if (c.get("identityType") !== "user") throw new HTTPException(403, { message: "User identity required" });
+  const body = await c.req.json<unknown>();
+  const validationError = validateRuntimeSettings(body);
+  if (validationError) throw new HTTPException(400, { message: validationError });
+  await putRuntimeSettings(c.env.DB, c.get("ownerId"), normalizeRuntimeSettings(body));
+  return c.json(await getRuntimeSettings(c.env.DB, c.get("ownerId")));
 });
 
 // ---- Relay endpoints (Agents → 配额 tab) ----

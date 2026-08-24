@@ -172,7 +172,7 @@ export abstract class ApiClient {
     }>("GET", `/api/machines/${machineId}`);
   }
   heartbeat(machineId: string, info: { version?: string; runtimes?: MachineRuntime[]; usage_info?: UsageInfo | null }) {
-    return this.request<{ scheduling?: unknown }>("POST", `/api/machines/${machineId}/heartbeat`, info);
+    return this.request<{ scheduling?: unknown; runtime_settings?: unknown }>("POST", `/api/machines/${machineId}/heartbeat`, info);
   }
 
   // Agent Sessions

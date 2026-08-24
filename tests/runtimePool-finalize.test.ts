@@ -560,6 +560,28 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     expect(onCleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps cleanupPending and does not apply cleanup_done when workspace cleanup fails", async () => {
+    const taskId = randomUUID();
+    const sessionId = randomUUID();
+    await seedActiveSession(sessions, sessionId, taskId);
+
+    const agentClient = makeAgentClient({ status: "in_progress" });
+    const provider = makeProvider(makeHandle([]));
+    const onCleanup = vi.fn(() => {
+      throw new Error("worktree removal failed");
+    });
+    const applyEvent = vi.spyOn(sessions, "applyEvent");
+
+    await new Promise<void>((resolve) => {
+      const pool = new RuntimePool(apiClient, { onSlotFreed: resolve }, { onRateLimited: vi.fn(), onRateLimitResumed: vi.fn() }, 0, null);
+      pool.spawnAgent({ provider, taskId, sessionId, cwd: "/tmp", taskContext: "test", agentClient, agentEnv: {}, onCleanup });
+    });
+
+    expect(onCleanup).toHaveBeenCalledOnce();
+    expect(sessions.read(sessionId)).toMatchObject({ status: "completing", cleanupPending: true });
+    expect(applyEvent.mock.calls.some(([, event]) => event.type === "cleanup_done")).toBe(false);
+  });
+
   // --------------------------------------------------------------------------
   // Case 10: onCleanup is NOT invoked when task goes to in_review (worktree preserved)
   // --------------------------------------------------------------------------

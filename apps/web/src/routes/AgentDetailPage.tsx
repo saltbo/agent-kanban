@@ -616,28 +616,30 @@ function MissionTab({ task, color, rgb }: { task: any; color: string; rgb: strin
   }
 
   return (
-    <Link
-      to={`/boards/${task.board_id}`}
+    <div
       className="flex items-center gap-3 bg-surface-secondary rounded-lg px-5 py-3.5 hover:bg-surface-tertiary/60 transition-colors"
       style={{
         borderLeft: `3px solid ${color}`,
         boxShadow: "0 0 0 1px var(--border)",
       }}
     >
-      <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded ${taskStatusStyles[task.status]}`}>{task.status.replace("_", " ")}</span>
-      <span className="text-sm text-content-primary flex-1 truncate">{task.title}</span>
+      <Link to={`/boards/${task.board_id}`} className="flex min-w-0 flex-1 items-center gap-3">
+        <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded ${taskStatusStyles[task.status]}`}>
+          {task.status.replace("_", " ")}
+        </span>
+        <span className="text-sm text-content-primary flex-1 truncate">{task.title}</span>
+        {task.repository_name && <span className="text-[10px] font-mono text-content-tertiary">{task.repository_name}</span>}
+      </Link>
       {task.pr_url && (
         <a
           href={task.pr_url}
           target="_blank"
-          rel="noopener"
-          onClick={(e) => e.stopPropagation()}
+          rel="noopener noreferrer"
           className="text-[11px] font-mono text-content-tertiary hover:text-content-secondary"
         >
           PR &rarr;
         </a>
       )}
-      {task.repository_name && <span className="text-[10px] font-mono text-content-tertiary">{task.repository_name}</span>}
-    </Link>
+    </div>
   );
 }

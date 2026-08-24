@@ -1,6 +1,13 @@
 // @vitest-environment node
 
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const testPaths = vi.hoisted(() => {
+  const { join } = require("node:path") as typeof import("node:path");
+  const { tmpdir } = require("node:os") as typeof import("node:os");
+  return { root: join(tmpdir(), `ak-daemon-heartbeat-${process.pid}`) };
+});
 
 const mocks = vi.hoisted(() => ({
   heartbeat: vi.fn(),
@@ -11,6 +18,11 @@ const mocks = vi.hoisted(() => ({
   warn: vi.fn(),
   prMonitorStart: vi.fn(),
   loopStart: vi.fn(),
+  setRuntimeSettings: vi.fn(),
+  setSchedulingSettings: vi.fn(),
+  startSkillCacheRefresh: vi.fn(),
+  stopSkillCacheRefresh: vi.fn(),
+  cleanupUntrackedWorktrees: vi.fn(),
   session: null as null | { runtime: string; providerResumeToken?: string },
   historyHandler: null as null | ((sessionId: string, requestId: string) => void),
   capturedRateLimitSink: null as null | {
@@ -24,6 +36,12 @@ vi.mock("node:child_process", () => ({
   execFileSync: vi.fn().mockReturnValue("test-machine\n"),
   execSync: vi.fn(),
 }));
+
+vi.mock("../src/paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/paths.js")>();
+  const { join } = await import("node:path");
+  return { ...actual, STATE_DIR: testPaths.root, PID_FILE: join(testPaths.root, "daemon.pid") };
+});
 
 vi.mock("../src/logger.js", () => ({
   createLogger: () => ({ info: vi.fn(), warn: mocks.warn, error: vi.fn(), debug: vi.fn() }),
@@ -39,6 +57,10 @@ vi.mock("../src/client/index.js", () => ({
 vi.mock("../src/config.js", () => ({
   getCredentials: () => ({ apiUrl: "https://example.test", apiKey: "ak_test" }),
 }));
+
+vi.mock("../src/providers/runtimeSettingsState.js", () => ({ setRuntimeSettings: mocks.setRuntimeSettings }));
+vi.mock("../src/providers/schedulingState.js", () => ({ setSchedulingSettings: mocks.setSchedulingSettings }));
+vi.mock("../src/workspace/skills.js", () => ({ startSkillCacheRefresh: mocks.startSkillCacheRefresh }));
 
 vi.mock("../src/device.js", () => ({
   generateDeviceId: () => "device-test",
@@ -80,6 +102,7 @@ vi.mock("../src/daemon/cleanup.js", () => ({
   auditOrphanedTasks: vi.fn().mockResolvedValue(undefined),
   cleanupLeaderSessions: vi.fn().mockResolvedValue(undefined),
   cleanupStaleSessions: vi.fn().mockResolvedValue(undefined),
+  cleanupUntrackedWorktrees: mocks.cleanupUntrackedWorktrees,
 }));
 
 vi.mock("../src/daemon/loop.js", () => ({
@@ -128,6 +151,8 @@ describe("daemon heartbeat runtime states", () => {
   let listeners: Partial<Record<NodeJS.Signals | "unhandledRejection", Array<(...args: never[]) => unknown>>>;
 
   beforeEach(() => {
+    rmSync(testPaths.root, { recursive: true, force: true });
+    mkdirSync(testPaths.root, { recursive: true });
     listeners = {
       SIGINT: process.listeners("SIGINT"),
       SIGTERM: process.listeners("SIGTERM"),
@@ -136,6 +161,7 @@ describe("daemon heartbeat runtime states", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-21T10:00:00.000Z"));
     mocks.heartbeat.mockReset();
+    mocks.heartbeat.mockResolvedValue({});
     mocks.registerMachine.mockReset();
     mocks.registerMachine.mockResolvedValue({ id: "machine-1" });
     mocks.getHistory.mockReset();
@@ -146,6 +172,12 @@ describe("daemon heartbeat runtime states", () => {
     mocks.warn.mockReset();
     mocks.prMonitorStart.mockReset();
     mocks.loopStart.mockReset();
+    mocks.setRuntimeSettings.mockReset();
+    mocks.setSchedulingSettings.mockReset();
+    mocks.startSkillCacheRefresh.mockReset();
+    mocks.stopSkillCacheRefresh.mockReset();
+    mocks.startSkillCacheRefresh.mockReturnValue(mocks.stopSkillCacheRefresh);
+    mocks.cleanupUntrackedWorktrees.mockReset();
     mocks.session = null;
     mocks.historyHandler = null;
     mocks.capturedRateLimitSink = null;
@@ -159,6 +191,7 @@ describe("daemon heartbeat runtime states", () => {
       process.removeAllListeners(event);
       for (const listener of listeners[event] ?? []) process.on(event, listener as any);
     }
+    rmSync(testPaths.root, { recursive: true, force: true });
   });
 
   it("reports IPC readiness only after registration and the initial heartbeat", async () => {
@@ -169,8 +202,65 @@ describe("daemon heartbeat runtime states", () => {
     expect(onReady).toHaveBeenCalledWith("machine-1");
     expect(mocks.registerMachine.mock.invocationCallOrder[0]).toBeLessThan(mocks.heartbeat.mock.invocationCallOrder[0]);
     expect(mocks.heartbeat.mock.invocationCallOrder[0]).toBeLessThan(mocks.prMonitorStart.mock.invocationCallOrder[0]);
+    expect(mocks.heartbeat.mock.invocationCallOrder[0]).toBeLessThan(mocks.startSkillCacheRefresh.mock.invocationCallOrder[0]);
+    expect(mocks.startSkillCacheRefresh.mock.invocationCallOrder[0]).toBeLessThan(onReady.mock.invocationCallOrder[0]);
     expect(mocks.prMonitorStart.mock.invocationCallOrder[0]).toBeLessThan(mocks.loopStart.mock.invocationCallOrder[0]);
     expect(mocks.loopStart.mock.invocationCallOrder[0]).toBeLessThan(onReady.mock.invocationCallOrder[0]);
+  });
+
+  it("applies scheduling and runtime settings from initial and subsequent heartbeats", async () => {
+    mocks.heartbeat
+      .mockResolvedValueOnce({
+        scheduling: { peak_windows: [], timezone: "UTC" },
+        runtime_settings: { skill_cache_auto_update: false, skill_cache_refresh_hours: 12 },
+      })
+      .mockResolvedValueOnce({
+        scheduling: { peak_windows: [{ start: "09:00", end: "10:00" }], timezone: "Asia/Shanghai" },
+        runtime_settings: { skill_cache_auto_update: true, skill_cache_refresh_hours: 6 },
+      });
+
+    await startDaemon({ maxConcurrent: 1, pollInterval: 5000 });
+    expect(mocks.setSchedulingSettings).toHaveBeenNthCalledWith(1, { peak_windows: [], timezone: "UTC" });
+    expect(mocks.setRuntimeSettings).toHaveBeenNthCalledWith(1, { skill_cache_auto_update: false, skill_cache_refresh_hours: 12 });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mocks.setSchedulingSettings).toHaveBeenNthCalledWith(2, {
+      peak_windows: [{ start: "09:00", end: "10:00" }],
+      timezone: "Asia/Shanghai",
+    });
+    expect(mocks.setRuntimeSettings).toHaveBeenNthCalledWith(2, { skill_cache_auto_update: true, skill_cache_refresh_hours: 6 });
+  });
+
+  it("starts the skill refresher after initial settings and stops it during shutdown", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await startDaemon({ maxConcurrent: 1, pollInterval: 5000 });
+
+    expect(mocks.startSkillCacheRefresh).toHaveBeenCalledOnce();
+    expect(mocks.cleanupUntrackedWorktrees).toHaveBeenCalledOnce();
+    expect(mocks.heartbeat.mock.invocationCallOrder[0]).toBeLessThan(mocks.startSkillCacheRefresh.mock.invocationCallOrder[0]);
+
+    const original = new Set(listeners.SIGTERM ?? []);
+    const shutdown = process.listeners("SIGTERM").find((listener) => !original.has(listener as any));
+    expect(shutdown).toBeDefined();
+    await (shutdown as () => Promise<void>)();
+
+    expect(mocks.stopSkillCacheRefresh).toHaveBeenCalledOnce();
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("does not unlink a newer daemon PID when the old daemon shuts down", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    await startDaemon({ maxConcurrent: 1, pollInterval: 5000 });
+    const pidFile = `${testPaths.root}/daemon.pid`;
+    writeFileSync(pidFile, "654321");
+
+    const original = new Set(listeners.SIGTERM ?? []);
+    const shutdown = process.listeners("SIGTERM").find((listener) => !original.has(listener as any));
+    expect(shutdown).toBeDefined();
+    await (shutdown as () => Promise<void>)();
+
+    expect(readFileSync(pidFile, "utf8")).toBe("654321");
+    expect(exitSpy).toHaveBeenCalledWith(0);
   });
 
   it.each([

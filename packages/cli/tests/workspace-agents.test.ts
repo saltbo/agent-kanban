@@ -1,6 +1,7 @@
 // @vitest-environment node
 
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -68,16 +69,22 @@ describe("workspace subagent installer", () => {
     expect(content).toContain("You are Clean Code Reviewer.");
   });
 
-  it("writes Claude subagents and managed gitignore entries", async () => {
+  it("writes Claude subagents to local git exclude without changing tracked .gitignore", async () => {
     const worktree = makeWorktree();
+    execFileSync("git", ["-C", worktree, "init"], { stdio: "pipe" });
+    const gitignore = join(worktree, ".gitignore");
+    writeFileSync(gitignore, "tracked-rule\n");
+    execFileSync("git", ["-C", worktree, "add", ".gitignore"], { stdio: "pipe" });
 
     const installed = await ensureSubagents(worktree, "claude", [subagent]);
 
     expect(installed).toBe(true);
     expect(readFileSync(join(worktree, ".claude/agents/test-writer.md"), "utf-8")).toBe(testExports.renderMarkdownAgent("claude", subagent));
-    expect(readFileSync(join(worktree, ".gitignore"), "utf-8")).toContain(".claude/agents/");
-    expect(readFileSync(join(worktree, ".gitignore"), "utf-8")).toContain(".codex/agents/");
-    expect(readFileSync(join(worktree, ".gitignore"), "utf-8")).toContain(".gemini/agents/");
+    expect(readFileSync(gitignore, "utf-8")).toBe("tracked-rule\n");
+    const exclude = readFileSync(join(worktree, ".git/info/exclude"), "utf-8");
+    expect(exclude).toContain(".claude/agents/");
+    expect(exclude).toContain(".codex/agents/");
+    expect(exclude).toContain(".gemini/agents/");
   });
 
   it("writes Codex subagents and keeps identical files stable", async () => {

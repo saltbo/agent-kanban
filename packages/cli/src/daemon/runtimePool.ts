@@ -517,10 +517,11 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
 
   if (nextStatus === "completing") {
     await handleCompletingTask(agent, opts, ctx);
-    runCleanup(agent, ctx.tunnel);
-    await sessions.applyEvent(sessionId, { type: "cleanup_done" }).catch((e) => {
-      logger.warn(`Cleanup transition failed for ${sessionId}: ${errMessage(e)}`);
-    });
+    if (await runCleanup(agent, ctx.tunnel)) {
+      await sessions.applyEvent(sessionId, { type: "cleanup_done" }).catch((e) => {
+        logger.warn(`Cleanup transition failed for ${sessionId}: ${errMessage(e)}`);
+      });
+    }
   } else if (nextStatus === "in_review") {
     ctx.circuitBreaker.recordWorkflowEntered(agent.providerName);
     // Produced a result — quota is flowing again, reset the suspension streak.
@@ -616,10 +617,11 @@ async function finalizeCancelled(agent: AgentProcess, ctx: RuntimeContext): Prom
   await sessions.applyEvent(agent.sessionId, { type: "task_cancelled" }).catch((e) => {
     logger.warn(`task_cancelled transition failed for ${agent.sessionId}: ${errMessage(e)}`);
   });
-  runCleanup(agent, ctx.tunnel);
-  await sessions.applyEvent(agent.sessionId, { type: "cleanup_done" }).catch((e) => {
-    logger.warn(`cleanup_done transition failed for ${agent.sessionId}: ${errMessage(e)}`);
-  });
+  if (await runCleanup(agent, ctx.tunnel)) {
+    await sessions.applyEvent(agent.sessionId, { type: "cleanup_done" }).catch((e) => {
+      logger.warn(`cleanup_done transition failed for ${agent.sessionId}: ${errMessage(e)}`);
+    });
+  }
   apiFireAndForget(
     "closeSession",
     () => ctx.client.closeSession(agent.agentClient.getAgentId(), agent.sessionId),
@@ -629,9 +631,18 @@ async function finalizeCancelled(agent: AgentProcess, ctx: RuntimeContext): Prom
 
 // ---- Helpers ----
 
-function runCleanup(agent: AgentProcess, tunnel: TunnelSink | null): void {
+async function runCleanup(agent: AgentProcess, tunnel: TunnelSink | null): Promise<boolean> {
   (tunnel as TunnelSink & { sendStatus?: (sid: string, s: string) => void })?.sendStatus?.(agent.sessionId, "done");
-  agent.onCleanup?.();
+  try {
+    agent.onCleanup?.();
+    return true;
+  } catch (err) {
+    logger.warn(`Workspace cleanup failed for ${agent.sessionId.slice(0, 8)}, preserving session for retry: ${errMessage(err)}`);
+    await getSessionManager()
+      .patch(agent.sessionId, { cleanupPending: true })
+      .catch(() => {});
+    return false;
+  }
 }
 
 function clearTimer(agent: AgentProcess): void {

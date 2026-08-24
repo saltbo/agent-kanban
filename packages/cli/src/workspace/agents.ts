@@ -1,8 +1,9 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentRuntime } from "@agent-kanban/shared";
 import { stringify } from "yaml";
 import { createLogger } from "../logger.js";
+import { ensureGitExclude } from "./gitExclude.js";
 
 const logger = createLogger("agents");
 
@@ -84,15 +85,6 @@ function writeAgentFile(repoDir: string, relativePath: string, content: string):
   return true;
 }
 
-function ensureGitignore(repoDir: string): void {
-  const gitignorePath = join(repoDir, ".gitignore");
-  const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf-8") : "";
-  const missing = AGENT_GITIGNORE_ENTRIES.filter((entry) => !existing.includes(entry));
-  if (missing.length > 0) {
-    appendFileSync(gitignorePath, `\n# agent definitions (managed by daemon)\n${missing.join("\n")}\n`);
-  }
-}
-
 export async function ensureSubagents(worktreeDir: string, runtime: AgentRuntime, subagents: SubagentDefinition[]): Promise<boolean> {
   if (subagents.length === 0) return true;
 
@@ -102,7 +94,7 @@ export async function ensureSubagents(worktreeDir: string, runtime: AgentRuntime
       const rendered = renderAgent(runtime, subagent);
       if (writeAgentFile(worktreeDir, rendered.path, rendered.content)) changed = true;
     }
-    ensureGitignore(worktreeDir);
+    ensureGitExclude(worktreeDir, AGENT_GITIGNORE_ENTRIES, "agent definitions (managed by daemon)");
     if (changed) logger.info(`Installed ${subagents.length} subagent definition(s) for ${runtime} in ${worktreeDir}`);
     return true;
   } catch (err) {

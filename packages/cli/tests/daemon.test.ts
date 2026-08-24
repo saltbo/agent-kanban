@@ -74,6 +74,7 @@ function makeMachineClient(agentId: string, sessionId: string) {
   return {
     listAgents: vi.fn().mockResolvedValue([{ id: agentId }]),
     listSessions: vi.fn().mockResolvedValue([{ id: sessionId, status: "active", machine_id: MACHINE_ID }]),
+    getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
     closeSession: vi.fn().mockResolvedValue(undefined),
     releaseTask: vi.fn().mockResolvedValue(undefined),
   };
@@ -163,6 +164,31 @@ describe("cleanupStaleSessions — active session with dead pid IS removed", () 
 
     expect(client.releaseTask).toHaveBeenCalledWith("task-stale");
     expect(readSession(session.sessionId)).toBeNull();
+  });
+
+  it("preserves an active session whose persisted repo workspace cwd is missing", async () => {
+    if (typeof cleanupStaleSessions !== "function") return;
+
+    const session = makeWorkerSession({
+      pid: DEAD_PID,
+      status: "active",
+      taskId: "task-missing-worktree",
+      workspace: {
+        type: "repo",
+        cwd: join(testSessionsDir, "missing-worktree"),
+        repoDir: join(testSessionsDir, "repo"),
+        branchName: "ak/missing-worktree",
+      },
+    });
+    writeSession(session);
+    const client = makeMachineClient(session.agentId, session.sessionId);
+
+    await cleanupStaleSessions(client, MACHINE_ID);
+
+    expect(readSession(session.sessionId)).not.toBeNull();
+    expect(client.getTask).not.toHaveBeenCalled();
+    expect(client.releaseTask).not.toHaveBeenCalled();
+    expect(client.closeSession).not.toHaveBeenCalled();
   });
 });
 

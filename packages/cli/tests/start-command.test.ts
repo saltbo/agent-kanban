@@ -8,16 +8,48 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const fsHarness = vi.hoisted(() => ({
+  closedFds: [] as number[],
+}));
+const startupLock = vi.hoisted(() => ({ lock: vi.fn() }));
+
+vi.mock("../node_modules/proper-lockfile/index.js", () => ({
+  default: { lock: startupLock.lock },
+}));
+
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    closeSync(fd: number) {
+      fsHarness.closedFds.push(fd);
+      actual.closeSync(fd);
+    },
+  };
+});
+
 const testSessionsDir = join(tmpdir(), `ak-start-command-test-${randomUUID()}`);
 const testRunnerBin = join(testSessionsDir, "runners", "ama-runner");
 let localSpawnBehavior: "ready" | "error" | "exit" | "manual" = "ready";
-let lastSpawnChild: EventEmitter | undefined;
+let amaSpawnBehavior: "spawn" | "manual" = "spawn";
+let lastSpawnChild:
+  | (EventEmitter & {
+      pid: number;
+      connected: boolean;
+      disconnect: ReturnType<typeof vi.fn>;
+      kill: ReturnType<typeof vi.fn>;
+      send: ReturnType<typeof vi.fn>;
+      unref: ReturnType<typeof vi.fn>;
+    })
+  | undefined;
+const spawnedChildren: NonNullable<typeof lastSpawnChild>[] = [];
 const spawnMock = vi.fn((command: string, args: string[], options: { env?: Record<string, string>; stdio?: unknown[] }) => {
   const child = new EventEmitter() as EventEmitter & {
     pid: number;
     connected: boolean;
     disconnect: ReturnType<typeof vi.fn>;
     kill: ReturnType<typeof vi.fn>;
+    send: ReturnType<typeof vi.fn>;
     unref: ReturnType<typeof vi.fn>;
   };
   child.pid = 12345;
@@ -26,8 +58,10 @@ const spawnMock = vi.fn((command: string, args: string[], options: { env?: Recor
     child.connected = false;
   });
   child.kill = vi.fn();
+  child.send = vi.fn();
   child.unref = vi.fn();
   lastSpawnChild = child;
+  spawnedChildren.push(child);
   queueMicrotask(() => {
     if (command === process.execPath && args.includes("__daemon") && options.stdio?.[3] === "ipc") {
       if (localSpawnBehavior === "ready") child.emit("message", { type: "ready", machineId: "machine_local" });
@@ -35,7 +69,7 @@ const spawnMock = vi.fn((command: string, args: string[], options: { env?: Recor
       if (localSpawnBehavior === "exit") child.emit("exit", 1, null);
       return;
     }
-    child.emit("spawn");
+    if (amaSpawnBehavior === "spawn") child.emit("spawn");
   });
   return child;
 });
@@ -163,8 +197,13 @@ beforeEach(() => {
   vi.stubEnv("AK_API_URL", "");
   vi.stubEnv("AK_API_KEY", "");
   localSpawnBehavior = "ready";
+  amaSpawnBehavior = "spawn";
   lastSpawnChild = undefined;
+  spawnedChildren.length = 0;
+  fsHarness.closedFds.length = 0;
   spawnMock.mockClear();
+  startupLock.lock.mockReset();
+  startupLock.lock.mockImplementation(async () => vi.fn(async () => {}));
   spawnSyncMock.mockClear();
   spawnSyncMock.mockReturnValue({ status: 0 });
 });
@@ -250,6 +289,116 @@ describe("start runtime command", () => {
   });
 
   it.each([
+    ["local", "local"],
+    ["ama", "ama"],
+    ["ama", "local"],
+  ] as const)("serializes %s then %s startup with the shared transaction lock", async (winnerMode, loserMode) => {
+    localSpawnBehavior = "manual";
+    amaSpawnBehavior = "manual";
+    if (winnerMode === "ama") mockMachineRunnerFetch();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "kill").mockImplementation((_pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) return true;
+      return true;
+    });
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    const secondRelease = vi.fn(async () => {});
+    let grantSecond: ((release: typeof secondRelease) => void) | undefined;
+    const secondLock = new Promise<typeof secondRelease>((resolve) => {
+      grantSecond = resolve;
+    });
+    const firstRelease = vi.fn(async () => {
+      grantSecond?.(secondRelease);
+    });
+    startupLock.lock.mockResolvedValueOnce(firstRelease).mockReturnValueOnce(secondLock);
+    const winner = new Command();
+    const loser = new Command();
+    registerStartCommandSource(winner);
+    registerStartCommandSource(loser);
+
+    const winnerStarted = winner.parseAsync(["start", "--mode", winnerMode, "--api-url", "https://ak.test", "--api-key", "ak_test_key"], {
+      from: "user",
+    });
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledOnce());
+    const winnerChild = lastSpawnChild;
+    const loserStarted = loser.parseAsync(["start", "--mode", loserMode, "--api-url", "https://ak.test", "--api-key", "ak_test_key"], {
+      from: "user",
+    });
+    await vi.waitFor(() => expect(startupLock.lock).toHaveBeenCalledTimes(2));
+
+    expect(spawnMock).toHaveBeenCalledOnce();
+    if (winnerMode === "local") winnerChild?.emit("message", { type: "ready", machineId: "machine_lock_winner" });
+    else winnerChild?.emit("spawn");
+    await winnerStarted;
+    await expect(loserStarted).rejects.toThrow("process.exit");
+
+    expect(startupLock.lock).toHaveBeenNthCalledWith(1, join(testSessionsDir, "daemon.pid"), {
+      realpath: false,
+      stale: 30_000,
+      update: 10_000,
+      retries: { retries: 20, minTimeout: 50, maxTimeout: 250 },
+    });
+    expect(startupLock.lock.mock.calls[1]?.[0]).toBe(startupLock.lock.mock.calls[0]?.[0]);
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).toHaveBeenCalledOnce();
+    expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe("12345");
+  });
+
+  it("finishes AMA onboarding and interactive login before acquiring the startup lock", async () => {
+    const fetchSpy = mockMachineRunnerFetch();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    let loginObservedWithoutLock = false;
+    spawnSyncMock.mockImplementationOnce(() => {
+      loginObservedWithoutLock = startupLock.lock.mock.calls.length === 0;
+      return { status: 0 };
+    });
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    await program.parseAsync(["start", "--mode", "ama", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(loginObservedWithoutLock).toBe(true);
+    expect(fetchSpy.mock.invocationCallOrder[0]).toBeLessThan(spawnSyncMock.mock.invocationCallOrder[0]);
+    expect(spawnSyncMock.mock.invocationCallOrder[0]).toBeLessThan(startupLock.lock.mock.invocationCallOrder[0]);
+    expect(startupLock.lock.mock.invocationCallOrder[0]).toBeLessThan(spawnMock.mock.invocationCallOrder[0]);
+  });
+
+  it("rechecks a live PID inside the lock after an unlocked AMA login", async () => {
+    mockMachineRunnerFetch();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "kill").mockImplementation((_pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) return true;
+      return true;
+    });
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    const release = vi.fn(async () => {});
+    startupLock.lock.mockResolvedValueOnce(release);
+    spawnSyncMock.mockImplementationOnce(() => {
+      expect(startupLock.lock).not.toHaveBeenCalled();
+      writeFileSync(join(testSessionsDir, "daemon.pid"), "7654321");
+      return { status: 0 };
+    });
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    await expect(
+      program.parseAsync(["start", "--mode", "ama", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" }),
+    ).rejects.toThrow("process.exit");
+
+    expect(startupLock.lock).toHaveBeenCalledOnce();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe("7654321");
+  });
+
+  it.each([
     ["--max-concurrent", "0"],
     ["--max-concurrent", "65"],
     ["--poll-interval", "-1"],
@@ -278,6 +427,101 @@ describe("start runtime command", () => {
     expect(existsSync(join(testSessionsDir, "daemon-state.json"))).toBe(false);
   });
 
+  it("rejects a concurrent start while the first parent owns the starting marker", async () => {
+    localSpawnBehavior = "manual";
+    const firstProgram = new Command();
+    registerStartCommandSource(firstProgram);
+    const first = firstProgram.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+    await vi.waitFor(() => expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe(`starting:${process.pid}`));
+
+    const secondProgram = new Command();
+    registerStartCommandSource(secondProgram);
+    await expect(secondProgram.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" })).rejects.toThrow(
+      `Runtime already running or starting (PID ${process.pid})`,
+    );
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe(`starting:${process.pid}`);
+
+    lastSpawnChild?.emit("error", new Error("first startup failed"));
+    await expect(first).rejects.toThrow("first startup failed");
+    expect(existsSync(join(testSessionsDir, "daemon.pid"))).toBe(false);
+  });
+
+  it("reclaims a stale starting marker and commits the ready child PID", async () => {
+    writeFileSync(join(testSessionsDir, "daemon.pid"), "starting:99999999");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe("12345");
+  });
+
+  it("rolls back the reservation and closes the log when spawn throws synchronously", async () => {
+    spawnMock.mockImplementationOnce(() => {
+      throw new Error("synchronous spawn failure");
+    });
+    const program = new Command();
+    registerStartCommandSource(program);
+
+    await expect(program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" })).rejects.toThrow(
+      "synchronous spawn failure",
+    );
+
+    expect(existsSync(join(testSessionsDir, "daemon.pid"))).toBe(false);
+    expect(existsSync(join(testSessionsDir, "daemon-state.json"))).toBe(false);
+    expect(fsHarness.closedFds).toHaveLength(1);
+    expect(spawnedChildren).toHaveLength(0);
+  });
+
+  it("stops the ready child, closes the log, and preserves a replacement PID when commit loses ownership", async () => {
+    localSpawnBehavior = "manual";
+    let alive = true;
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && !alive) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+      if (signal === "SIGTERM") alive = false;
+      return true;
+    });
+    const program = new Command();
+    registerStartCommandSource(program);
+    const started = program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+    await vi.waitFor(() => expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe(`starting:${process.pid}`));
+    writeFileSync(join(testSessionsDir, "daemon.pid"), "54321");
+
+    lastSpawnChild?.emit("message", { type: "ready", machineId: "machine_lost_reservation" });
+
+    await expect(started).rejects.toThrow("Lost Machine runner startup reservation");
+    expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe("54321");
+    expect(killSpy).toHaveBeenCalledWith(12345, "SIGTERM");
+    expect(lastSpawnChild?.send).not.toHaveBeenCalled();
+    expect(fsHarness.closedFds).toHaveLength(1);
+  });
+
+  it("stops the ready child, releases its PID, and closes the log when state persistence fails", async () => {
+    localSpawnBehavior = "manual";
+    let alive = true;
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && !alive) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+      if (signal === "SIGTERM") alive = false;
+      return true;
+    });
+    mkdirSync(join(testSessionsDir, "daemon-state.json"));
+    const program = new Command();
+    registerStartCommandSource(program);
+    const started = program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledOnce());
+    lastSpawnChild?.emit("message", { type: "ready", machineId: "machine_state_failure" });
+
+    await expect(started).rejects.toThrow();
+    expect(existsSync(join(testSessionsDir, "daemon.pid"))).toBe(false);
+    expect(killSpy).toHaveBeenCalledWith(12345, "SIGTERM");
+    expect(lastSpawnChild?.send).not.toHaveBeenCalled();
+    expect(fsHarness.closedFds).toHaveLength(1);
+  });
+
   it("persists PID/state and reports success only after the local child sends IPC readiness", async () => {
     localSpawnBehavior = "manual";
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -285,8 +529,8 @@ describe("start runtime command", () => {
     registerStartCommandSource(program);
 
     const started = program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
-    expect(spawnMock).toHaveBeenCalledOnce();
-    expect(existsSync(join(testSessionsDir, "daemon.pid"))).toBe(false);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledOnce());
+    expect(readFileSync(join(testSessionsDir, "daemon.pid"), "utf8")).toBe(`starting:${process.pid}`);
     expect(existsSync(join(testSessionsDir, "daemon-state.json"))).toBe(false);
     expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("Local machine runner started"));
 

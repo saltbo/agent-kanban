@@ -203,7 +203,9 @@ program
     const { startDaemon } = await import("./daemon/index.js");
     await startDaemon({
       ...daemonOpts,
-      onReady: (machineId) => process.send?.({ type: "ready", machineId }),
+      onReady: (machineId) => {
+        process.send?.({ type: "ready", machineId });
+      },
     });
   });
 

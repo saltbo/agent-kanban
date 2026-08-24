@@ -198,4 +198,20 @@ describe("createWorktree", () => {
     expect(worktreeDir).toBe(join(dirs.worktrees, "abcdef12"));
     expect(existsSync(worktreeDir)).toBe(true);
   });
+
+  it("passes a shell-metacharacter worktree name literally without executing it", async () => {
+    const { createWorktree } = await importRepoOps();
+    const dir = initRepo();
+    const marker = join(dirs.root, "shell-owned");
+    const maliciousName = `feature;touch\${IFS}${marker};#`;
+
+    const created = createWorktree(dir, "session-shell", maliciousName);
+
+    expect(created).toEqual({
+      worktreeDir: join(dirs.worktrees, maliciousName),
+      branchName: `ak/${maliciousName}`,
+    });
+    expect(existsSync(created.worktreeDir)).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
 });

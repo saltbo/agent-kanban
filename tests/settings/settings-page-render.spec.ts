@@ -14,13 +14,13 @@ test.describe("Settings Page", () => {
     await expect(page.getByRole("heading", { name: "Profile", level: 1 })).toBeVisible();
   });
 
-  test("renders only profile and account sidebar entries with profile active", async ({ page }) => {
+  test("renders all settings sidebar entries with profile active", async ({ page }) => {
     await signUpAndGetBoard(page, `settings_sidebar_${Date.now()}@example.com`);
 
     await page.goto("/settings/profile");
 
     const settingsNav = page.getByRole("navigation", { name: "Settings" });
-    await expect(settingsNav.getByRole("link")).toHaveText(["Profile", "Account", "Scheduling"]);
+    await expect(settingsNav.getByRole("link")).toHaveText(["Profile", "Account", "Scheduling", "Runtime"]);
     await expect(settingsNav.getByRole("link", { name: "Profile" })).toHaveAttribute("class", /bg-accent-soft/);
     await expect(settingsNav.getByRole("link", { name: "Account" })).not.toHaveAttribute("class", /bg-accent-soft/);
 

@@ -16,8 +16,8 @@ import { createLogger } from "../logger.js";
 import type { SessionManager } from "../session/manager.js";
 import { getSessionManager } from "../session/manager.js";
 import type { SessionFile } from "../session/types.js";
-import { cleanupWorkspace } from "../workspace/workspace.js";
-import { apiCallOptional, apiFireAndForget, cleanupSync } from "./boundaries.js";
+import { canSafelyDiscardOrphanWorkspace, cleanupWorkspace } from "../workspace/workspace.js";
+import { apiCallOptional, cleanupSync } from "./boundaries.js";
 import { dispatchTasks } from "./dispatcher.js";
 import { CleanupError } from "./errors.js";
 import type { PrMonitor } from "./prMonitor.js";
@@ -212,22 +212,32 @@ export class DaemonLoop {
 export async function reapOrphanWorkerSessions(
   sessions: SessionManager,
   pool: RuntimePool,
-  client: { getTask(id: string): Promise<unknown>; releaseTask(id: string): Promise<unknown> },
+  client: {
+    getTask(id: string): Promise<unknown>;
+    releaseTask(id: string): Promise<unknown>;
+    closeSession(agentId: string, sessionId: string): Promise<unknown>;
+  },
   circuitBreaker?: RuntimeCircuitBreaker,
 ): Promise<void> {
   for (const s of sessions.list({ type: "worker", status: "active" })) {
     if (!s.taskId || pool.hasTask(s.taskId)) continue;
+    if (s.workspace && !canSafelyDiscardOrphanWorkspace(s.workspace)) {
+      logger.warn(`Preserving orphan session ${s.sessionId.slice(0, 8)} and workspace ${s.workspace.cwd}; manual recovery is required`);
+      continue;
+    }
 
     const task = (await apiCallOptional("getTask", () => client.getTask(s.taskId!))) as { status?: string } | null;
 
     if (!task) {
       logger.warn(`Task ${s.taskId} not found (deleted), reaping orphan session`);
+      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
       await completeTerminal(sessions, s);
       continue;
     }
 
     if (task.status === "done" || task.status === "cancelled") {
       logger.info(`Reaping orphan worker session for task ${s.taskId} (status=${task.status})`);
+      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
       await completeTerminal(sessions, s);
       continue;
     }
@@ -235,19 +245,18 @@ export async function reapOrphanWorkerSessions(
     if (task.status === "todo") {
       circuitBreaker?.recordPreClaimFailure(s.runtime, s.taskId, "orphan session found before task was claimed");
       logger.warn(`Reaping pre-claim orphan session for task ${s.taskId} (runtime=${s.runtime}) without release`);
+      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
       await completeTerminal(sessions, s);
       continue;
     }
 
     if (task.status === "in_progress") {
-      await apiFireAndForget(
-        "releaseTask",
-        () => client.releaseTask(s.taskId!),
-        (msg) => logger.warn(`Failed to release orphan task ${s.taskId}: ${msg}`),
-      );
+      await apiCallOptional("releaseOrphanTask", () => client.releaseTask(s.taskId!));
+      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
       logger.info(`Released orphan task ${s.taskId} and reaped its session`);
     } else {
       logger.warn(`Reaping orphan session for task ${s.taskId} with unexpected status ${task.status ?? "unknown"} without release`);
+      await apiCallOptional("closeOrphanSession", () => client.closeSession(s.agentId, s.sessionId));
     }
     await completeTerminal(sessions, s);
   }

@@ -10,7 +10,8 @@
  * the session is orphaned — no pid check is performed on worker sessions.
  */
 
-import { rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +29,7 @@ vi.mock("../src/paths.js", async (importOriginal) => {
   return {
     ...mod,
     SESSIONS_DIR: join(tmpRoot, "sessions"),
+    WORKTREES_DIR: join(tmpRoot, "worktrees"),
   };
 });
 
@@ -42,7 +44,8 @@ vi.mock("../src/logger.js", () => ({
 }));
 
 // ── workspace mock ────────────────────────────────────────────────────────────
-vi.mock("../src/workspace/workspace.js", () => ({
+vi.mock("../src/workspace/workspace.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/workspace/workspace.js")>()),
   cleanupWorkspace: vi.fn(),
 }));
 
@@ -116,7 +119,7 @@ beforeEach(() => {
 
 afterEach(() => {
   _setSessionManagerForTest(null);
-  rmSync(join(tmpRoot, "sessions"), { recursive: true, force: true });
+  rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,6 +131,7 @@ function makeStubs(tasks: Record<string, unknown>[] = []) {
     getAgent: vi.fn().mockResolvedValue({ runtime: "claude" }),
     getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
     releaseTask: vi.fn().mockResolvedValue(undefined),
+    closeSession: vi.fn().mockResolvedValue(undefined),
     getTaskNotes: vi.fn().mockResolvedValue([]),
   };
   const pool = {
@@ -145,6 +149,24 @@ function makeStubs(tasks: Record<string, unknown>[] = []) {
 
 function makeRateLimiter(onResumed?: (runtime: string) => void) {
   return new RateLimiter({ onResumed: onResumed ?? vi.fn() });
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+}
+
+function makeSafeRepoWorkspace(name: string) {
+  const repoDir = join(tmpRoot, `repo-${name}`);
+  const cwd = join(tmpRoot, "worktrees", name);
+  mkdirSync(repoDir, { recursive: true });
+  git(repoDir, "init");
+  git(repoDir, "config", "user.email", "test@example.com");
+  git(repoDir, "config", "user.name", "Test");
+  writeFileSync(join(repoDir, "README.md"), "base\n");
+  git(repoDir, "add", "README.md");
+  git(repoDir, "commit", "-m", "base");
+  git(repoDir, "worktree", "add", "-b", `ak/${name}`, cwd);
+  return { type: "repo" as const, cwd, repoDir, branchName: `ak/${name}` };
 }
 
 function makeLoop(stubs = makeStubs(), rateLimiter?: RateLimiter) {
@@ -369,7 +391,7 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
   it("releases and cleans up an orphaned active session whose task is still viable", async () => {
     writeSession(
       makeWorkerSession("sess-orphan", "task-orphan", "active", {
-        workspace: { type: "temp", cwd: "/tmp/orphan", branch: "task-orphan" },
+        workspace: makeSafeRepoWorkspace("orphan"),
       }),
     );
 
@@ -384,6 +406,7 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
     loop.stop();
 
     expect(stubs.client.releaseTask).toHaveBeenCalledWith("task-orphan");
+    expect(stubs.client.closeSession).toHaveBeenCalledWith("agent-1", "sess-orphan");
     // Session file must be gone after terminal cleanup
     expect(sm.read("sess-orphan")?.status).toBe("closed");
   });
@@ -391,7 +414,7 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
   it("cleans up orphaned active session without releasing when task is done", async () => {
     writeSession(
       makeWorkerSession("sess-orphan-done", "task-orphan-done", "active", {
-        workspace: { type: "temp", cwd: "/tmp/orphan-done", branch: "task-orphan-done" },
+        workspace: makeSafeRepoWorkspace("orphan-done"),
       }),
     );
 
@@ -407,12 +430,13 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
     expect(sm.read("sess-orphan-done")?.status).toBe("closed");
     // releaseTask should NOT be called for done tasks
     expect(stubs.client.releaseTask).not.toHaveBeenCalled();
+    expect(stubs.client.closeSession).toHaveBeenCalledWith("agent-1", "sess-orphan-done");
   });
 
   it("removes orphaned session when task is not found (ApiError 404)", async () => {
     writeSession(
       makeWorkerSession("sess-orphan-404", "task-orphan-404", "active", {
-        workspace: { type: "temp", cwd: "/tmp/orphan-404", branch: "task-orphan-404" },
+        workspace: makeSafeRepoWorkspace("orphan-404"),
       }),
     );
 
@@ -426,6 +450,27 @@ describe("DaemonLoop tick — orphaned active session cleanup", () => {
     loop.stop();
 
     expect(sm.read("sess-orphan-404")?.status).toBe("closed");
+    expect(stubs.client.releaseTask).not.toHaveBeenCalled();
+    expect(stubs.client.closeSession).toHaveBeenCalledWith("agent-1", "sess-orphan-404");
+  });
+
+  it("closes but does not release a pre-claim todo orphan", async () => {
+    writeSession(
+      makeWorkerSession("sess-orphan-todo", "task-orphan-todo", "active", {
+        workspace: makeSafeRepoWorkspace("orphan-todo"),
+      }),
+    );
+    const stubs = makeStubs();
+    stubs.client.getTask.mockResolvedValue({ status: "todo" });
+    const { loop } = makeLoop(stubs);
+
+    loop.start();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    loop.stop();
+
+    expect(stubs.client.releaseTask).not.toHaveBeenCalled();
+    expect(stubs.client.closeSession).toHaveBeenCalledWith("agent-1", "sess-orphan-todo");
+    expect(sm.read("sess-orphan-todo")?.status).toBe("closed");
   });
 });
 
