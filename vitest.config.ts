@@ -13,7 +13,7 @@ export default defineConfig({
       react: path.resolve(__dirname, "apps/web/node_modules/react"),
       "react-dom": path.resolve(__dirname, "apps/web/node_modules/react-dom"),
       "react/jsx-runtime": path.resolve(__dirname, "apps/web/node_modules/react/jsx-runtime"),
-      "react-router-dom": require.resolve("react-router-dom"),
+      "react-router-dom": path.resolve(__dirname, "apps/web/node_modules/react-router-dom"),
       dompurify: require.resolve("dompurify"),
       "lucide-react": path.resolve(__dirname, "apps/web/node_modules/lucide-react"),
       "@base-ui/react": path.resolve(__dirname, "apps/web/node_modules/@base-ui/react"),
