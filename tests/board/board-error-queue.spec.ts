@@ -53,6 +53,30 @@ const errorTask = {
   notes: [failedAction],
 };
 
+const dependencyRoot = {
+  ...errorTask,
+  id: "task-dependency-root",
+  seq: 10,
+  status: "todo",
+  title: "Prepare recovery fixture",
+  description: null,
+  assigned_to: null,
+  agent_name: null,
+  agent_public_key: null,
+  active_session_id: null,
+  depends_on: [],
+  notes: [],
+};
+
+const dependentTask = {
+  ...dependencyRoot,
+  id: "task-dependent",
+  seq: 11,
+  title: "Verify recovery fixture",
+  depends_on: [dependencyRoot.id],
+  blocked: true,
+};
+
 const board = {
   id: "board-error-queue",
   name: "Error Queue Board",
@@ -64,7 +88,7 @@ const board = {
   task_seq: 12,
   created_at: now,
   updated_at: now,
-  tasks: [errorTask],
+  tasks: [dependentTask, dependencyRoot, errorTask],
 };
 
 const taskError = {
@@ -121,20 +145,33 @@ test.describe("Board error queue", () => {
     await expect(errorColumn.locator('[data-task-id="task-error-queue"]')).toBeVisible();
     await expect(errorColumn.getByText("Preserve workspace after provider failure")).toBeVisible();
 
+    const todoColumn = columnGrid.locator('[data-column-status="todo"]');
+    await expect(todoColumn.locator('[data-dependency-layer="0"] [data-task-id="task-dependency-root"]')).toBeVisible();
+    await expect(todoColumn.locator('[data-dependency-layer="1"] [data-task-id="task-dependent"]')).toBeVisible();
+
     await errorColumn.getByText("Preserve workspace after provider failure").click();
 
-    const detailSheet = page.locator('[data-slot="sheet-content"]').filter({ hasText: "The runtime stopped before submitting the task for review." });
-    await expect(detailSheet).toBeVisible();
-    await expect(detailSheet.getByText("Error", { exact: true })).toBeVisible();
+    const detailDialog = page
+      .locator('[data-slot="dialog-content"]')
+      .filter({ hasText: "The runtime stopped before submitting the task for review." });
+    await expect(detailDialog).toBeVisible();
+    await expect(detailDialog.getByText("Error", { exact: true })).toBeVisible();
 
-    const runtimeError = detailSheet.getByRole("status");
+    const dialogBox = await detailDialog.boundingBox();
+    const viewport = page.viewportSize();
+    expect(dialogBox).not.toBeNull();
+    expect(viewport).not.toBeNull();
+    expect(dialogBox!.x + dialogBox!.width / 2).toBeCloseTo(viewport!.width / 2, 0);
+    expect(dialogBox!.y + dialogBox!.height / 2).toBeCloseTo(viewport!.height / 2, 0);
+
+    const runtimeError = detailDialog.getByRole("status");
     await expect(runtimeError).toContainText("Runtime error");
     await expect(runtimeError).toContainText("provider");
     await expect(runtimeError).toContainText("Provider connection closed before the task reached review.");
     await expect(runtimeError).toContainText("upstream_unavailable");
     await expect(runtimeError).toContainText("Workspace and branch are preserved.");
 
-    await expect(detailSheet.getByRole("button", { name: /retry/i })).toHaveCount(0);
-    await expect(detailSheet.getByText("moved this task to the error queue")).toBeVisible();
+    await expect(detailDialog.getByRole("button", { name: /retry/i })).toHaveCount(0);
+    await expect(detailDialog.getByText("moved this task to the error queue")).toBeVisible();
   });
 });
