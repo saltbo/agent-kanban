@@ -9,6 +9,7 @@ import { registerDescribeCommand } from "./commands/describe.js";
 import { registerGetCommand } from "./commands/get.js";
 import {
   parseLocalDaemonOptions,
+  registerLocalStartCommand,
   registerLogsCommand,
   registerRestartCommand,
   registerStartCommand,
@@ -186,6 +187,7 @@ registerWaitCommand(program);
 
 program.commandsGroup("Runtime:");
 registerStartCommand(program);
+registerLocalStartCommand(program);
 registerStopCommand(program);
 registerRestartCommand(program);
 registerStatusCommand(program);

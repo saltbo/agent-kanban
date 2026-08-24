@@ -6,6 +6,14 @@
 # via Miniflare) but binds Vite to 0.0.0.0, so the board is reachable from
 # other hosts on the LAN.
 #
+# It also starts this machine's local AK runtime (the `ak` machine runner that
+# executes tasks) so the whole stack comes up together — including after a
+# reboot via systemd. Controlled by env vars:
+#   AK_LOCAL_START    1 (default) to start it, 0 to skip
+#   AK_LOCAL_API_URL  API origin for the runtime (default: http://127.0.0.1:<port>)
+# The runtime uses saved `ak` credentials (non-interactive); set them once with
+# `ak start --api-url <url> --api-key <key>`.
+#
 # Modes:
 #   start    (default) run in the background inside a detached screen session,
 #            logs appended to .run/logs/service.log
@@ -39,6 +47,9 @@ DO_MIGRATE=1
 FORCE_INSTALL=0
 DO_PULL=0
 DO_BUILD=0
+# Start this machine's local AK runtime alongside the UI (default on).
+DO_LOCAL_START="${AK_LOCAL_START:-1}"
+LOCAL_API_URL="${AK_LOCAL_API_URL:-http://127.0.0.1:${PORT}}"
 COMMAND=""
 
 # ---------------------------------------------------------------------------
@@ -87,6 +98,8 @@ The background service runs in a detached screen session named
 
 It runs the same stack as `pnpm dev` (React SPA + Hono worker + local D1), but
 binds Vite to 0.0.0.0 so the board is reachable from other hosts on the LAN.
+It also starts this machine's local AK runtime (`ak local_start`) once the API
+is up — set AK_LOCAL_START=0 to skip, AK_LOCAL_API_URL to retarget it.
 
 First run:
   - installs dependencies if node_modules is missing
@@ -281,6 +294,29 @@ EOF
   info "Generated $DEV_VARS with a fresh AUTH_SECRET."
 }
 
+step_local_start() {
+  [ "$DO_LOCAL_START" = "1" ] || return 0
+  # The UI must be up first: `ak start` registers/heartbeats against this API.
+  if ! port_listening; then
+    warn "Skipping local AK runtime — API not listening on $PORT yet."
+    return 0
+  fi
+  if ! command -v ak >/dev/null 2>&1; then
+    warn "Skipping local AK runtime — \`ak\` CLI not installed (run ./scripts/install-cli.sh)."
+    return 0
+  fi
+  if ak status >/dev/null 2>&1; then
+    info "Local AK runtime already running."
+    return 0
+  fi
+  info "Starting local AK runtime against $LOCAL_API_URL (set AK_LOCAL_START=0 to disable, AK_LOCAL_API_URL to retarget)…"
+  if ak local_start --api-url "$LOCAL_API_URL"; then
+    info "Local AK runtime started."
+  else
+    warn "Local AK runtime did not start — board UI is unaffected. Set credentials with \`ak start --api-url $LOCAL_API_URL --api-key <key>\` once, or set AK_LOCAL_START=0 to silence."
+  fi
+}
+
 step_banner() {
   printf '\n%s────────────────────────────────────────────────────────%s\n' "$CY" "$R"
   printf '%s  Agent Kanban — service runner%s\n' "$B" "$R"
@@ -320,6 +356,10 @@ cmd_run() {
   step_build
   step_migrate
   step_dev_vars
+  # Bring up the local AK runtime only when the API is already reachable (e.g.
+  # systemd Restart=on-failure respawn after a crash). On a cold boot the UI
+  # isn't listening yet, so this no-ops — the runtime starts on the next respawn.
+  step_local_start
   step_banner
   info "Starting dev server on $HOST:$PORT (React SPA + Hono worker + local D1). Ctrl-C to stop."
   cd "$WEB_DIR"
@@ -362,6 +402,7 @@ cmd_start() {
     waited=$((waited + 1))
   done
 
+  step_local_start
   step_banner
   if port_listening; then
     info "Running in background (screen session '$SESSION', port $PORT)."

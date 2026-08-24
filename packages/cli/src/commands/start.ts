@@ -608,6 +608,56 @@ export function registerStartCommand(program: Command) {
     });
 }
 
+export function registerLocalStartCommand(program: Command) {
+  program
+    .command("local_start")
+    .description(
+      "Start the local Machine runner for service managers (idempotent, non-interactive). " +
+        "Skips when already running. Uses saved credentials; never prompts. " +
+        "Intended for service_runner.sh / systemd, not day-to-day use.",
+    )
+    .option("--api-url <url>", "API server URL (defaults to AK_API_URL or the saved current credential)")
+    .option("--max-concurrent <n>", `Max concurrent agents (1-${MAX_CONCURRENT_LIMIT})`, String(DEFAULT_MAX_CONCURRENT))
+    .option("--poll-interval <ms>", `Local task poll interval (${MIN_POLL_INTERVAL}-${MAX_POLL_INTERVAL} ms)`, String(DEFAULT_POLL_INTERVAL))
+    .option("--task-timeout <ms>", `Local task timeout (0 or ${MIN_TASK_TIMEOUT}-${MAX_TASK_TIMEOUT} ms)`, String(DEFAULT_TASK_TIMEOUT))
+    .action(async (opts) => {
+      if (readDaemonPid()) {
+        console.log("○ Machine runner already running — nothing to do.");
+        return;
+      }
+
+      const apiUrl =
+        (typeof opts.apiUrl === "string" && opts.apiUrl) ||
+        process.env.AK_API_URL ||
+        (() => {
+          try {
+            return getCredentials().apiUrl;
+          } catch {
+            return null;
+          }
+        })();
+
+      if (apiUrl) {
+        try {
+          setCurrent(apiUrl);
+        } catch {
+          console.error(`No saved credentials for ${apiUrl}. Pass AK_API_KEY and run \`ak start\` once, or use \`ak start --api-url ${apiUrl} --api-key <key>\`.`);
+          process.exit(1);
+        }
+      }
+
+      let creds: { apiUrl: string; apiKey: string };
+      try {
+        creds = getCredentials();
+      } catch {
+        console.error("No saved API credentials. Run `ak start --api-url <url> --api-key <key>` once to store them, then re-run `ak local_start`.");
+        process.exit(1);
+      }
+
+      await startRunner("local", { ...opts, apiUrl: creds.apiUrl, apiKey: creds.apiKey });
+    });
+}
+
 export function registerStopCommand(program: Command) {
   program
     .command("stop")

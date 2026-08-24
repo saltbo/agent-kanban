@@ -79,6 +79,7 @@ describe("CLI help and output options", () => {
       "apply",
       "wait",
       "start",
+      "local_start",
       "stop",
       "restart",
       "status",
@@ -131,7 +132,7 @@ describe("CLI help and output options", () => {
       ["Agent:", ["agent"]],
       ["Resources:", ["get", "describe", "create", "update", "delete", "apply"]],
       ["Wait:", ["wait"]],
-      ["Runtime:", ["start", "stop", "restart", "status", "logs"]],
+      ["Runtime:", ["start", "local_start", "stop", "restart", "status", "logs"]],
       ["Maintenance:", ["upgrade"]],
       ["Commands:", ["help"]],
     ]);
@@ -145,7 +146,7 @@ describe("CLI help and output options", () => {
       const end = endOffset === -1 ? helpLines.length : start + endOffset;
       const commands = helpLines
         .slice(start, end)
-        .map((line) => line.match(/^ {2}([a-z][a-z-]*)(?:\s|\[)/)?.[1])
+        .map((line) => line.match(/^ {2}([a-z][a-z_-]*)(?:\s|\[)/)?.[1])
         .filter((name): name is string => Boolean(name));
 
       expect(commands, heading).toEqual(expectedCommands);
