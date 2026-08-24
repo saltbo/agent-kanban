@@ -22,9 +22,9 @@ test.describe("Header and Navigation", () => {
     await expect(dropdown).toBeVisible();
     await expect(dropdown.getByText(userName)).toBeVisible();
 
-    // expect: Menu items include 'Settings', 'Repositories', and 'Sign out'
+    // expect: Menu items include 'Settings' and 'Sign out'; Repositories moved to the top nav
     await expect(dropdown.getByText("Settings")).toBeVisible();
-    await expect(dropdown.getByText("Repositories")).toBeVisible();
+    await expect(dropdown.getByText("Repositories")).toHaveCount(0);
     await expect(dropdown.getByText("Sign out")).toBeVisible();
   });
 });

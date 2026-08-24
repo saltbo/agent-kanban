@@ -1,11 +1,13 @@
 import {
   AGENT_RUNTIMES,
   AGENT_STATUSES,
+  akSkillName,
   DEFAULT_RUNTIME_SETTINGS,
   DEFAULT_SCHEDULING_SETTINGS,
   deriveUsername,
   findInvalidSkillRef,
   generateWorktreeName,
+  isAkSkillRef,
   isValidSkillRef,
   isValidTimezone,
   isValidUsername,
@@ -108,6 +110,46 @@ describe("isValidSkillRef", () => {
   it("returns the first invalid skill ref", () => {
     expect(findInvalidSkillRef(["owner/repo@good", "browse", "other/repo@good"])).toBe("browse");
     expect(findInvalidSkillRef(["owner/repo@good"])).toBeNull();
+  });
+});
+
+describe("AK-local skill refs (ak@<name>)", () => {
+  it("isValidSkillRef accepts ak@ refs", () => {
+    expect(isValidSkillRef("ak@ak-verify")).toBe(true);
+    expect(isValidSkillRef("ak@x")).toBe(true);
+    expect(isValidSkillRef("ak@my.skill_2")).toBe(true);
+  });
+
+  it("isValidSkillRef rejects malformed ak@ refs", () => {
+    expect(isValidSkillRef("ak@")).toBe(false);
+    expect(isValidSkillRef("ak@bad skill")).toBe(false);
+    expect(isValidSkillRef("ak@.hidden")).toBe(false);
+    expect(isValidSkillRef("ak@../escape")).toBe(false);
+  });
+
+  it("isAkSkillRef is true only for valid ak@ refs", () => {
+    expect(isAkSkillRef("ak@x")).toBe(true);
+    expect(isAkSkillRef("ak@ak-verify")).toBe(true);
+    expect(isAkSkillRef("owner/repo@x")).toBe(false);
+    expect(isAkSkillRef("saltbo/agent-kanban#branch@ak-maintainer")).toBe(false);
+    expect(isAkSkillRef("ak@")).toBe(false);
+    expect(isAkSkillRef("ak@bad skill")).toBe(false);
+    expect(isAkSkillRef("")).toBe(false);
+  });
+
+  it("akSkillName returns the name after ak@ and null otherwise", () => {
+    expect(akSkillName("ak@ak-verify")).toBe("ak-verify");
+    expect(akSkillName("ak@x")).toBe("x");
+    expect(akSkillName("owner/repo@x")).toBeNull();
+    expect(akSkillName("ak@bad skill")).toBeNull();
+  });
+
+  it("findInvalidSkillRef accepts mixed lists with ak@ refs", () => {
+    expect(findInvalidSkillRef(["ak@ak-verify", "owner/repo@good", "saltbo/agent-kanban#dev@ak-maintainer"])).toBeNull();
+    expect(findInvalidSkillRef(["ak@ak-verify", "ak@bad skill", "owner/repo@good"])).toBe("ak@bad skill");
+    expect(findInvalidSkillRef([])).toBeNull();
+    expect(findInvalidSkillRef(null)).toBeNull();
+    expect(findInvalidSkillRef(undefined)).toBeNull();
   });
 });
 

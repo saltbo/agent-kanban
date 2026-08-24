@@ -357,7 +357,7 @@ export function AgentEditPage() {
               <legend className="text-[11px] font-mono font-medium text-content-tertiary uppercase tracking-[0.08em] mb-3">Workflow</legend>
               <div className="space-y-1.5">
                 <Label>Skills</Label>
-                <TagInput tags={skills} onChange={setSkills} placeholder="owner/repo[#ref]@skill-name" />
+                <TagInput tags={skills} onChange={setSkills} placeholder="owner/repo[#ref]@skill-name or ak@skill-name" />
               </div>
             </fieldset>
 

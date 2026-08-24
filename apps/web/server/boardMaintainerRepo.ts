@@ -28,9 +28,9 @@ export interface CreateBoardMaintainerInput {
   boardId: string;
   agentId: string;
   amaScheduleId: string;
-  amaHttpTriggerId: string;
+  amaHttpTriggerId: string | null;
   amaHttpTriggerSerialized?: boolean;
-  amaMemoryStoreId: string;
+  amaMemoryStoreId: string | null;
   amaBoardVaultId?: string | null;
   prompt: string;
   intervalSeconds: number;

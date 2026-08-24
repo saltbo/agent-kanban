@@ -131,6 +131,48 @@ describe("generateSystemPrompt — ops board", () => {
   });
 });
 
+// ─── Maintainer rules ───────────────────────────────────────────────────────
+
+describe("generateSystemPrompt — maintainer completion rules", () => {
+  const WORKER_RULE = "- Never call `task complete` — only humans complete tasks.";
+
+  it("keeps the worker rule and omits maintainer text by default", () => {
+    for (const boardType of ["dev", "ops"] as const) {
+      const prompt = generateSystemPrompt(makeAgent(), boardType);
+      expect(prompt).toContain(WORKER_RULE);
+      expect(prompt).not.toContain("As board maintainer");
+      expect(prompt).not.toContain("Never review (complete or reject) a task you implemented yourself");
+    }
+  });
+
+  it("swaps the worker rule for maintainer rules when role is board-maintainer (dev)", () => {
+    const prompt = generateSystemPrompt(makeAgent({ role: "board-maintainer" }), "dev");
+    expect(prompt).not.toContain(WORKER_RULE);
+    expect(prompt).toContain("As board maintainer, calling `task complete` and `task reject` on reviewed tasks IS your job");
+    expect(prompt).toContain("Never review (complete or reject) a task you implemented yourself");
+    expect(prompt).toContain("`ak task review`, then `ak task complete`");
+  });
+
+  it("swaps the worker rule for maintainer rules when role is board-maintainer (ops)", () => {
+    const prompt = generateSystemPrompt(makeAgent({ role: "board-maintainer" }), "ops");
+    expect(prompt).not.toContain(WORKER_RULE);
+    expect(prompt).toContain("As board maintainer");
+    expect(prompt).toContain("`ak task review`, then `ak task complete`");
+  });
+
+  it("treats an agent with an @ak-maintainer skill as a maintainer regardless of role", () => {
+    const prompt = generateSystemPrompt(makeAgent({ role: "developer", skills: ["saltbo/agent-kanban@ak-maintainer"] }), "dev");
+    expect(prompt).not.toContain(WORKER_RULE);
+    expect(prompt).toContain("As board maintainer");
+  });
+
+  it("does not treat unrelated skills as maintainer markers", () => {
+    const prompt = generateSystemPrompt(makeAgent({ role: "developer", skills: ["owner/repo@some-other-skill"] }), "dev");
+    expect(prompt).toContain(WORKER_RULE);
+    expect(prompt).not.toContain("As board maintainer");
+  });
+});
+
 // ─── Handoff section ────────────────────────────────────────────────────────
 
 describe("generateSystemPrompt — handoff section", () => {

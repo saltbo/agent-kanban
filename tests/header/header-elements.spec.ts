@@ -15,9 +15,11 @@ test.describe("Header and Navigation", () => {
     await expect(header).toBeVisible();
     await expect(header.getByRole("link", { name: "Agent Kanban" })).toBeVisible();
 
-    // expect: Agents is visible on desktop; deprecated Machines is no longer a primary nav item
-    await expect(header.getByRole("link", { name: "Agents" })).toBeVisible();
-    await expect(header.getByRole("link", { name: "Machines" })).toHaveCount(0);
+    // expect: Agents, Machines, Repositories, and Skills nav links are visible on desktop
+    await expect(header.getByRole("link", { name: "Agents", exact: true })).toBeVisible();
+    await expect(header.getByRole("link", { name: "Machines", exact: true })).toBeVisible();
+    await expect(header.getByRole("link", { name: "Repositories", exact: true })).toBeVisible();
+    await expect(header.getByRole("link", { name: "Skills", exact: true })).toBeVisible();
 
     // expect: A user avatar button is visible on the right
     // The avatar is inside a DropdownMenuTrigger button

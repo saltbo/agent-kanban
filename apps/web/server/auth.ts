@@ -81,6 +81,12 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
   { method: "POST", pattern: /^\/api\/repositories\/[^/]+\/github-token$/, rule: { allow: ["user", "agent:worker", "agent:leader"] } },
   { method: "DELETE", pattern: /^\/api\/repositories\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
 
+  // Skills — mutations are user/leader; reads (incl. by-name content for the
+  // daemon install channel) stay open to any authenticated identity.
+  { method: "POST", pattern: /^\/api\/skills$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "PATCH", pattern: /^\/api\/skills\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "DELETE", pattern: /^\/api\/skills\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
+
   // Sessions — machine reopen
   { method: "POST", pattern: /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/reopen$/, rule: { allow: ["machine"] } },
 

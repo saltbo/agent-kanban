@@ -128,6 +128,7 @@ import {
 } from "./boardRepo";
 import { listBoardRepositories } from "./boardRepositoryRepo";
 import { createBoardSSEResponse, createPublicBoardSSEResponse } from "./boardSSE";
+import { readBuiltinSkills } from "./builtinSkills";
 import { cliVersionMiddleware } from "./cliVersion";
 import { type D1, newLongId } from "./db";
 import { isGithubAppConfigured, listInstallationRepositories, mintGithubInstallationToken, recordInstallationFromSetup } from "./githubApp";
@@ -175,6 +176,7 @@ import { createRepository, deleteRepository, getRepository, listRepositories, no
 import { metadataWithRuntimeSource, taskRuntimeSource } from "./runtimeBinding";
 import { dispatchAssignedTask, releaseAssignedTaskRuntime, resolveAssignableWorkerRuntimeSource } from "./runtimeCoordinator";
 import { amaRunnerHeartbeatFresh, listAvailableRuntimeSources } from "./runtimeRouter";
+import { createSkill, deleteSkill, getSkill, getSkillByName, listSkills, updateSkill } from "./skillRepo";
 import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
@@ -2352,10 +2354,13 @@ api.get("/api/boards", async (c) => {
 });
 
 api.post("/api/boards/:id/maintainers", async (c) => {
-  if (!isAmaTaskDispatchConfigured(c.env)) {
-    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  // AMA-configured deployments wire maintainer triggers through AMA. Pure-local
+  // deployments (Hono dev server + local daemon) create the maintainer row
+  // directly and let the local daemon schedule the maintainer agent.
+  const amaConfigured = isAmaTaskDispatchConfigured(c.env);
+  if (amaConfigured) {
+    await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
   }
-  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
 
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
@@ -2374,7 +2379,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     throw new HTTPException(400, { message: "status must be active or paused" });
   }
   const maintainerStatus = body.status ?? "active";
-  const heartbeatEnabled = body.heartbeat_enabled ?? true;
 
   const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
   if (!board) throw new HTTPException(404, { message: "Board not found" });
@@ -2382,6 +2386,31 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   if (existingMaintainers.length > 0) {
     throw new HTTPException(409, { message: "Board already has a maintainer" });
   }
+
+  if (!amaConfigured) {
+    // Local branch. No server-side scheduler exists locally, so heartbeat is
+    // always off; triggering is handled by scripts/local-maintainer-watch.sh.
+    const maintainerAgent = await ensureLocalMaintainerAgentProfile(c.env.DB, ownerId, maintainerAgentId);
+    const maintainerId = newLongId();
+    const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
+      id: maintainerId,
+      boardId,
+      agentId: maintainerAgent.id,
+      // NOT NULL placeholder; the "local:" prefix is self-describing.
+      amaScheduleId: `local:${maintainerId}`,
+      amaHttpTriggerId: null,
+      amaHttpTriggerSerialized: false,
+      amaMemoryStoreId: null,
+      prompt: "",
+      intervalSeconds,
+      heartbeatEnabled: false,
+      status: maintainerStatus,
+      apiKeyId: null,
+    });
+    return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer), 201);
+  }
+
+  const heartbeatEnabled = body.heartbeat_enabled ?? true;
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const maintainerAgent = await ensureMaintainerAgentProfile(c.env.DB, ownerId, maintainerAgentId);
   // The trigger is left unpinned: AMA resolves a runner-capable environment for
@@ -2582,9 +2611,6 @@ api.post("/api/boards/:id/maintainers/:maintainerId/sessions", async (c) => {
 });
 
 api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
-  if (!isAmaTaskDispatchConfigured(c.env)) {
-    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
-  }
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
@@ -2596,6 +2622,22 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   validateMaintainerHeartbeatEnabled(body.heartbeat_enabled);
   if (body.status !== undefined && body.status !== "active" && body.status !== "paused") {
     throw new HTTPException(400, { message: "status must be active or paused" });
+  }
+  if (!isAmaTaskDispatchConfigured(c.env) || isLocalBoardMaintainer(maintainer)) {
+    // Local maintainer: D1 row only — there are no AMA triggers to sync, and no
+    // local heartbeat scheduler exists (review runs are triggered by
+    // scripts/local-maintainer-watch.sh), so enabling heartbeats is a no-op we
+    // reject rather than silently record.
+    if (body.heartbeat_enabled === true) {
+      throw new HTTPException(400, { message: "Local maintainers do not support heartbeats" });
+    }
+    const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, {
+      intervalSeconds: body.interval_seconds,
+      heartbeatEnabled: body.heartbeat_enabled,
+      status: body.status,
+    });
+    if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
+    return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated));
   }
   const nextStatus = body.status ?? (maintainer.status === "archived" ? "paused" : maintainer.status);
   const nextHeartbeatEnabled = body.heartbeat_enabled ?? maintainer.heartbeat_enabled;
@@ -2664,16 +2706,17 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
 });
 
 api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
-  if (!isAmaTaskDispatchConfigured(c.env)) {
-    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
-  }
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
-  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const limit = Number.parseInt(c.req.query("limit") ?? "20", 10);
   const normalizedLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 20;
+  if (!isAmaTaskDispatchConfigured(c.env) || isLocalBoardMaintainer(maintainer)) {
+    // Local maintainer: runs live in board tasks, not AMA — nothing to list here.
+    return c.json({ data: [], pagination: { limit: normalizedLimit, hasMore: false } });
+  }
+  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const triggerIds = [maintainer.ama_schedule_id, maintainer.ama_http_trigger_id].filter((id): id is string => Boolean(id));
   const pages = await Promise.all(
     triggerIds.map((triggerId) => listAmaTriggerRuns(c.env, ownerId, projectId, triggerId, { limit: normalizedLimit })),
@@ -2687,9 +2730,6 @@ api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
 });
 
 api.get("/api/boards/:id/maintainers/:maintainerId/memories", async (c) => {
-  if (!isAmaTaskDispatchConfigured(c.env)) {
-    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
-  }
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
@@ -2698,7 +2738,11 @@ api.get("/api/boards/:id/maintainers/:maintainerId/memories", async (c) => {
   const normalizedLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 100;
   const cursor = c.req.query("cursor");
   if (!maintainer.ama_memory_store_id) {
+    // Also covers local (non-AMA) maintainers, which never get a memory store.
     return c.json({ data: [], pagination: { limit: normalizedLimit, hasMore: false } });
+  }
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
   }
   const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const page = await listAmaMemoryStoreMemories(c.env, ownerId, projectId, maintainer.ama_memory_store_id, {
@@ -2712,19 +2756,19 @@ api.get("/api/boards/:id/maintainers/:maintainerId/memories", async (c) => {
 });
 
 api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
-  if (!isAmaTaskDispatchConfigured(c.env)) {
-    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
-  }
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
-  const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   // Hard delete: the AMA trigger (and its runs) and the AK maintainer row are
   // both removed. Pause/resume covers "stop but keep"; delete is permanent.
-  await deleteAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id);
-  if (maintainer.ama_http_trigger_id) await deleteAmaTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id);
-  if (maintainer.ama_memory_store_id) await archiveAmaMemoryStore(c.env, ownerId, amaProjectId, maintainer.ama_memory_store_id);
+  // Local (non-AMA) maintainers have no remote resources — just the row.
+  if (isAmaTaskDispatchConfigured(c.env) && !isLocalBoardMaintainer(maintainer)) {
+    const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+    await deleteAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id);
+    if (maintainer.ama_http_trigger_id) await deleteAmaTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id);
+    if (maintainer.ama_memory_store_id) await archiveAmaMemoryStore(c.env, ownerId, amaProjectId, maintainer.ama_memory_store_id);
+  }
   await deleteBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id);
   return c.json({ ok: true });
 });
@@ -2781,6 +2825,16 @@ function withMaintainerTaint(taints: AgentTaint[] | null | undefined): AgentTain
   return current.some((taint) => sameTaint(taint, AK_MAINTAINER_TAINT)) ? current : [...current, AK_MAINTAINER_TAINT];
 }
 
+function withoutMaintainerTaint(taints: AgentTaint[] | null | undefined): AgentTaint[] {
+  return (taints ?? []).filter((taint) => !sameTaint(taint, AK_MAINTAINER_TAINT));
+}
+
+// Local maintainers carry a "local:<id>" placeholder schedule id — they have
+// no AMA resources even if AMA gets (re)configured after they were created.
+function isLocalBoardMaintainer(maintainer: BoardMaintainer): boolean {
+  return maintainer.ama_schedule_id.startsWith("local:");
+}
+
 function withAmaBackfillFailedTaint(taints: AgentTaint[] | null | undefined): AgentTaint[] {
   const current = taints ?? [];
   return current.some((taint) => sameTaint(taint, AMA_BACKFILL_FAILED_TAINT)) ? current : [...current, AMA_BACKFILL_FAILED_TAINT];
@@ -2812,6 +2866,29 @@ async function ensureMaintainerAgentProfile(db: D1, ownerId: string, agentId: st
   }
   const skills = withMaintainerSkill(agent.skills);
   const taints = withMaintainerTaint(agent.taints);
+  if (JSON.stringify(skills) === JSON.stringify(agent.skills ?? []) && JSON.stringify(taints) === JSON.stringify(agent.taints ?? [])) {
+    return agent;
+  }
+  const updated = await updateAgent(db, agent.id, { skills, taints });
+  if (!updated) throw new HTTPException(404, { message: "Agent not found" });
+  return updated;
+}
+
+// Local (non-AMA) variant: same validation and maintainer skill, but no
+// NoSchedule taint. The taint exists to keep AMA maintainers off legacy local
+// scheduling; a local maintainer MUST stay schedulable or the daemon can never
+// dispatch it (schedulable=false forever). An agent previously wired as an AMA
+// maintainer may carry the taint already — strip it so the local daemon can
+// schedule the agent again.
+async function ensureLocalMaintainerAgentProfile(db: D1, ownerId: string, agentId: string) {
+  const agent = await getAgent(db, agentId, ownerId);
+  if (!agent) throw new HTTPException(404, { message: "Agent not found" });
+  if (agent.kind !== "worker") throw new HTTPException(400, { message: "Board maintainers must use worker agents" });
+  if (!isMaintainerAgentProfile(agent)) {
+    throw new HTTPException(400, { message: "Board maintainers must use a maintainer agent" });
+  }
+  const skills = withMaintainerSkill(agent.skills);
+  const taints = withoutMaintainerTaint(agent.taints);
   if (JSON.stringify(skills) === JSON.stringify(agent.skills ?? []) && JSON.stringify(taints) === JSON.stringify(agent.taints ?? [])) {
     return agent;
   }
@@ -3231,6 +3308,52 @@ api.delete("/api/repositories/:id", async (c) => {
   if (!repo) throw new HTTPException(404, { message: "Repository not found" });
   if (repo.owner_id !== ownerId) throw new HTTPException(403, { message: "Forbidden" });
   await deleteRepository(c.env.DB, c.req.param("id"));
+  return c.json({ ok: true });
+});
+
+// ─── Skills ───
+
+api.post("/api/skills", async (c) => {
+  const body = await c.req.json<{ name: string; description?: string; body?: string }>();
+  if (!body.name) throw new HTTPException(400, { message: "name is required" });
+  const skill = await createSkill(c.env.DB, c.get("ownerId"), body);
+  return c.json(skill, 201);
+});
+
+api.get("/api/skills", async (c) => {
+  return c.json(await listSkills(c.env.DB, c.get("ownerId")));
+});
+
+// Registered before /api/skills/:id so the literal segments win.
+api.get("/api/skills/builtin", async (c) => {
+  return c.json(await readBuiltinSkills());
+});
+
+// Daemon install channel: fetch one skill's content by name for `ak@<name>`
+// refs. Open to machine identities (no route rule) — the body is exactly what
+// the owner published in the UI, scoped to the caller's tenant.
+api.get("/api/skills/by-name/:name/content", async (c) => {
+  const skill = await getSkillByName(c.env.DB, c.req.param("name"), c.get("ownerId"));
+  if (!skill) throw new HTTPException(404, { message: "Skill not found" });
+  return c.json({ name: skill.name, description: skill.description, body: skill.body });
+});
+
+api.get("/api/skills/:id", async (c) => {
+  const skill = await getSkill(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!skill) throw new HTTPException(404, { message: "Skill not found" });
+  return c.json(skill);
+});
+
+api.patch("/api/skills/:id", async (c) => {
+  const body = await c.req.json<{ name?: string; description?: string; body?: string }>();
+  const skill = await updateSkill(c.env.DB, c.req.param("id"), c.get("ownerId"), body);
+  if (!skill) throw new HTTPException(404, { message: "Skill not found" });
+  return c.json(skill);
+});
+
+api.delete("/api/skills/:id", async (c) => {
+  const deleted = await deleteSkill(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!deleted) throw new HTTPException(404, { message: "Skill not found" });
   return c.json({ ok: true });
 });
 

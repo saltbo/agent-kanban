@@ -296,7 +296,7 @@ async function dispatchOne(
   }
   const providerName = normalizeRuntime(agentDetails.runtime);
   const provider = getProvider(providerName);
-  const skillSnapshots = prepareSkillSnapshots(agentDetails.skills ?? []);
+  const skillSnapshots = await prepareSkillSnapshots(agentDetails.skills ?? [], client);
   if (!skillSnapshots) {
     logger.error(`Skill preflight failed for task ${task.id}; no worktree was created`);
     return false;

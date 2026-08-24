@@ -104,12 +104,12 @@ describe("immutable skill cache", () => {
   it("installs cache misses once and serves later hits without network access", async () => {
     const { prepareSkillSnapshots } = await loadModules();
 
-    const first = prepareSkillSnapshots(["owner/tools@review"]);
+    const first = await prepareSkillSnapshots(["owner/tools@review"]);
     expect(first?.map((snapshot) => snapshot.skill)).toEqual(["agent-kanban", "review"]);
     expect(state.installs).toHaveLength(2);
 
     state.installs.length = 0;
-    const second = prepareSkillSnapshots(["owner/tools@review"]);
+    const second = await prepareSkillSnapshots(["owner/tools@review"]);
     expect(second).toEqual(first);
     expect(state.installs).toHaveLength(0);
   });
@@ -117,7 +117,7 @@ describe("immutable skill cache", () => {
   it("publishes a valid manifest atomically without leaving temp files", async () => {
     const { prepareSkillSnapshots, skillCachePaths } = await loadModules();
 
-    expect(prepareSkillSnapshots([])).not.toBeNull();
+    expect(await prepareSkillSnapshots([])).not.toBeNull();
 
     const manifest = JSON.parse(readFileSync(skillCachePaths.manifestFile, "utf8"));
     expect(manifest).toMatchObject({ version: 1, entries: { "saltbo/agent-kanban@agent-kanban": expect.any(Object) } });
@@ -144,11 +144,11 @@ describe("immutable skill cache", () => {
     ],
   ])("ignores and rebuilds a corrupt manifest with %s", async (_case, corruptManifest) => {
     const { prepareSkillSnapshots, skillCachePaths } = await loadModules();
-    prepareSkillSnapshots([]);
+    await prepareSkillSnapshots([]);
     writeFileSync(skillCachePaths.manifestFile, JSON.stringify(corruptManifest));
     state.installs.length = 0;
 
-    const rebuilt = prepareSkillSnapshots([]);
+    const rebuilt = await prepareSkillSnapshots([]);
 
     expect(rebuilt).toHaveLength(1);
     expect(state.installs).toHaveLength(1);
@@ -158,7 +158,7 @@ describe("immutable skill cache", () => {
 
   it("keeps a valid last-known-good entry when a malformed sibling poisons the manifest", async () => {
     const { prepareSkillSnapshots, skillCachePaths } = await loadModules();
-    const original = prepareSkillSnapshots([])!;
+    const original = (await prepareSkillSnapshots([]))!;
     const manifest = JSON.parse(readFileSync(skillCachePaths.manifestFile, "utf8"));
     manifest.entries["attacker/repo@poison"] = {
       ref: "attacker/repo@poison",
@@ -172,7 +172,7 @@ describe("immutable skill cache", () => {
     state.installs.length = 0;
     state.failInstall = true;
 
-    const offline = prepareSkillSnapshots([]);
+    const offline = await prepareSkillSnapshots([]);
 
     expect(offline).toEqual(original);
     expect(state.installs).toHaveLength(0);
@@ -181,11 +181,11 @@ describe("immutable skill cache", () => {
 
   it("rebuilds a cached object when its contents no longer match its hash", async () => {
     const { prepareSkillSnapshots } = await loadModules();
-    const original = prepareSkillSnapshots([])!;
+    const original = (await prepareSkillSnapshots([]))!;
     writeFileSync(join(original[0].objectDir, "SKILL.md"), "tampered\n");
     state.installs.length = 0;
 
-    const rebuilt = prepareSkillSnapshots([]);
+    const rebuilt = await prepareSkillSnapshots([]);
 
     expect(state.installs).toHaveLength(1);
     expect(rebuilt).toHaveLength(1);
@@ -196,7 +196,7 @@ describe("immutable skill cache", () => {
     const { prepareSkillSnapshots, skillCachePaths } = await loadModules();
     state.symlinkInstall = true;
 
-    expect(prepareSkillSnapshots([])).toBeNull();
+    await expect(prepareSkillSnapshots([])).resolves.toBeNull();
     expect(existsSync(skillCachePaths.manifestFile)).toBe(false);
     expect(readdirSync(skillCachePaths.objectsDir)).toEqual([]);
   });
@@ -204,7 +204,7 @@ describe("immutable skill cache", () => {
   it.each(["owner/repo@.", "owner/repo@..", "owner/repo@../escape"])("treats dangerous skill name %s as a zero-write failure", async (ref) => {
     const { prepareSkillSnapshots, skillCachePaths } = await loadModules();
 
-    expect(prepareSkillSnapshots([ref])).toBeNull();
+    await expect(prepareSkillSnapshots([ref])).resolves.toBeNull();
     expect(state.installs).toHaveLength(0);
     expect(existsSync(skillCachePaths.cacheDir)).toBe(false);
     expect(existsSync(join(state.dataDir, "escape"))).toBe(false);
@@ -212,7 +212,7 @@ describe("immutable skill cache", () => {
 
   it("materializes independent copies into universal and Claude skill directories", async () => {
     const { materializeSkillSnapshots, prepareSkillSnapshots } = await loadModules();
-    const snapshots = prepareSkillSnapshots([])!;
+    const snapshots = (await prepareSkillSnapshots([]))!;
     const workspace = mkdtempSync(join(tmpdir(), "ak-skill-workspace-"));
     try {
       mkdirSync(join(workspace, ".git", "info"), { recursive: true });
@@ -238,7 +238,7 @@ describe("immutable skill cache", () => {
 
   it("keeps the last-known-good object and manifest when refresh fails", async () => {
     const { prepareSkillSnapshots, setRuntimeSettings, skillCachePaths, startSkillCacheRefresh } = await loadModules();
-    const original = prepareSkillSnapshots([])!;
+    const original = (await prepareSkillSnapshots([]))!;
     const manifest = JSON.parse(readFileSync(skillCachePaths.manifestFile, "utf8"));
     manifest.entries[original[0].ref].checkedAt = 0;
     writeFileSync(skillCachePaths.manifestFile, JSON.stringify(manifest));
@@ -253,12 +253,12 @@ describe("immutable skill cache", () => {
     expect(state.installs).toHaveLength(1);
     expect(existsSync(join(original[0].objectDir, "SKILL.md"))).toBe(true);
     expect(JSON.parse(readFileSync(skillCachePaths.manifestFile, "utf8")).entries[original[0].ref].contentHash).toBe(original[0].contentHash);
-    expect(prepareSkillSnapshots([])?.[0].contentHash).toBe(original[0].contentHash);
+    expect((await prepareSkillSnapshots([]))?.[0].contentHash).toBe(original[0].contentHash);
   });
 
   it("honors the auto-update switch", async () => {
     const { prepareSkillSnapshots, setRuntimeSettings, skillCachePaths, startSkillCacheRefresh } = await loadModules();
-    const snapshots = prepareSkillSnapshots([])!;
+    const snapshots = (await prepareSkillSnapshots([]))!;
     const manifest = JSON.parse(readFileSync(skillCachePaths.manifestFile, "utf8"));
     manifest.entries[snapshots[0].ref].checkedAt = 0;
     writeFileSync(skillCachePaths.manifestFile, JSON.stringify(manifest));
@@ -276,7 +276,7 @@ describe("immutable skill cache", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-24T00:00:00Z"));
     const { prepareSkillSnapshots, setRuntimeSettings, startSkillCacheRefresh } = await loadModules();
-    prepareSkillSnapshots([]);
+    await prepareSkillSnapshots([]);
     state.installs.length = 0;
     setRuntimeSettings({ skill_cache_auto_update: true, skill_cache_refresh_hours: 1 });
 
@@ -293,7 +293,7 @@ describe("immutable skill cache", () => {
 
   it("keeps background refresh asynchronous and aborts an in-flight installer when stopped", async () => {
     const { prepareSkillSnapshots, setRuntimeSettings, skillCachePaths, startSkillCacheRefresh } = await loadModules();
-    const snapshots = prepareSkillSnapshots([])!;
+    const snapshots = (await prepareSkillSnapshots([]))!;
     const manifest = JSON.parse(readFileSync(skillCachePaths.manifestFile, "utf8"));
     manifest.entries[snapshots[0].ref].checkedAt = 0;
     writeFileSync(skillCachePaths.manifestFile, JSON.stringify(manifest));

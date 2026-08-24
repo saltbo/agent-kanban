@@ -24,7 +24,7 @@ interface SubagentPromptInfo {
 
 export function generateSystemPrompt(agent: AgentInfo, boardType: BoardType, subagents: SubagentPromptInfo[] = []): string {
   const environment = boardType === "dev" ? DEV_ENVIRONMENT : OPS_ENVIRONMENT;
-  const rules = boardType === "dev" ? DEV_RULES : OPS_RULES;
+  const rules = rulesFor(agent, boardType);
   const subagentSection = buildSubagentSection(subagents);
   const handoffSection = buildHandoffSection(agent, boardType);
 
@@ -93,6 +93,23 @@ const OPS_RULES = `\
 - \`task review\` is always your final action; all work, logs, completion notes, and comments must be done first.
 - Log progress frequently — humans monitor the board.
 - If a task is too large, break it into subtasks via \`ak create task --parent <task-id>\`.`;
+
+// Maintainer sessions replace the "Never call task complete" rule: completing
+// and rejecting reviewed work IS the maintainer's job.
+const MAINTAINER_COMPLETION_RULES = `\
+- As board maintainer, calling \`task complete\` and \`task reject\` on reviewed tasks IS your job — the worker rule "never complete" does not apply to you.
+- Never review (complete or reject) a task you implemented yourself; leave a note explaining the conflict and escalate to a human instead.
+- Your own review task is complete when the reviewed tasks are resolved: submit it with \`ak task review\`, then \`ak task complete\` it yourself so review tasks don't recurse infinitely.`;
+
+function isMaintainerAgent(agent: AgentInfo): boolean {
+  return agent.role === "board-maintainer" || (agent.skills ?? []).some((skill) => skill.endsWith("@ak-maintainer"));
+}
+
+function rulesFor(agent: AgentInfo, boardType: BoardType): string {
+  const base = boardType === "dev" ? DEV_RULES : OPS_RULES;
+  if (!isMaintainerAgent(agent)) return base;
+  return base.replace("- Never call `task complete` — only humans complete tasks.", MAINTAINER_COMPLETION_RULES);
+}
 
 function buildSubagentSection(subagents: SubagentPromptInfo[]): string {
   if (subagents.length === 0) return "";

@@ -47,26 +47,13 @@ In QA mode, flag any code that doesn't match DESIGN.md.
 - Data model: Board is the workspace unit. Repositories belong to owner (tenant-level, like machines). Tasks belong to boards, optionally linked to a repository. Machines belong to owner (user/org).
 
 ## Post-Write Workflow
-After every significant code change, follow this sequence:
+After every significant code change, follow the `ak-verify` skill (`skills/ak-verify/SKILL.md`): Tests → Review → Regression, with the Author/Test author/E2E author/Reviewer role split and ownership rule defined there.
 
-1. **Test** — invoke test-writer agent to write/update unit/integration tests and run them.
-   - If changes touch frontend components (`apps/web/src/`), also invoke playwright-test-generator agent to create/update E2E tests, and playwright-test-healer to fix any broken existing E2E tests.
-   - ALL PASS → proceed to step 2.
-   - FAILURES → you (main agent) read the failure, decide if the bug is in source code or test code.
-     - Source bug → fix the source code, re-run tests yourself.
-     - Test bug → state why the test is wrong, then forward to test-writer (unit) or playwright-test-healer (E2E) agent to fix.
-   - After all tests pass, proceed to step 2.
-2. **Review** — invoke clean-code-reviewer agent (reviews both source and test code).
-   - REVISE on source code → you (main agent) fix, then re-run review.
-   - REVISE on test code → forward issues to the appropriate test agent to fix.
-   - PASS → proceed to step 3.
+Role mapping in this repository: Author = main agent; Test author = test-writer subagent; E2E author = playwright-test-generator (and playwright-test-healer for broken existing E2E tests) — invoked when changes touch frontend components (`apps/web/src/`); Reviewer = clean-code-reviewer subagent.
 
-**Ownership rule**: you (main agent) only modify source code. Test code is owned by test agents — all test modifications go through them.
-3. **Regression** — run build + type check + full test suite to catch breakage.
-   - `pnpm build && pnpm typecheck && npx vitest run`
-   - Use `pnpm typecheck`, NOT `tsc --noEmit` at the root: the root tsconfig is solution-style (`files: []` + `references`), so `tsc --noEmit` there checks nothing. `pnpm typecheck` runs `tsc --noEmit` per project (shared, cli, web/server/worker) and actually catches type errors.
-   - Any failure → fix and re-run. If fix touches source code, go back to step 1.
-4. **Legacy daemon smoke test** — if changes explicitly touch deprecated daemon code (`packages/cli/src/daemon/`), run `./scripts/daemon-smoke-test.sh` and ensure it passes before considering that legacy path done.
+Regression commands for this repo: `pnpm build && pnpm typecheck && npx vitest run`. Use `pnpm typecheck`, NOT `tsc --noEmit` at the root: the root tsconfig is solution-style (`files: []` + `references`), so `tsc --noEmit` there checks nothing.
+
+Project-specific additional step — **legacy daemon smoke test**: if changes explicitly touch deprecated daemon code (`packages/cli/src/daemon/`), run `./scripts/daemon-smoke-test.sh` and ensure it passes before considering that legacy path done.
    - Before smoke, always refresh the local CLI with `bash scripts/install-cli.sh`.
    - Smoke is mandatory. Missing arguments are not a reason to skip it: discover existing resources with `ak get board -o json`, `ak get repo -o json`, and `ak get agent -o json`, or create the missing resources.
    - The default smoke target is the Demo board with the `slink` repository. The smoke script auto-discovers these defaults when arguments are omitted.
