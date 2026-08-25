@@ -255,9 +255,19 @@ export function deriveUsername(name: string): string {
   return derived || "agent";
 }
 
-const SKILL_REF_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[A-Za-z0-9][A-Za-z0-9._/-]{0,127})?@[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
+const SKILL_REF_RE = /^(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[A-Za-z0-9][A-Za-z0-9._/-]{0,127})?|ak)@[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
 export function isValidSkillRef(value: string): boolean {
   return SKILL_REF_RE.test(value);
+}
+
+/** `ak@<name>` refs resolve to the owner's AK-stored custom skills, installed by the local daemon. AMA cannot resolve them. */
+export function isAkSkillRef(value: string): boolean {
+  return value.startsWith("ak@") && isValidSkillRef(value);
+}
+
+export function akSkillName(ref: string): string | null {
+  if (!isAkSkillRef(ref)) return null;
+  return ref.slice(3);
 }
 
 export function findInvalidSkillRef(skills: string[] | null | undefined): string | null {
@@ -433,6 +443,26 @@ export interface InstallableRepo {
   clone_url: string;
   private: boolean;
   already_added: boolean;
+}
+
+// ─── Skills ───
+
+/** A custom skill stored in AK. Referenced from agents as `ak@<name>`. */
+export interface Skill {
+  id: string;
+  owner_id: string;
+  name: string;
+  description: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A built-in skill shipped with the repository (skills/<name>/SKILL.md). Read-only. */
+export interface BuiltinSkill {
+  name: string;
+  description: string;
+  body: string;
 }
 
 // ─── Agent Events (wire format for relay) ───

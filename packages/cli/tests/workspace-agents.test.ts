@@ -27,6 +27,17 @@ const subagent = {
   models: { claude: "claude-opus-4-6", codex: "gpt-5.1-codex" },
 };
 
+function gitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  delete env.GIT_OBJECT_DIRECTORY;
+  delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+  delete env.GIT_COMMON_DIR;
+  return env;
+}
+
 let tempDirs: string[] = [];
 
 function makeWorktree(): string {
@@ -71,10 +82,10 @@ describe("workspace subagent installer", () => {
 
   it("writes Claude subagents to local git exclude without changing tracked .gitignore", async () => {
     const worktree = makeWorktree();
-    execFileSync("git", ["-C", worktree, "init"], { stdio: "pipe" });
+    execFileSync("git", ["-C", worktree, "init"], { stdio: "pipe", env: gitEnv() });
     const gitignore = join(worktree, ".gitignore");
     writeFileSync(gitignore, "tracked-rule\n");
-    execFileSync("git", ["-C", worktree, "add", ".gitignore"], { stdio: "pipe" });
+    execFileSync("git", ["-C", worktree, "add", ".gitignore"], { stdio: "pipe", env: gitEnv() });
 
     const installed = await ensureSubagents(worktree, "claude", [subagent]);
 

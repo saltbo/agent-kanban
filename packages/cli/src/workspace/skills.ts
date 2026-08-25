@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
-import { isValidSkillRef } from "@agent-kanban/shared";
+import { isAkSkillRef, isValidSkillRef } from "@agent-kanban/shared";
 import { createLogger } from "../logger.js";
 import { DATA_DIR } from "../paths.js";
 import { getRuntimeSettings } from "../providers/runtimeSettingsState.js";
@@ -55,6 +55,11 @@ export interface SkillSnapshot {
   skill: string;
   contentHash: string;
   objectDir: string;
+}
+
+/** Minimal client surface needed to resolve `ak@<name>` refs. */
+export interface SkillContentFetcher {
+  getSkillContent(name: string): Promise<{ name: string; description: string; body: string }>;
 }
 
 const failedUntil = new Map<string, number>();
@@ -268,12 +273,41 @@ async function installIntoCacheAsync(
   }
 }
 
+/** Rebuild SKILL.md frontmatter from the AK-stored fields; the stored body is the markdown content. */
+export function buildAkSkillMarkdown(name: string, description: string, body: string): string {
+  const oneLineDescription = description.replace(/\r?\n/g, " ").trim();
+  // JSON.stringify output is a valid YAML double-quoted scalar.
+  return `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(oneLineDescription)}\n---\n\n${body.trim()}\n`;
+}
+
+/**
+ * `ak@<name>` refs resolve through the AK API instead of the skills CLI: fetch
+ * the stored content, write SKILL.md into a staging dir, then reuse the normal
+ * content-hash publish path. Last-known-good fallback mirrors git installs.
+ */
+async function installAkSkillIntoCache(ref: string, skill: string, client: SkillContentFetcher, previous?: CacheEntry): Promise<CacheEntry | null> {
+  if (Date.now() < (failedUntil.get(ref) ?? 0)) return previous && objectIsUsable(previous) ? previous : null;
+  const staging = createInstallStaging(skill);
+  try {
+    logger.info(`Fetching AK skill "${ref}" from the API`);
+    const content = await client.getSkillContent(skill);
+    const dir = join(staging, ".agents", "skills", skill);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), buildAkSkillMarkdown(skill, content.description, content.body));
+    return publishStagedSkill(ref, "ak", skill, staging, previous);
+  } catch (err) {
+    return installFailure(ref, previous, err);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 function snapshotFor(entry: CacheEntry): SkillSnapshot {
   return { ref: entry.ref, skill: entry.skill, contentHash: entry.contentHash, objectDir: join(OBJECTS_DIR, entry.contentHash) };
 }
 
-/** Resolve requested skills before any worktree is created. */
-export function prepareSkillSnapshots(agentSkills: string[]): SkillSnapshot[] | null {
+/** Resolve requested skills before any worktree is created. `client` is required when any `ak@<name>` ref is present. */
+export async function prepareSkillSnapshots(agentSkills: string[], client?: SkillContentFetcher): Promise<SkillSnapshot[] | null> {
   try {
     const requested = requestedRefs(agentSkills);
     const manifest = readManifest();
@@ -282,7 +316,19 @@ export function prepareSkillSnapshots(agentSkills: string[]): SkillSnapshot[] | 
     for (const item of requested) {
       let entry: CacheEntry | undefined = manifest.entries[item.ref];
       if (entry && (entry.ref !== item.ref || entry.source !== item.source || entry.skill !== item.skill)) entry = undefined;
-      if (!objectIsUsable(entry)) {
+      if (isAkSkillRef(item.ref)) {
+        // AK-stored skills are re-fetched on every prepare so UI edits reach the
+        // next dispatch; the cache only serves as an offline fallback.
+        if (!client) {
+          logger.error(`Skill "${item.ref}" requires an API client to resolve`);
+          return null;
+        }
+        const installed = await installAkSkillIntoCache(item.ref, item.skill, client, entry);
+        if (!installed) return null;
+        entry = installed;
+        manifest.entries[item.ref] = installed;
+        changed = true;
+      } else if (!objectIsUsable(entry)) {
         const installed = installIntoCache(item.ref, item.source, item.skill, entry);
         if (!installed) return null;
         entry = installed;
@@ -338,6 +384,8 @@ async function refreshStaleEntries(signal?: AbortSignal): Promise<void> {
   const manifest = readManifest();
   for (const entry of Object.values(manifest.entries)) {
     if (signal?.aborted) return;
+    // AK-stored skills are re-fetched on every prepare; no background refresh.
+    if (entry.source === "ak") continue;
     if (Date.now() - entry.checkedAt < maxAgeMs) continue;
     const refreshed = await installIntoCacheAsync(entry.ref, entry.source, entry.skill, entry, signal);
     if (!refreshed) continue;

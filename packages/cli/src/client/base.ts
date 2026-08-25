@@ -307,6 +307,11 @@ export abstract class ApiClient {
     return this.request("DELETE", `/api/repositories/${repoId}`);
   }
 
+  // Skills — daemon install channel for `ak@<name>` refs
+  getSkillContent(name: string) {
+    return this.request<{ name: string; description: string; body: string }>("GET", `/api/skills/by-name/${encodeURIComponent(name)}/content`);
+  }
+
   // Session usage
   updateSessionUsage(
     agentId: string,

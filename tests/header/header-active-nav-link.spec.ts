@@ -18,7 +18,11 @@ test.describe("Header and Navigation", () => {
     await expect(agentsLink).toHaveClass(/text-accent/);
     await expect(agentsLink).toHaveClass(/bg-accent-soft/);
 
-    // expect: The deprecated Machines entry is no longer a primary nav item
-    await expect(header.getByRole("link", { name: "Machines" })).toHaveCount(0);
+    // expect: The other primary nav links are present but not highlighted
+    for (const name of ["Machines", "Repositories", "Skills"]) {
+      const link = header.getByRole("link", { name, exact: true });
+      await expect(link).toBeVisible();
+      await expect(link).not.toHaveClass(/text-accent/);
+    }
   });
 });

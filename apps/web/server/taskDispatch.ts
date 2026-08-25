@@ -1,4 +1,4 @@
-import { generateKeypair, type Task } from "@agent-kanban/shared";
+import { generateKeypair, isAkSkillRef, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getAgent, getAgentAmaId, setAgentAmaId } from "./agentRepo";
 import {
@@ -283,6 +283,15 @@ async function buildAmaAgentInput(
 ) {
   const runtimeProfile = resolveAmaProviderModelProfile({ runtime, preferredModel: akAgent.model });
   const subagents = await Promise.all((akAgent.subagents ?? []).map((id) => getSubagent(db, id, ownerId)));
+  // AMA cannot resolve AK-local `ak@<name>` skill refs (daemon-install channel
+  // only) — drop them so dispatch still works instead of failing validation.
+  const amaSkills = (akAgent.skills ?? []).filter((skill) => {
+    if (isAkSkillRef(skill)) {
+      logger.warn(`dropping AK-local skill ref "${skill}" from AMA dispatch for agent ${akAgent.username}`);
+      return false;
+    }
+    return true;
+  });
   return {
     projectId,
     name: akAgent.name || akAgent.username,
@@ -291,7 +300,7 @@ async function buildAmaAgentInput(
     role: akAgent.role,
     provider: runtimeProfile.provider,
     model: runtimeProfile.model,
-    skills: akAgent.skills ?? [],
+    skills: amaSkills,
     subagents: subagents.flatMap((subagent) => (subagent ? [amaSubagentProfile(subagent)] : [])),
     // The agent's skills go to AMA's `skills` field above (validated as
     // <source>@<skill>). `capabilityTags` is AMA's SEPARATE handoff-routing slug

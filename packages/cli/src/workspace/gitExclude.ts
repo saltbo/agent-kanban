@@ -9,7 +9,13 @@ import { dirname, isAbsolute, resolve } from "node:path";
 export function ensureGitExclude(workspaceDir: string, entries: string[], comment: string): void {
   let excludeOutput: string;
   try {
-    excludeOutput = execFileSync("git", ["-C", workspaceDir, "rev-parse", "--git-path", "info/exclude"], { encoding: "utf8" }).trim();
+    // Git hook runners (e.g. lefthook pre-commit) export GIT_DIR/GIT_WORK_TREE,
+    // which would redirect --git-path to the outer repository instead of the
+    // workspace. Scrub them so the lookup is anchored to workspaceDir.
+    const env = { ...process.env };
+    delete env.GIT_DIR;
+    delete env.GIT_WORK_TREE;
+    excludeOutput = execFileSync("git", ["-C", workspaceDir, "rev-parse", "--git-path", "info/exclude"], { encoding: "utf8", env }).trim();
   } catch {
     return;
   }

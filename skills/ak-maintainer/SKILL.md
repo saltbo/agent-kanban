@@ -136,6 +136,8 @@ Do not post a public blocked, "not merging yet", or "next action needed" PR comm
 
 Record the acceptance result in the maintainer decision: what was checked, how it was checked, whether it passed, and any residual risk.
 
+When the `ak-verify` skill is installed, use it as the acceptance standard: the maintainer performs its Review step as the code review, treats its Tests and Regression steps as the verification evidence to require (and re-run when warranted), and maps the outcome to accept/reject.
+
 ### Durable Acceptance Environments
 
 Acceptance environments are long-lived project assets. Do not solve preview or local verification as an improvised one-time workaround and leave the next maintainer session to rediscover the same blocker.
