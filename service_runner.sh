@@ -15,11 +15,17 @@
 # `ak start --api-url <url> --api-key <key>`.
 #
 # Modes:
-#   start    (default) run in the background inside a detached screen session,
-#            logs appended to .run/logs/service.log
-#   run      run in the foreground (used by the screen session and by systemd —
-#            see scripts/install-systemd-service.sh)
+#   start    (default) run in the background as a detached process (setsid,
+#            own process group), logs appended to .run/logs/service.log
+#   run      run in the foreground (used by the process spawned from `start`
+#            and by systemd — see scripts/install-systemd-service.sh)
 #   stop / restart / status / logs   manage the background service
+#
+# Single-instance guarantee: the service holds an flock on .run/service.lock
+# for its whole lifetime (the vite process itself, via fd inheritance across
+# exec); its pid is written to .run/service.pid. A second start fails fast
+# instead of competing for the port. The lock is per-checkout (under .run), so
+# worktree copies can each run their own instance on a different --port.
 #
 # Refresh options (work with start / restart / run) — pick up new code:
 #   --pull       git pull --ff-only before starting (latest frontend+backend)
@@ -62,7 +68,8 @@ DEV_VARS="$WEB_DIR/.dev.vars"
 RUN_DIR="$ROOT/.run"
 LOG_DIR="$RUN_DIR/logs"
 LOG_FILE="$LOG_DIR/service.log"
-SESSION="agent-kanban"
+PID_FILE="$RUN_DIR/service.pid"
+LOCK_FILE="$RUN_DIR/service.lock"
 
 # Colors (disabled when not a TTY)
 if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
@@ -80,11 +87,11 @@ usage() {
 service_runner.sh — one-click run Agent Kanban on 0.0.0.0 for remote access.
 
 Usage:
-  ./service_runner.sh start              # background via screen (default)
+  ./service_runner.sh start              # background, detached (default)
   ./service_runner.sh run                # foreground (systemd / debugging)
   ./service_runner.sh stop               # stop the background service
   ./service_runner.sh restart            # stop + start
-  ./service_runner.sh status             # screen session + port health
+  ./service_runner.sh status             # service lock + port health
   ./service_runner.sh logs [-f]          # show log (tail -f with -f)
   ./service_runner.sh start --port 8080  # run on a different port
   ./service_runner.sh start --skip-install --skip-migrate
@@ -93,8 +100,9 @@ Usage:
                                      # reinstall deps, rebuild shared package
   ./service_runner.sh --help
 
-The background service runs in a detached screen session named
-"agent-kanban"; logs are appended to .run/logs/service.log.
+The background service runs as a detached process (setsid, its own process
+group) with logs appended to .run/logs/service.log. Uniqueness is enforced by
+an flock on .run/service.lock — see the top of this script.
 
 It runs the same stack as `pnpm dev` (React SPA + Hono worker + local D1), but
 binds Vite to 0.0.0.0 so the board is reachable from other hosts on the LAN.
@@ -158,7 +166,33 @@ primary_ip() {
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || fatal "required command not found: $1 (see README.md for prerequisites)"; }
 
-screen_running() { screen -ls 2>/dev/null | grep -q "[.]$SESSION[[:space:]]"; }
+# --- Singleton guard ---------------------------------------------------------
+# Uniqueness is enforced by an flock on $LOCK_FILE, held for the lifetime of
+# the service process (fd survives the final `exec npx vite`, so the vite
+# process itself holds the lock). The kernel releases the lock automatically
+# when the process dies — no stale-pidfile problem. The lock lives under
+# $ROOT/.run, so separate checkouts/worktrees each have their own lock and can
+# coexist on different ports.
+service_running() {
+  [ -f "$LOCK_FILE" ] || return 1
+  # Lock free → not running (flock exits 0 after acquiring it in the subshell).
+  (flock -n "$LOCK_FILE" -c true) 2>/dev/null && return 1
+  return 0
+}
+
+service_pid() { cat "$PID_FILE" 2>/dev/null || true; }
+
+# Called by cmd_run right before exec'ing the server. FD 9 stays open across
+# exec, and $$ becomes the vite pid, so the pidfile always names the process
+# holding the lock.
+acquire_lock() {
+  mkdir -p "$RUN_DIR"
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    fatal "another instance of this service is already running (pid $(service_pid), lock $LOCK_FILE). Use '$0 stop' or '$0 restart'."
+  fi
+  echo $$ >"$PID_FILE"
+}
 
 port_listening() {
   if command -v ss >/dev/null 2>&1; then
@@ -348,7 +382,7 @@ step_banner() {
 }
 
 # Full foreground run: setup + exec vite. Used by `run` directly, by the
-# screen session spawned from `start`, and by the systemd unit.
+# detached process spawned from `start`, and by the systemd unit.
 cmd_run() {
   step_prereqs
   step_pull
@@ -361,15 +395,23 @@ cmd_run() {
   # isn't listening yet, so this no-ops — the runtime starts on the next respawn.
   step_local_start
   step_banner
+  acquire_lock
   info "Starting dev server on $HOST:$PORT (React SPA + Hono worker + local D1). Ctrl-C to stop."
   cd "$WEB_DIR"
   exec npx vite dev --host "$HOST" --port "$PORT"
 }
 
 cmd_start() {
-  require_cmd screen
-  if screen_running; then
-    info "Already running (screen session '$SESSION')."
+  # Serialize concurrent `start` invocations for the setup+spawn window —
+  # setup steps can take a while on a cold boot, and the service's own
+  # singleton lock is only acquired once the spawned `run` reaches
+  # acquire_lock. fd 8 is released when this function returns.
+  mkdir -p "$RUN_DIR"
+  exec 8>"$RUN_DIR/start.lock"
+  flock 8
+
+  if service_running; then
+    info "Already running (pid $(service_pid))."
     cmd_status
     return 0
   fi
@@ -390,14 +432,18 @@ cmd_start() {
     printf '════════════════════════════════════════════════════════\n'
   } >> "$LOG_FILE"
 
-  AK_PORT="$PORT" AK_HOST="$HOST" screen -dmS "$SESSION" \
-    bash -c "exec '$ROOT/service_runner.sh' run --skip-install --skip-migrate >> '$LOG_FILE' 2>&1"
+  # Detached into its own session/process group (setsid): survives this
+  # shell's exit, and lets `stop` kill vite + its workerd/esbuild children
+  # with one process-group signal. fd 8 is closed in the child so the start
+  # lock isn't held for the service's whole lifetime.
+  AK_PORT="$PORT" AK_HOST="$HOST" setsid \
+    bash -c "exec 8>&-; exec '$ROOT/service_runner.sh' run --skip-install --skip-migrate >> '$LOG_FILE' 2>&1" \
+    </dev/null &
 
   # Wait for the port (vite cold start + D1 init can take a few seconds).
   local waited=0
   while [ "$waited" -lt 30 ]; do
     if port_listening; then break; fi
-    screen_running || { warn "Screen session died during startup — last log lines:"; tail -n 20 "$LOG_FILE" >&2; exit 1; }
     sleep 1
     waited=$((waited + 1))
   done
@@ -405,43 +451,64 @@ cmd_start() {
   step_local_start
   step_banner
   if port_listening; then
-    info "Running in background (screen session '$SESSION', port $PORT)."
+    info "Running in background (pid $(service_pid), port $PORT)."
   else
-    warn "Screen session started but port $PORT isn't listening yet — check the log."
+    warn "Service spawned but port $PORT isn't listening yet — last log lines:"
+    tail -n 20 "$LOG_FILE" >&2
+    exit 1
   fi
   printf '%s[·]%s Logs:    %s  (./service_runner.sh logs -f to follow)\n' "$CY" "$R" "$LOG_FILE"
-  printf '%s[·]%s Attach:  screen -r %s   (detach with Ctrl-A D)\n' "$CY" "$R" "$SESSION"
   printf '%s[·]%s Stop:    ./service_runner.sh stop\n' "$CY" "$R"
   printf '\n'
 }
 
 cmd_stop() {
-  if ! screen_running; then
-    info "Not running (no screen session '$SESSION')."
+  local stopped=0
+  # Stop the service by pidfile/lock. Note: under systemd use
+  # `systemctl stop` instead, or the unit's Restart policy will respawn it.
+  if service_running; then
+    local pid waited=0
+    pid="$(service_pid)"
+    info "Stopping service process $pid…"
+    # Prefer killing the whole process group: vite's children (workerd,
+    # esbuild) inherit the lock fd and would keep the singleton held after
+    # vite itself dies. Only group-kill when the service leads its own group —
+    # a foreground `run` shares the user's shell pgrp, which must not be
+    # group-killed.
+    if [ -n "$pid" ] && [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ]; then
+      kill -- -"$pid" 2>/dev/null || true
+    else
+      kill "$pid" 2>/dev/null || true
+    fi
+    while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 10 ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      warn "Process $pid still alive after 10s — sending SIGKILL."
+      kill -9 "$pid" 2>/dev/null || true
+      sleep 1
+    fi
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && fatal "Could not stop service process $pid."
+    if service_running; then
+      warn "Service process is dead but a child still holds the lock — it releases when that child exits."
+    fi
+    stopped=1
+  fi
+  if [ "$stopped" = "0" ]; then
+    info "Not running (no service lock held)."
+    rm -f "$PID_FILE"
     return 0
   fi
-  info "Stopping screen session '$SESSION'…"
-  screen -S "$SESSION" -X quit
-  local waited=0
-  while screen_running && [ "$waited" -lt 10 ]; do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if screen_running; then
-    warn "Session still alive after 10s — sending SIGKILL to the window."
-    screen -S "$SESSION" -p 0 -X kill 2>/dev/null || true
-    sleep 1
-  fi
-  screen_running && fatal "Could not stop screen session '$SESSION'."
+  rm -f "$PID_FILE"
   info "Stopped."
 }
 
 cmd_status() {
-  if screen_running; then
-    info "screen session '$SESSION' is up:"
-    screen -ls | grep "[.]$SESSION[[:space:]]" | sed 's/^/    /'
+  if service_running; then
+    info "service is running (pid $(service_pid), lock $LOCK_FILE)."
   else
-    warn "screen session '$SESSION' is not running."
+    warn "service lock not held (no running instance)."
   fi
   if port_listening; then
     info "port $PORT is listening."
@@ -451,7 +518,7 @@ cmd_status() {
   if [ -f "$LOG_FILE" ]; then
     info "log: $LOG_FILE ($(du -h "$LOG_FILE" | cut -f1))"
   fi
-  screen_running && port_listening
+  service_running && port_listening
 }
 
 cmd_logs() {
