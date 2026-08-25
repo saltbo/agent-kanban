@@ -27,7 +27,8 @@ function hasCmd(cmd: string): boolean {
 }
 
 const canRun =
-  process.platform === "linux" && ["bash", "flock", "setsid", "ps", "kill"].every(hasCmd);
+  process.platform === "linux" &&
+  ["bash", "flock", "setsid", "ps", "kill", "sleep", "awk", "grep", "ss"].every(hasCmd);
 
 interface Instance {
   dir: string;
@@ -77,11 +78,13 @@ function startFakeService(inst: Instance): number {
   // Without this, the killed holder lingers as a zombie child of this test
   // process (spawnSync blocks the event loop), kill -0 keeps succeeding, and
   // cmd_stop's death-wait loop times out.
+  // The lock/pidfile paths are passed as positional args (not env vars) so
+  // they appear literally in the holder's /proc cmdline — that lets the
+  // failure-path cleanup find the real holder with pkill -f on the lock path.
   const child = spawn(
     "setsid",
-    ["bash", "-c", 'exec 9>"$LOCK"; flock -n 9; echo $$ > "$PID"; sleep 300 9>&9; wait'],
+    ["bash", "-c", 'exec 9>"$0"; flock -n 9; echo $$ > "$1"; sleep 300 9>&9; wait', inst.lock, inst.pidFile],
     {
-      env: { ...process.env, LOCK: inst.lock, PID: inst.pidFile },
       stdio: "ignore",
       detached: true,
     },
@@ -91,11 +94,14 @@ function startFakeService(inst: Instance): number {
   const deadline = Date.now() + 5_000;
   while (!existsSync(inst.pidFile)) {
     if (Date.now() > deadline) {
-      try {
-        process.kill(child.pid ?? 0, "SIGKILL");
-      } catch {
-        // best effort
-      }
+      // Best-effort cleanup. child.pid names the setsid wrapper, which has
+      // already exited after forking — killing it does nothing, and the real
+      // bash holder (grandchild) plus its `sleep 300` would otherwise leak
+      // for up to 5 minutes. fuser kills every process holding the lock file
+      // open (bash + the sleep that inherited fd 9); pkill -f on the unique
+      // lock path matches the bash cmdline directly.
+      spawnSync("fuser", ["-k", inst.lock], { stdio: "ignore" });
+      spawnSync("pkill", ["-9", "-f", inst.lock], { stdio: "ignore" });
       throw new Error("fake service did not write its pidfile in time");
     }
     spawnSync("sleep", ["0.05"]);
@@ -171,7 +177,7 @@ describe.skipIf(!canRun)("service_runner.sh singleton lock", () => {
     "start refuses to start with 'Already running' when the lock is held",
     () => {
       const inst = makeInstance();
-      startFakeService(inst);
+      const pid = startFakeService(inst);
 
       const result = runScript(inst, ["start"]);
       const out = outputOf(result);
@@ -182,6 +188,11 @@ describe.skipIf(!canRun)("service_runner.sh singleton lock", () => {
       // the branch's explicit `return 0` — an artifact of the artificial
       // lock-held-but-port-closed state, not of the refusal logic itself.
       expect(out).toContain("Already running");
+
+      // The refusal must leave the running instance untouched: the holder
+      // survives and the pidfile still names it.
+      expect(pidAlive(pid)).toBe(true);
+      expect(readFileSync(inst.pidFile, "utf8").trim()).toBe(String(pid));
     },
     TEST_TIMEOUT,
   );

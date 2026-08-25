@@ -412,7 +412,9 @@ cmd_start() {
 
   if service_running; then
     info "Already running (pid $(service_pid))."
-    cmd_status
+    # `|| true`: cmd_status's exit code is lock&&port; a stale port-closed
+    # state would otherwise make set -e exit 1 despite the friendly message.
+    cmd_status || true
     return 0
   fi
 
@@ -450,10 +452,13 @@ cmd_start() {
 
   step_local_start
   step_banner
-  if port_listening; then
+  # Require OUR lock, not just any listener: a foreign process on $PORT would
+  # otherwise break the wait loop on iteration 1 and print a success message
+  # while the spawned `run` is dying on vite's EADDRINUSE.
+  if service_running && port_listening; then
     info "Running in background (pid $(service_pid), port $PORT)."
   else
-    warn "Service spawned but port $PORT isn't listening yet — last log lines:"
+    warn "Service spawned but isn't healthy yet (lock held: $(service_running && echo yes || echo no), port $PORT listening: $(port_listening && echo yes || echo no)) — last log lines:"
     tail -n 20 "$LOG_FILE" >&2
     exit 1
   fi
@@ -489,7 +494,9 @@ cmd_stop() {
       kill -9 "$pid" 2>/dev/null || true
       sleep 1
     fi
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && fatal "Could not stop service process $pid."
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      fatal "Could not stop service process $pid."
+    fi
     if service_running; then
       warn "Service process is dead but a child still holds the lock — it releases when that child exits."
     fi
