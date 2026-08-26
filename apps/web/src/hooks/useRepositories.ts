@@ -6,12 +6,13 @@ export function useRepositories() {
     data: repos = [],
     isLoading: loading,
     refetch,
+    error,
   } = useQuery({
     queryKey: ["repositories"],
     queryFn: () => api.repositories.list(),
   });
 
-  return { repos, loading, refresh: refetch };
+  return { repos, loading, error, refresh: refetch };
 }
 
 export function useCreateRepository() {

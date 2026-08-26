@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AgentThread, ChatToolUIs } from "@/components/chat";
 import { api } from "../lib/api";
-import { AmaRuntimeProvider, RelayRuntimeProvider } from "./RelayRuntimeProvider";
+import { AmaRuntimeProvider } from "./AmaRuntimeProvider";
 
 const LIVE_POLL_MS = 2000;
 
@@ -59,17 +59,11 @@ interface ChatPanelProps {
   taskId: string;
   agentId: string | null;
   taskDone: boolean;
-  /** The AMA session this task is bound to (new ak runner). Present ⇒ AMA path. */
+  /** The AMA session this task is bound to. */
   amaSessionId?: string | null;
-  /** The legacy daemon relay session (old, un-upgraded ak). Absent ama ⇒ tunnel. */
-  relaySessionId?: string | null;
 }
 
-// Two clients can drive one board at once: a new ak (AMA runner) whose task is
-// bound to an AMA session, and an old, un-upgraded ak whose legacy daemon relays
-// over the tunnel. The chat renders each on its own path so neither blanks the
-// other (see the design's Backward compatibility section).
-export function ChatPanel({ taskId, agentId, taskDone, amaSessionId, relaySessionId }: ChatPanelProps) {
+export function ChatPanel({ taskId, agentId, taskDone, amaSessionId }: ChatPanelProps) {
   if (!agentId) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -80,15 +74,6 @@ export function ChatPanel({ taskId, agentId, taskDone, amaSessionId, relaySessio
 
   if (amaSessionId) {
     return <AmaSessionChat taskId={taskId} taskDone={taskDone} unavailableMessage="Session history is not available for this task." />;
-  }
-
-  if (relaySessionId) {
-    return (
-      <RelayRuntimeProvider sessionId={relaySessionId} taskDone={taskDone}>
-        <ChatToolUIs />
-        <AgentThread taskDone={taskDone} />
-      </RelayRuntimeProvider>
-    );
   }
 
   return (

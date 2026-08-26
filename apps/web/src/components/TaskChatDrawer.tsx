@@ -33,18 +33,7 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
   const currentTask = fetchedTask ?? task;
   const agentName = currentTask?.agent_name ?? "agent";
 
-  // An AMA-bound task (new ak runner) carries the ama.sessionId annotation and
-  // renders through the AMA path; an un-upgraded ak's legacy daemon has no such
-  // annotation and renders through its tunnel relay session.
-  const annotations =
-    currentTask?.metadata?.annotations && typeof currentTask.metadata.annotations === "object" ? currentTask.metadata.annotations : {};
-  const amaSessionId = typeof annotations["ama.sessionId"] === "string" ? (annotations["ama.sessionId"] as string) : null;
-  const hasAmaSession =
-    amaSessionId !== null ||
-    typeof annotations.agentSessionId === "string" ||
-    typeof annotations["ama.projectId"] === "string" ||
-    typeof annotations["ama.runtime"] === "string";
-  const relaySessionId = currentTask?.active_session_id ?? null;
+  const amaSessionId = currentTask?.runs?.find((run: { amaSessionUri?: unknown }) => typeof run.amaSessionUri === "string")?.amaSessionUri ?? null;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -77,8 +66,7 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
               taskId={taskId}
               agentId={currentTask?.assigned_to ?? null}
               taskDone={currentTask?.status === "done" || currentTask?.status === "cancelled"}
-              amaSessionId={hasAmaSession ? (amaSessionId ?? "available") : null}
-              relaySessionId={relaySessionId}
+              amaSessionId={amaSessionId}
             />
           )}
         </div>

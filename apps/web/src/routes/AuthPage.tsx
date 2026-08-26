@@ -4,6 +4,7 @@ import { Button } from "../components/ui/button";
 export function AuthPage() {
   const [params] = useSearchParams();
   const error = params.get("error");
+  const returnTo = params.get("returnTo");
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-surface-primary px-6">
@@ -16,7 +17,10 @@ export function AuthPage() {
             {error}
           </p>
         ) : null}
-        <Button className="mt-6 w-full" onClick={() => window.location.assign("/api/auth/login")}>
+        <Button
+          className="mt-6 w-full"
+          onClick={() => window.location.assign(`/api/auth/login${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ""}`)}
+        >
           Continue to Realmroot
         </Button>
       </section>

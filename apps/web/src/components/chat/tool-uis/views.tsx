@@ -38,7 +38,7 @@ import {
 import type { ComponentType, FC } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import type { SubtaskChild, TaskToolResult } from "../../RelayRuntimeProvider";
+import type { SubtaskChild, TaskToolResult } from "../../AmaRuntimeProvider";
 import { CodeBlock, FileDiff, langFromPath, Markdown, Mono, parseMcpToolName, resultText, ToolShell } from "./primitives";
 
 // ─── View contract ───────────────────────────────────────────────────────────
@@ -477,7 +477,7 @@ const SubtaskFallback: FC<{ toolName: string; input?: Record<string, unknown>; r
 // id and dispatches to TOOL_VIEWS. Text/thinking blocks render in-line.
 //
 // Note: nested subagents (Agent spawned by Agent) are flattened into the outer
-// Task's children list by RelayRuntimeProvider, so inner steps appear as
+// Task's children list is normalized by AmaRuntimeProvider, so inner steps appear as
 // siblings to the nested Agent tool_use. The nested Agent renders via the same
 // TaskToolView with no inner children — its steps are shown alongside.
 

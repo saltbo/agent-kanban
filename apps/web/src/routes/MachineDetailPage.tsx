@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { Header } from "../components/Header";
 import { MachineRuntimeAvailability } from "../components/MachineRuntimes";
 import { formatRelative } from "../components/TaskDetailFields";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { useDeleteMachine, useMachine } from "../hooks/useMachines";
+import { api } from "../lib/api";
 
 const statusDotColors: Record<string, string> = {
   online: "bg-success",
@@ -15,15 +17,28 @@ const statusDotColors: Record<string, string> = {
 export function MachineDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { machine, loading } = useMachine(id);
+  const { machine, loading, error } = useMachine(id);
   const deleteMachine = useDeleteMachine();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showReconnect, setShowReconnect] = useState(false);
+  const [runnerCommand, setRunnerCommand] = useState("ama-runner");
+
+  useEffect(() => {
+    if (!id || !machine?.environment) return;
+    void api.machines
+      .runnerCommand(id)
+      .then(setRunnerCommand)
+      .catch((error) => toast.error((error as Error).message));
+  }, [id, machine?.environment]);
 
   async function handleDelete() {
     if (!id) return;
-    await deleteMachine.mutateAsync(id);
-    navigate("/machines");
+    try {
+      await deleteMachine.mutateAsync(id);
+      navigate(`/machines${window.location.search}`);
+    } catch (error) {
+      toast.error((error as Error).message || "Failed to delete machine");
+    }
   }
 
   if (loading) {
@@ -33,6 +48,19 @@ export function MachineDetailPage() {
         <div className="max-w-4xl mx-auto p-8 space-y-6">
           <div className="h-6 w-48 bg-surface-tertiary rounded animate-pulse" />
           <div className="h-32 bg-surface-secondary border border-border rounded-lg animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-surface-primary">
+        <Header />
+        <div className="max-w-4xl mx-auto p-8">
+          <p role="alert" className="text-error text-sm">
+            {(error as Error).message}
+          </p>
         </div>
       </div>
     );
@@ -50,7 +78,6 @@ export function MachineDetailPage() {
   }
 
   const isOffline = machine.status === "offline";
-  const apiUrl = window.location.origin;
   const runtimes = machine.runtimes || [];
   const usageWindows = machine.usage_info?.windows ?? [];
 
@@ -60,7 +87,7 @@ export function MachineDetailPage() {
       <div className="max-w-4xl mx-auto p-8 space-y-6">
         {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-xs text-content-tertiary">
-          <Link to="/machines" className="hover:text-content-secondary transition-colors">
+          <Link to={`/machines${window.location.search}`} className="hover:text-content-secondary transition-colors">
             Machines
           </Link>
           <span>/</span>
@@ -90,7 +117,13 @@ export function MachineDetailPage() {
             <div className="flex items-center justify-between">
               <span className="text-[11px] text-content-tertiary uppercase tracking-wide">Last Heartbeat</span>
               <span className="font-mono text-xs text-content-primary">
-                {machine.last_heartbeat_at ? formatRelative(machine.last_heartbeat_at) : "—"}
+                {machine.last_heartbeat_at ? (
+                  <span title={machine.last_heartbeat_at}>
+                    {formatRelative(machine.last_heartbeat_at)} · {machine.last_heartbeat_at.slice(0, 10)}
+                  </span>
+                ) : (
+                  "—"
+                )}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -113,7 +146,7 @@ export function MachineDetailPage() {
           <div className="bg-warning/5 border border-warning/20 rounded-lg p-4 flex items-center justify-between">
             <div>
               <div className="text-sm font-medium text-warning">Machine is offline</div>
-              <p className="text-xs text-content-secondary mt-0.5">Restart the daemon on this machine to bring it back online.</p>
+              <p className="text-xs text-content-secondary mt-0.5">Restart AMA Runner on this machine to bring it back online.</p>
             </div>
             <Button variant="outline" size="sm" onClick={() => setShowReconnect(true)}>
               Reconnect
@@ -142,7 +175,7 @@ export function MachineDetailPage() {
               {(machine.agents || []).map((agent: any) => (
                 <Link
                   key={agent.id}
-                  to={`/agents/${agent.id}`}
+                  to={`/agents/${agent.id}${window.location.search}`}
                   className={`flex items-center justify-between bg-surface-secondary border rounded-lg px-4 py-3 hover:border-accent/30 transition-colors ${
                     agent.active_session_count > 0 ? "border-accent/30 shadow-[0_0_16px_rgba(34,211,238,0.06)]" : "border-border"
                   }`}
@@ -170,17 +203,56 @@ export function MachineDetailPage() {
           )}
         </div>
 
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="bg-surface-secondary border border-border rounded-lg px-5 py-4">
+            <div className="text-[11px] font-medium text-content-tertiary uppercase tracking-wide mb-3">Runners</div>
+            {(machine.runners ?? []).length === 0 ? (
+              <p className="text-sm text-content-tertiary">No active runners.</p>
+            ) : (
+              <div className="space-y-2">
+                {(machine.runners ?? []).map((runner: any) => (
+                  <div key={runner.id} className="flex items-center justify-between text-xs">
+                    <span className="font-mono text-content-primary">{runner.name}</span>
+                    <span className="font-mono text-content-tertiary">
+                      {runner.currentLoad ?? 0}/{runner.maxConcurrent ?? 0} · {runner.state}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="bg-surface-secondary border border-border rounded-lg px-5 py-4">
+            <div className="text-[11px] font-medium text-content-tertiary uppercase tracking-wide mb-3">Sessions</div>
+            {(machine.sessions ?? []).length === 0 ? (
+              <p className="text-sm text-content-tertiary">No sessions on this machine.</p>
+            ) : (
+              <div className="space-y-2">
+                {(machine.sessions ?? []).map((session: any) => (
+                  <div key={session.metadata?.uid ?? session.id} className="flex items-center justify-between text-xs">
+                    <span className="font-mono text-content-primary">{session.metadata?.name ?? session.metadata?.uid ?? session.id}</span>
+                    <span className="font-mono text-content-tertiary">{session.status?.phase ?? "unknown"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Danger zone */}
         <div className="border-t border-border pt-5">
           <div className="flex items-center justify-between gap-4">
             <div>
               <div className="text-[11px] font-medium text-error uppercase tracking-wide">Danger Zone</div>
-              <p className="mt-1 text-xs text-content-tertiary">
-                Remove this machine from the workspace. Its Realmroot grant is managed in Realmroot.
-              </p>
+              <p className="mt-1 text-xs text-content-tertiary">Delete this AMA Environment. Realmroot identity and grants are not changed.</p>
             </div>
-            <Button variant="outline" size="sm" className="border-error/30 text-error hover:bg-error/10" onClick={() => setShowDeleteDialog(true)}>
-              Delete Machine
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={machine.runner_only}
+              className="border-error/30 text-error hover:bg-error/10"
+              onClick={() => setShowDeleteDialog(true)}
+            >
+              {machine.runner_only ? "Runner managed by AMA" : "Delete Machine"}
             </Button>
           </div>
         </div>
@@ -195,9 +267,9 @@ export function MachineDetailPage() {
           </DialogHeader>
           <div className="space-y-3">
             <pre className="bg-surface-primary border border-border rounded-lg p-3 text-xs font-mono text-content-secondary overflow-x-auto whitespace-pre-wrap break-all">
-              {`ak start --api-url ${apiUrl}`}
+              {runnerCommand}
             </pre>
-            <Button variant="outline" className="w-full" onClick={() => navigator.clipboard.writeText(`ak start --api-url ${apiUrl}`)}>
+            <Button variant="outline" className="w-full" onClick={() => navigator.clipboard.writeText(runnerCommand)}>
               Copy to clipboard
             </Button>
           </div>
@@ -208,10 +280,10 @@ export function MachineDetailPage() {
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Delete Machine</DialogTitle>
+            <DialogTitle>Delete AMA Environment</DialogTitle>
             <DialogDescription>
-              This will remove <span className="font-mono text-content-primary">{machine.name}</span> from AK. The runtime will stop authenticating
-              and any running agents will lose access.
+              This permanently deletes <span className="font-mono text-content-primary">{machine.name}</span> from AMA. Attached Runners must be moved
+              or stopped first, and AMA may reject deletion while Sessions are active.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

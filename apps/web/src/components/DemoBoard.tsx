@@ -162,7 +162,7 @@ function seqReject(t: number, li: number, ti: number): TE[] {
   return seqLeaderDrag(t, li, ti, "in_progress", { status: "in_progress", glow_suppressed: true });
 }
 function seqCancel(t: number, li: number, ti: number): TE[] {
-  return seqLeaderDrag(t, li, ti, "cancelled", { status: "cancelled" });
+  return seqLeaderDrag(t, li, ti, "queued", { status: "queued" });
 }
 
 // Worker reclaims after reject: fly → absorb (1.5s)
@@ -221,13 +221,13 @@ const DONE_DELAY = Math.max(...T.map((e) => e.delay)) + 1000;
 
 // ─── Hook ───
 
-const STATUSES = ["todo", "in_progress", "in_review", "done", "cancelled"] as const;
+const STATUSES = ["todo", "queued", "in_progress", "in_review", "done"] as const;
 const LABELS: Record<string, string> = {
   todo: "Todo",
+  queued: "Queued",
   in_progress: "In Progress",
   in_review: "In Review",
   done: "Done",
-  cancelled: "Cancelled",
 };
 
 function useDemoSequence() {

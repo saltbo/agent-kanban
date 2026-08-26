@@ -15,7 +15,7 @@ interface TaskCardProps {
 
 export function TaskCard({ task, labels = [], onClick, onAgentClick, isNew }: TaskCardProps) {
   const isAssigned = !!task.assigned_to;
-  const isWorking = isAssigned && !!task.agent_public_key && task.status === "in_progress" && !task.glow_suppressed;
+  const isWorking = isAssigned && !!task.assignee_identity_key && task.status === "in_progress" && !task.glow_suppressed;
   const labelByName = new Map(labels.map((label) => [label.name, label]));
 
   return (
@@ -42,10 +42,10 @@ export function TaskCard({ task, labels = [], onClick, onAgentClick, isNew }: Ta
         ${isNew ? "animate-card-highlight" : ""}
       `}
       style={
-        isWorking && task.agent_public_key
+        isWorking && task.assignee_identity_key
           ? {
-              borderColor: `color-mix(in srgb, ${agentColor(task.agent_public_key)} 30%, transparent)`,
-              boxShadow: `0 0 20px color-mix(in srgb, ${agentColor(task.agent_public_key)} 12%, transparent)`,
+              borderColor: `color-mix(in srgb, ${agentColor(task.assignee_identity_key)} 30%, transparent)`,
+              boxShadow: `0 0 20px color-mix(in srgb, ${agentColor(task.assignee_identity_key)} 12%, transparent)`,
             }
           : undefined
       }
@@ -91,14 +91,16 @@ export function TaskCard({ task, labels = [], onClick, onAgentClick, isNew }: Ta
                 isWorking ? "text-accent" : "text-content-tertiary"
               }`}
               onClick={(event) => {
-                event.stopPropagation();
-                onAgentClick?.(task);
+                if (onAgentClick) {
+                  event.stopPropagation();
+                  onAgentClick(task);
+                }
               }}
-              aria-label={`Open chat with ${task.agent_name || task.assigned_to}`}
+              aria-label={`Assigned to ${task.agent_name || task.assigned_to}`}
             >
-              {task.agent_public_key && (
+              {task.assignee_identity_key && (
                 <div className="shrink-0 transition-[filter] duration-500" style={{ filter: isWorking ? "none" : "grayscale(1) opacity(0.5)" }}>
-                  <AgentIdenticon publicKey={task.agent_public_key} size={12} />
+                  <AgentIdenticon publicKey={task.assignee_identity_key} size={12} />
                 </div>
               )}
               {isWorking && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-glow shrink-0" />}

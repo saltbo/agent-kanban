@@ -1,39 +1,35 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import duration from "dayjs/plugin/duration";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
 import "highlight.js/styles/github-dark-dimmed.min.css";
 
 dayjs.extend(duration);
 
-import { useSSE } from "../hooks/useSSE";
 import { api } from "../lib/api";
 import { ActivityLog } from "./ActivityLog";
 import { AgentIdenticon } from "./AgentIdenticon";
 import { LabelChip } from "./LabelChip";
 import { SubtaskList } from "./SubtaskList";
-import { TaskChatDrawer } from "./TaskChatDrawer";
 import { Field, FieldLabel, formatRelative } from "./TaskDetailFields";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Separator } from "./ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./ui/sheet";
 import { Skeleton } from "./ui/skeleton";
+import { Textarea } from "./ui/textarea";
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   todo: "Todo",
+  queued: "Queued",
   in_progress: "In Progress",
   in_review: "In Review",
   done: "Done",
-  cancelled: "Cancelled",
-};
-
-const REVIEW_ACTIONS = {
-  reject: { label: "Reject", variant: "outline" as const },
-  complete: { label: "Complete", variant: "default" as const },
 };
 
 const TASK_DETAIL_SHEET_CLASS = "overflow-hidden p-0 gap-0 !w-[60%] max-md:!w-full";
@@ -82,22 +78,24 @@ function LiveDuration({ startedAt, finishedMinutes }: { startedAt: string | null
   return <span className="font-mono text-[13px]">{formatElapsed(finishedMinutes! * 60_000)}</span>;
 }
 
-function annotationValue(task: any, key: string): string | null {
-  const annotations = task?.metadata?.annotations;
-  if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) return null;
-  const value = annotations[key];
-  return typeof value === "string" && value ? value : null;
-}
-
 export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentClick: _onAgentClick }: TaskDetailProps) {
   const queryClient = useQueryClient();
-  const [chatOpen, setChatOpen] = useState(false);
-  const { notes: sseNotes, reconnecting } = useSSE({ taskId, enabled: true });
   const labelByName = new Map(labels.map((label) => [label.name, label]));
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewFeedback, setReviewFeedback] = useState("");
+  const [reviewing, setReviewing] = useState(false);
+  const openReviewRef = useRef<HTMLButtonElement>(null);
 
-  const { data: task, isLoading: loading } = useQuery({
+  const {
+    data: task,
+    isLoading: loading,
+    error: taskError,
+    refetch: refetchTask,
+  } = useQuery({
     queryKey: ["task", taskId],
     queryFn: () => api.tasks.get(taskId),
+    refetchInterval: 5_000,
+    retry: false,
   });
 
   const { data: repositories = [] } = useQuery({
@@ -121,11 +119,22 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
     await queryClient.invalidateQueries({ queryKey: ["task", taskId] });
   }
 
-  async function handleReviewAction(action: "reject" | "complete") {
-    if (action === "reject") await api.tasks.reject(taskId);
-    else await api.tasks.complete(taskId);
-    await reload();
-    onRefresh();
+  async function submitReview(decision: "accepted" | "rejected") {
+    if (!reviewFeedback.trim()) return;
+    setReviewing(true);
+    try {
+      if (decision === "rejected") await api.tasks.reject(taskId, reviewFeedback.trim());
+      else await api.tasks.complete(taskId, reviewFeedback.trim() || "Accepted from Agent Kanban.");
+      setReviewOpen(false);
+      setReviewFeedback("");
+      await reload();
+      onRefresh();
+      onClose();
+    } catch (error) {
+      toast.error((error as Error).message || "Failed to review task");
+    } finally {
+      setReviewing(false);
+    }
   }
 
   const content = loading ? (
@@ -133,6 +142,13 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
       <Skeleton className="h-6 w-3/4" />
       <Skeleton className="h-4 w-1/2" />
       <Skeleton className="h-20 w-full" />
+    </div>
+  ) : taskError && !task ? (
+    <div role="alert" className="p-6 text-error">
+      {(taskError as Error).message}
+      <Button variant="link" onClick={() => void refetchTask()} className="ml-2">
+        Retry
+      </Button>
     </div>
   ) : !task ? (
     <div className="p-6">
@@ -163,16 +179,24 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
   const repo = repositories.find((r: any) => r.id === task.repository_id);
 
   const agentDisplay = task.agent_name ? (
-    <button className="flex items-center gap-1.5 cursor-pointer group" onClick={() => setChatOpen(true)} type="button">
-      {task.agent_public_key && <AgentIdenticon publicKey={task.agent_public_key} size={20} />}
+    <span className="flex items-center gap-1.5">
+      {task.assignee_identity_key && <AgentIdenticon publicKey={task.assignee_identity_key} size={20} />}
       <span className="font-mono text-[13px] text-accent group-hover:underline">{task.agent_name}</span>
-    </button>
+    </span>
   ) : (
     <span className="text-content-tertiary">—</span>
   );
 
   const detailsContent = (
     <div className="p-5 space-y-4">
+      {taskError ? (
+        <div role="status" className="rounded-md border border-warning/20 bg-warning/5 p-3 text-xs text-warning">
+          Some task details could not be refreshed. Existing data is still shown.
+          <button onClick={() => void refetchTask()} className="ml-2 underline">
+            Retry
+          </button>
+        </div>
+      ) : null}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <div>
           <FieldLabel>Status</FieldLabel>
@@ -216,13 +240,16 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
 
       {task.status === "in_review" && (
         <div className="flex gap-2">
-          {(Object.entries(REVIEW_ACTIONS) as [keyof typeof REVIEW_ACTIONS, (typeof REVIEW_ACTIONS)[keyof typeof REVIEW_ACTIONS]][]).map(
-            ([action, config]) => (
-              <Button key={action} variant={config.variant} size="sm" onClick={() => handleReviewAction(action)}>
-                {config.label}
-              </Button>
-            ),
-          )}
+          <Button
+            ref={openReviewRef}
+            size="sm"
+            onClick={() => {
+              setReviewFeedback("");
+              setReviewOpen(true);
+            }}
+          >
+            OPEN REVIEW
+          </Button>
         </div>
       )}
 
@@ -261,6 +288,30 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
         </div>
       )}
 
+      {task.submissions?.length > 0 && (
+        <div>
+          <FieldLabel>Submissions</FieldLabel>
+          <div className="space-y-2">
+            {task.submissions.map((submission: any) => (
+              <div key={submission.id} className="rounded-md border border-border bg-surface-primary p-3 text-[13px] text-content-secondary">
+                <p>{submission.summary}</p>
+                {(submission.artifactUrls ?? []).map((url: string) => (
+                  <a
+                    key={url}
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 block break-all font-mono text-xs text-accent hover:underline"
+                  >
+                    {url}
+                  </a>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {task.subtask_count > 0 && (
         <>
           <Separator />
@@ -280,7 +331,7 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
 
       <div>
         <FieldLabel>Activity</FieldLabel>
-        <ActivityLog initialNotes={task.notes || []} sseNotes={sseNotes} reconnecting={reconnecting} />
+        <ActivityLog initialNotes={task.notes || []} sseNotes={[]} reconnecting={false} />
       </div>
 
       <Separator />
@@ -292,10 +343,10 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
       <Sheet
         open
         onOpenChange={(open) => {
-          if (!open) onClose();
+          if (!open && !reviewOpen) onClose();
         }}
       >
-        <SheetContent showCloseButton={false} className={`${TASK_DETAIL_SHEET_CLASS} ${chatOpen ? "!w-[calc(60%+3rem)]" : ""}`}>
+        <SheetContent showCloseButton={false} className={TASK_DETAIL_SHEET_CLASS}>
           <SheetTitle className="sr-only">{task.title}</SheetTitle>
           <SheetDescription className="sr-only">Task detail panel</SheetDescription>
 
@@ -331,27 +382,45 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
 
             {detailsContent}
           </div>
-
-          {/* Dim mask when chat drawer is open */}
-          {chatOpen && (
-            <div
-              className="absolute inset-0 bg-black/10 backdrop-blur-xs z-10 transition-opacity duration-200 cursor-pointer"
-              onClick={() => setChatOpen(false)}
-            />
-          )}
         </SheetContent>
       </Sheet>
-
-      {task.assigned_to && (
-        <TaskChatDrawer
-          open={chatOpen}
-          onOpenChange={setChatOpen}
-          taskId={taskId}
-          task={task}
-          showOverlay={false}
-          className="z-[60] !w-[50%] max-md:!w-full"
-        />
-      )}
+      <Dialog
+        open={reviewOpen}
+        onOpenChange={(open) => {
+          if (reviewing) return;
+          setReviewOpen(open);
+          if (!open) requestAnimationFrame(() => openReviewRef.current?.focus());
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>REVIEW SUBMISSION</DialogTitle>
+            <DialogDescription>Leave review feedback, then reject the submission or complete the task.</DialogDescription>
+          </DialogHeader>
+          <label htmlFor={`review-feedback-${taskId}`} className="text-xs text-content-secondary">
+            Review feedback
+          </label>
+          <Textarea
+            id={`review-feedback-${taskId}`}
+            autoFocus
+            value={reviewFeedback}
+            onChange={(event) => setReviewFeedback(event.target.value)}
+            placeholder="Required feedback"
+            rows={4}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReviewOpen(false)} disabled={reviewing}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => void submitReview("rejected")} disabled={reviewing || !reviewFeedback.trim()}>
+              {reviewing ? "Submitting..." : "REJECT"}
+            </Button>
+            <Button onClick={() => void submitReview("accepted")} disabled={reviewing || !reviewFeedback.trim()}>
+              {reviewing ? "Submitting..." : "COMPLETE"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

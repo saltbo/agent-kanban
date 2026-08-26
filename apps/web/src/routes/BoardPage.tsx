@@ -1,32 +1,25 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { AgentProfile } from "../components/AgentProfile";
 import { FilterBar } from "../components/FilterBar";
-import { AgentAvatarOverlay } from "../components/FloatingAvatar";
 import { Header } from "../components/Header";
 import { KanbanColumn } from "../components/KanbanColumn";
-import { TaskChatDrawer } from "../components/TaskChatDrawer";
 import { TaskDetail } from "../components/TaskDetail";
-import { useAgentPresence } from "../hooks/useAgentPresence";
 import { useBoard } from "../hooks/useBoard";
 
-const TASK_STATUSES = ["todo", "in_progress", "in_review", "done", "cancelled"] as const;
+const TASK_STATUSES = ["todo", "queued", "in_progress", "in_review", "done"] as const;
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   todo: "Todo",
+  queued: "Queued",
   in_progress: "In Progress",
   in_review: "In Review",
   done: "Done",
-  cancelled: "Cancelled",
 };
 
 export function BoardPage() {
   const { boardId } = useParams<{ boardId: string }>();
   const { board, loading, error, refresh } = useBoard(boardId);
-  const avatars = useAgentPresence(boardId);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-  const [chatTask, setChatTask] = useState<any | null>(null);
   const [activeRepository, setActiveRepository] = useState<string | null>(null);
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState(0);
@@ -81,6 +74,20 @@ export function BoardPage() {
     );
   }
 
+  if (error) {
+    return (
+      <div className="min-h-screen bg-surface-primary">
+        <Header />
+        <div role="alert" className="mx-auto mt-8 max-w-4xl rounded-lg border border-error/30 bg-error/5 p-4 text-sm text-error">
+          {error}
+          <button onClick={() => void refresh()} className="ml-2 underline">
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!board) {
     return (
       <div className="min-h-screen bg-surface-primary">
@@ -102,15 +109,6 @@ export function BoardPage() {
         onLabelChange={setActiveLabel}
       />
 
-      {error && (
-        <div className="mx-5 mt-3 px-4 py-2 bg-error/10 border-l-2 border-error text-error text-sm rounded">
-          {error}
-          <button onClick={() => refresh()} className="ml-2 underline">
-            Retry
-          </button>
-        </div>
-      )}
-
       {/* Mobile tab switcher */}
       <div className="flex md:hidden border-b border-border">
         {columns.map((col, i) => (
@@ -129,7 +127,7 @@ export function BoardPage() {
       {/* Desktop: 5-column grid */}
       <div className="hidden md:grid flex-1 overflow-hidden" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
         {columns.map((col) => (
-          <KanbanColumn key={col.status} column={col} labels={board.labels ?? []} onTaskClick={setSelectedTask} onAgentClick={setChatTask} />
+          <KanbanColumn key={col.status} column={col} labels={board.labels ?? []} onTaskClick={setSelectedTask} />
         ))}
       </div>
 
@@ -138,45 +136,11 @@ export function BoardPage() {
         {columns
           .filter((_, i) => i === mobileTab)
           .map((col) => (
-            <KanbanColumn key={col.status} column={col} labels={board.labels ?? []} onTaskClick={setSelectedTask} onAgentClick={setChatTask} />
+            <KanbanColumn key={col.status} column={col} labels={board.labels ?? []} onTaskClick={setSelectedTask} />
           ))}
       </div>
 
-      <AgentAvatarOverlay avatars={avatars} />
-
-      {selectedTask && (
-        <TaskDetail
-          taskId={selectedTask}
-          labels={board.labels ?? []}
-          onClose={() => setSelectedTask(null)}
-          onRefresh={refresh}
-          onAgentClick={(agentId) => {
-            setSelectedTask(null);
-            setSelectedAgent(agentId);
-          }}
-        />
-      )}
-
-      <TaskChatDrawer
-        open={!!chatTask}
-        onOpenChange={(open) => {
-          if (!open) setChatTask(null);
-        }}
-        taskId={chatTask?.id ?? null}
-        task={chatTask}
-        className="!w-[50%] max-md:!w-full"
-      />
-
-      {selectedAgent && (
-        <AgentProfile
-          agentId={selectedAgent}
-          onClose={() => setSelectedAgent(null)}
-          onTaskClick={(taskId) => {
-            setSelectedAgent(null);
-            setSelectedTask(taskId);
-          }}
-        />
-      )}
+      {selectedTask && <TaskDetail taskId={selectedTask} labels={board.labels ?? []} onClose={() => setSelectedTask(null)} onRefresh={refresh} />}
     </div>
   );
 }

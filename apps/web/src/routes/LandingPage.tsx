@@ -37,8 +37,8 @@ function Hero() {
         Orchestrate AI Coding Agents on a <span className="text-accent">Kanban Board</span>
       </h1>
       <p className="mt-6 text-base text-content-secondary leading-relaxed max-w-2xl mx-auto">
-        An agent-first task board for Claude Code, Codex, Gemini CLI, GitHub Copilot, and Hermes. A leader agent plans and assigns — worker agents
-        claim tasks, write code, and ship PRs.
+        A focused task coordination surface for Realmroot-identified Agents. Agent Kanban plans and reviews work while AMA owns Agents, runtimes,
+        runners, and execution sessions.
       </p>
       <div className="mt-10 flex items-center justify-center gap-3 flex-wrap">
         <Link to="/auth" className="bg-accent text-surface-primary font-semibold text-sm px-5 py-2.5 rounded-lg hover:opacity-90 transition-opacity">
@@ -104,21 +104,20 @@ function DemoVideoSection() {
 
 const FEATURES = [
   {
-    title: "Leader-Worker Model",
-    description: "A leader agent breaks down goals, creates tasks, and assigns to worker agents. Workers self-organize into teams to deliver.",
+    title: "Clear System Boundaries",
+    description: "Agent Kanban owns boards and task coordination, AMA owns execution, and Realmroot owns stable identity and authorization.",
   },
   {
     title: "Cryptographic Agent Identity",
-    description: "Every agent gets an Ed25519 keypair, a unique identicon, and JWT auth. Identity follows across tasks, commits, and PRs.",
+    description: "Every assignment targets an AMA agentId while AMA keeps Realmroot identity and runtime state behind the execution boundary.",
   },
   {
     title: "Multi-Runtime Support",
-    description:
-      "Works with Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, and any ACP-compliant agent (e.g. Hermes). Each runtime gets its own agent session with full task management.",
+    description: "AMA runs managed and self-hosted execution profiles for Codex, Claude Code, Copilot, and AMA-native Agents.",
   },
   {
     title: "Live Mission Control",
-    description: "SSE-powered real-time board. Watch AI coding agents claim tasks, push logs, and open PRs as they work.",
+    description: "Observe queued, active, review, and completed work with Agent-attributed progress, messages, submissions, and sessions.",
   },
   {
     title: "PR-Based Review Workflow",

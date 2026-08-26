@@ -19,7 +19,7 @@ import type {
 import { ToolName } from "@agent-kanban/shared";
 import { makeAssistantToolUI } from "@assistant-ui/react";
 import type { FC } from "react";
-import type { TaskToolResult } from "../../RelayRuntimeProvider";
+import type { TaskToolResult } from "../../AmaRuntimeProvider";
 import {
   AskUserQuestionToolView,
   BashToolView,

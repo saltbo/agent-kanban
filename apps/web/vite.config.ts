@@ -23,7 +23,7 @@ export default defineConfig({
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      "@agent-kanban/shared": path.resolve(__dirname, "../../packages/shared/src"),
+      "@agent-kanban/shared": path.resolve(__dirname, "./src/lib/ui-contract.ts"),
     },
   },
 });

@@ -139,17 +139,9 @@ export function useAgentPresenceFromEvents(events: BoardAction[], boardId: strin
       // Agent events have identity directly
       if (event.actor_type?.startsWith("agent:") && event.actor_public_key) {
         runChoreography(event, sequence);
-        continue;
       }
 
-      // Non-agent events (machine/user): use the leader who assigned this task as avatar
-      const leader = events.find((e) => e.task_id === event.task_id && e.actor_type === "agent:leader" && e.actor_public_key);
-      if (leader) {
-        runChoreography(
-          { ...event, actor_id: leader.actor_id, actor_name: leader.actor_name ?? null, actor_public_key: leader.actor_public_key! },
-          sequence,
-        );
-      }
+      // Human and system events do not synthesize an Agent identity.
     }
   }, [events, runChoreography]);
 

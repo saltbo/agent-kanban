@@ -7,7 +7,8 @@ import { defineConfig } from "vite";
 
 const port = Number(process.env.VITE_DEV_PORT) || 6265;
 const origin = `http://localhost:${port}`;
-const amaOrigin = process.env.E2E_AMA_ORIGIN ?? "http://127.0.0.1:6266";
+const statePath = process.env.AK_E2E_STATE;
+const wranglerConfig = process.env.AK_E2E_WRANGLER_CONFIG;
 const gitSha = execSync("git rev-parse --short HEAD").toString().trim();
 
 export default defineConfig({
@@ -15,16 +16,14 @@ export default defineConfig({
     react(),
     tailwindcss(),
     cloudflare({
-      configPath: "../../tests/helpers/wrangler.ak-e2e.jsonc",
-      persistState: { path: path.resolve(__dirname, ".wrangler/state") },
+      configPath: wranglerConfig,
+      persistState: statePath ? { path: statePath } : true,
       config: (config) => ({
         vars: {
           ...config.vars,
           AK_API_URL: origin,
           AK_RESOURCE: `${origin}/api`,
           ALLOWED_HOSTS: `localhost:${port}`,
-          AMA_ORIGIN: amaOrigin,
-          AMA_RESOURCE: `${amaOrigin}/api`,
           REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
         },
       }),
@@ -36,7 +35,7 @@ export default defineConfig({
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      "@agent-kanban/shared": path.resolve(__dirname, "../../packages/shared/src"),
+      "@agent-kanban/shared": path.resolve(__dirname, "./src/lib/ui-contract.ts"),
     },
   },
 });

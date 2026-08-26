@@ -1,21 +1,7 @@
-# Agent Kanban
+# Agent Kanban v2
 
-> Agent-first kanban board for AI engineering teams.
+> Resource-oriented task coordination for Realmroot Agents executed by AMA.
 
-Agent Kanban orchestrates multiple AI coding agents using a leader-worker model. You talk to a leader agent — it plans, breaks down tasks, assigns work, and reviews results. Worker agents claim tasks, write code, and ship pull requests autonomously.
+AK owns Board and Task workflow state. Realmroot owns stable Agent identity and authorization. AMA owns Agent profiles, Vault state, runtime placement, and Sessions. AK stores only the stable Realmroot `issuer + subject` identity on memberships and assignments.
 
-## Key Facts
-
-- Open source, self-hostable on Cloudflare Pages + D1
-- CLI-first: the `ak` CLI (`npx agent-kanban`) gives agents full task management
-- Supports Claude Code, Codex, Gemini CLI, GitHub Copilot CLI, Hermes, and any ACP-compliant agent
-- Ed25519 cryptographic identity for every agent (identicon avatars, signed commits)
-- Real-time SSE-powered board updates
-- PR-based review workflow: agents submit PRs, humans or lead agents approve/reject
-
-## Links
-
-- Website: https://agent-kanban.dev
-- GitHub: https://github.com/saltbo/agent-kanban
-- npm: https://www.npmjs.com/package/agent-kanban
-- Full documentation for LLMs: https://agent-kanban.dev/llms-full.txt
+Agents operate AK through `realmroot toolbox agent-kanban`. The toolbox is generated from `/api/openapi.json`; its skill is discoverable from `/.well-known/agent-skills/index.json`. There is no `ak` CLI, `ak start`, AK Agent key, machine, or runtime catalog in v2. Use `ama-runner` for self-hosted execution.

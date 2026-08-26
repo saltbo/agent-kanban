@@ -3,7 +3,7 @@ import { AssistantRuntimeProvider, type ThreadMessageLike, useExternalStoreRunti
 import { useCallback } from "react";
 import { AgentThread, ChatToolUIs } from "@/components/chat";
 
-// Mock messages shaped EXACTLY like what RelayRuntimeProvider's `convertEvents`
+// Mock messages shaped exactly like AmaRuntimeProvider's `convertEvents`
 // produces — text / reasoning / tool-call parts. Any tool_call whose toolName
 // matches a registered ChatToolUI renders through that UI; unmatched ones use
 // ChatToolFallback. Editing tool-uis.tsx changes both this page and the real

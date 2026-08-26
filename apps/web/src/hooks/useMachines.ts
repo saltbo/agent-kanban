@@ -1,18 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, selectedAmaConnection } from "../lib/api";
 
 export function useMachines() {
   const {
     data: machines = [],
     isLoading: loading,
     refetch,
+    error,
   } = useQuery({
-    queryKey: ["machines"],
+    queryKey: ["machines", selectedAmaConnection()],
     queryFn: () => api.machines.list(),
     refetchInterval: 15_000,
+    retry: false,
   });
 
-  return { machines, loading, refresh: refetch };
+  return { machines, loading, error, refresh: refetch };
 }
 
 export function useMachine(id: string | undefined) {
@@ -20,14 +22,16 @@ export function useMachine(id: string | undefined) {
     data: machine = null,
     isLoading: loading,
     refetch,
+    error,
   } = useQuery({
-    queryKey: ["machine", id],
+    queryKey: ["machine", selectedAmaConnection(), id],
     queryFn: () => api.machines.get(id!),
     enabled: !!id,
-    refetchInterval: 15_000,
+    refetchInterval: 5_000,
+    retry: false,
   });
 
-  return { machine, loading, refresh: refetch };
+  return { machine, loading, error, refresh: refetch };
 }
 
 export function useDeleteMachine() {

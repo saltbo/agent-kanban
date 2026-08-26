@@ -1,32 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, selectedAmaConnection } from "../lib/api";
 
 export function useAgents() {
   const {
     data: agents = [],
     isLoading: loading,
     refetch,
+    error,
   } = useQuery({
-    queryKey: ["agents"],
+    queryKey: ["agents", selectedAmaConnection()],
     queryFn: () => api.agents.list(),
     refetchInterval: 15_000,
+    retry: false,
   });
 
-  return { agents, loading, refresh: refetch };
-}
-
-export function useSubagents() {
-  const {
-    data: subagents = [],
-    isLoading: loading,
-    refetch,
-  } = useQuery({
-    queryKey: ["subagents"],
-    queryFn: () => api.subagents.list(),
-    refetchInterval: 15_000,
-  });
-
-  return { subagents, loading, refresh: refetch };
+  return { agents, loading, error, refresh: refetch };
 }
 
 export function useAgent(id: string | undefined) {
@@ -34,19 +22,21 @@ export function useAgent(id: string | undefined) {
     data: agent = null,
     isLoading: loading,
     refetch,
+    error,
   } = useQuery({
-    queryKey: ["agent", id],
+    queryKey: ["agent", selectedAmaConnection(), id],
     queryFn: () => api.agents.get(id!),
     enabled: !!id,
     refetchInterval: 15_000,
+    retry: false,
   });
 
-  return { agent, loading, refresh: refetch };
+  return { agent, loading, error, refresh: refetch };
 }
 
 export function useAgentSessions(agentId: string | undefined) {
   const { data: sessions = [] } = useQuery({
-    queryKey: ["agent-sessions", agentId],
+    queryKey: ["agent-sessions", selectedAmaConnection(), agentId],
     queryFn: () => api.agents.sessions(agentId!),
     enabled: !!agentId,
     refetchInterval: 15_000,
@@ -84,7 +74,7 @@ export function useUpdateAgent() {
     mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) => api.agents.update(id, body),
     onSuccess: (_data, { id }) => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
-      queryClient.invalidateQueries({ queryKey: ["agent", id] });
+      queryClient.invalidateQueries({ queryKey: ["agent", selectedAmaConnection(), id] });
     },
   });
 }
@@ -96,40 +86,6 @@ export function useDeleteAgent() {
     mutationFn: (id: string) => api.agents.delete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
-    },
-  });
-}
-
-export function useCreateSubagent() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: api.subagents.create,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["subagents"] });
-    },
-  });
-}
-
-export function useUpdateSubagent() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Parameters<typeof api.subagents.update>[1] }) => api.subagents.update(id, body),
-    onSuccess: (_data, { id }) => {
-      queryClient.invalidateQueries({ queryKey: ["subagents"] });
-      queryClient.invalidateQueries({ queryKey: ["subagent", id] });
-    },
-  });
-}
-
-export function useDeleteSubagent() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: (id: string) => api.subagents.delete(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["subagents"] });
     },
   });
 }

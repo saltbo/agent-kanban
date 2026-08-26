@@ -1,0 +1,201 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "tw-shimmer";
+
+/* ── Our design tokens ── */
+
+:root {
+  --bg-primary: #FAFAFA;
+  --bg-secondary: #F4F4F5;
+  --bg-tertiary: #E4E4E7;
+  --bg-card: #FFFFFF;
+  --text-primary: #09090B;
+  --text-secondary: #52525B;
+  --text-tertiary: #A1A1AA;
+  --accent: #0891B2;
+  --accent-soft: rgba(8, 145, 178, 0.1);
+  --accent-glow: rgba(34, 211, 238, 0.15);
+}
+
+.dark {
+  --bg-primary: #09090B;
+  --bg-secondary: #18181B;
+  --bg-tertiary: #27272A;
+  --bg-card: #18181B;
+  --text-primary: #FAFAFA;
+  --text-secondary: #A1A1AA;
+  --text-tertiary: #71717A;
+  --accent: #22D3EE;
+  --accent-soft: rgba(34, 211, 238, 0.1);
+  --accent-glow: rgba(34, 211, 238, 0.12);
+}
+
+html {
+  background-color: var(--bg-primary);
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: "Geist", system-ui, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* ── Tailwind v4 theme extensions ── */
+
+@theme {
+  --font-sans: "Geist Variable", sans-serif;
+  --font-mono: "Geist Mono", monospace;
+
+  --color-surface-primary: var(--bg-primary);
+  --color-surface-secondary: var(--bg-secondary);
+  --color-surface-tertiary: var(--bg-tertiary);
+  --color-surface-card: var(--bg-card);
+
+  --color-content-primary: var(--text-primary);
+  --color-content-secondary: var(--text-secondary);
+  --color-content-tertiary: var(--text-tertiary);
+
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+
+  --color-success: #22C55E;
+  --color-warning: #EAB308;
+  --color-error: #EF4444;
+
+  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
+  --animate-card-highlight: card-highlight 1s ease-out forwards;
+  --animate-breathe: breathe 3s ease-in-out infinite;
+  --animate-avatar-arrive: avatar-arrive 300ms ease-out forwards;
+  --animate-avatar-leave: avatar-leave 300ms ease-in forwards;
+
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  @keyframes card-highlight {
+    0% { border-color: var(--accent); }
+    100% { border-color: var(--border); }
+  }
+  @keyframes breathe {
+    0%, 100% { box-shadow: var(--breathe-shadow-max); }
+    50% { box-shadow: var(--breathe-shadow-min); }
+  }
+  @keyframes avatar-arrive {
+    from { opacity: 0; transform: scale(0.3); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes avatar-leave {
+    from { opacity: 1; transform: scale(1); }
+    to { opacity: 0; transform: scale(0.3); }
+  }
+  @keyframes avatar-absorb {
+    0% { opacity: 1; transform: scale(1); }
+    60% { opacity: 0.8; transform: scale(0.6); }
+    100% { opacity: 0; transform: scale(0); }
+  }
+  @keyframes avatar-emerge {
+    0% { opacity: 0; transform: scale(0); }
+    40% { opacity: 0.8; transform: scale(0.6); }
+    100% { opacity: 1; transform: scale(1); }
+  }
+}
+
+/* ── Kanban column scrollbar — thin, subtle, auto-hide ── */
+
+.scrollbar-column {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.scrollbar-column:hover {
+  scrollbar-color: var(--bg-tertiary) transparent;
+}
+
+.scrollbar-column::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-column::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-column::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+}
+
+.scrollbar-column:hover::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+}
+
+/* ── shadcn color tokens (mapped to our design system) ── */
+
+@layer base {
+  .theme {
+    --font-heading: var(--font-sans);
+  }
+  :root {
+    --background: var(--bg-primary);
+    --foreground: var(--text-primary);
+    --card: var(--bg-card);
+    --card-foreground: var(--text-primary);
+    --popover: var(--bg-card);
+    --popover-foreground: var(--text-primary);
+    --primary: var(--text-primary);
+    --primary-foreground: var(--bg-primary);
+    --secondary: var(--bg-tertiary);
+    --secondary-foreground: var(--text-primary);
+    --muted: var(--bg-tertiary);
+    --muted-foreground: var(--text-secondary);
+    --destructive: #EF4444;
+    --border: #E4E4E7;
+    --input: #E4E4E7;
+    --ring: #A1A1AA;
+    --radius: 0.5rem;
+  }
+  .dark {
+    --background: var(--bg-primary);
+    --foreground: var(--text-primary);
+    --card: var(--bg-card);
+    --card-foreground: var(--text-primary);
+    --popover: var(--bg-card);
+    --popover-foreground: var(--text-primary);
+    --primary: var(--text-primary);
+    --primary-foreground: var(--bg-primary);
+    --secondary: var(--bg-tertiary);
+    --secondary-foreground: var(--text-primary);
+    --muted: var(--bg-tertiary);
+    --muted-foreground: var(--text-secondary);
+    --destructive: #EF4444;
+    --border: #27272A;
+    --input: #27272A;
+    --ring: #71717A;
+  }
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

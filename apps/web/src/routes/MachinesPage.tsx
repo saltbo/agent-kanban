@@ -18,18 +18,41 @@ const statusDotColors: Record<string, string> = {
 type DialogStep = "choose" | "cloud" | "local";
 
 export function MachinesPage() {
-  const { machines, loading, refresh } = useMachines();
+  const { machines, loading, error, refresh } = useMachines();
   const [showDialog, setShowDialog] = useState(false);
   const [dialogStep, setDialogStep] = useState<DialogStep>("choose");
   const [creatingCloud, setCreatingCloud] = useState(false);
   const [cloudName, setCloudName] = useState("");
+  const [localName, setLocalName] = useState("");
+  const [localCommand, setLocalCommand] = useState("");
+  const [creatingLocal, setCreatingLocal] = useState(false);
+  const warnings = [...new Set(machines.flatMap((machine: any) => machine.warnings ?? []))];
 
   function handleChooseLocal() {
+    setLocalName("");
+    setLocalCommand("");
     setDialogStep("local");
+  }
+
+  async function handleCreateLocal() {
+    const name = localName.trim();
+    if (!name) return;
+    setCreatingLocal(true);
+    try {
+      const environment = await api.machines.createSelfHosted({ name });
+      setLocalCommand(await api.machines.runnerCommand(environment.metadata.uid));
+      await refresh();
+    } catch (error) {
+      toast.error((error as Error).message || "Failed to add machine");
+    } finally {
+      setCreatingLocal(false);
+    }
   }
 
   function handleChooseCloud() {
     setCloudName("");
+    setLocalName("");
+    setLocalCommand("");
     setDialogStep("cloud");
   }
 
@@ -73,7 +96,20 @@ export function MachinesPage() {
           </div>
         </div>
 
-        {loading ? (
+        {warnings.length > 0 ? (
+          <div role="status" className="rounded-lg border border-warning/20 bg-warning/5 p-4 text-sm text-warning">
+            {warnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+            <p className="mt-1 text-xs text-content-secondary">Available Environment data is still shown.</p>
+          </div>
+        ) : null}
+
+        {error ? (
+          <p role="alert" className="rounded-lg border border-error/30 bg-error/5 p-4 text-sm text-error">
+            {(error as Error).message}
+          </p>
+        ) : loading ? (
           <div className="space-y-3">
             {[0, 1, 2].map((i) => (
               <div key={i} className="h-20 bg-surface-secondary border border-border rounded-lg animate-pulse" />
@@ -95,7 +131,7 @@ export function MachinesPage() {
             {machines.map((machine) => (
               <Link
                 key={machine.id}
-                to={`/machines/${machine.id}`}
+                to={`/machines/${machine.id}${window.location.search}`}
                 className="block bg-surface-secondary border border-border rounded-lg px-5 py-4 hover:border-accent/30 transition-colors"
               >
                 <div className="flex items-center justify-between">
@@ -171,7 +207,7 @@ export function MachinesPage() {
                 </svg>
                 <div>
                   <div className="text-sm font-medium text-content-primary">Your Computer</div>
-                  <div className="text-[11px] text-content-tertiary">Run the daemon on this machine</div>
+                  <div className="text-[11px] text-content-tertiary">Run ama-runner on this machine</div>
                 </div>
               </button>
               <button
@@ -230,15 +266,40 @@ export function MachinesPage() {
 
           {dialogStep === "local" && (
             <div className="space-y-4">
-              <p className="text-xs text-content-secondary">Authenticate this machine through Realmroot, then start the runtime.</p>
-              <pre className="overflow-x-auto rounded-md bg-surface-primary p-3 font-mono text-xs text-content-primary">{`npx agent-kanban auth login --api-url ${window.location.origin}\nnpx agent-kanban start`}</pre>
+              {!localCommand ? (
+                <div className="space-y-1.5">
+                  <label htmlFor="local-machine-name" className="text-xs text-content-secondary">
+                    Machine name
+                  </label>
+                  <Input
+                    id="local-machine-name"
+                    autoFocus
+                    value={localName}
+                    onChange={(event) => setLocalName(event.target.value)}
+                    placeholder="e.g. build-mac"
+                  />
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-content-secondary">Authenticate through Realmroot, then start AMA Runner:</p>
+                  <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-surface-primary p-3 font-mono text-xs text-content-primary">
+                    {localCommand}
+                  </pre>
+                </>
+              )}
               <div className="flex justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => setDialogStep("choose")}>
                   Back
                 </Button>
-                <Button size="sm" onClick={resetDialog}>
-                  Done
-                </Button>
+                {localCommand ? (
+                  <Button size="sm" onClick={resetDialog}>
+                    Done
+                  </Button>
+                ) : (
+                  <Button size="sm" onClick={handleCreateLocal} disabled={!localName.trim() || creatingLocal}>
+                    {creatingLocal ? "Adding..." : "Add machine"}
+                  </Button>
+                )}
               </div>
             </div>
           )}

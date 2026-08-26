@@ -1,6 +1,6 @@
 name = "agent-kanban"
 main = "./worker/index.ts"
-compatibility_date = "2026-04-13"
+compatibility_date = "2026-08-23"
 compatibility_flags = ["nodejs_compat"]
 preview_urls = true
 
@@ -13,23 +13,15 @@ pattern = "agent-kanban.dev"
 custom_domain = true
 
 [vars]
-ALLOWED_HOSTS = "agent-kanban.dev"
-AK_API_URL = "https://agent-kanban.dev"
-CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
 AMA_ORIGIN = "https://ama.tftt.cc"
 AMA_RESOURCE = "https://ama.tftt.cc/api"
 REALMROOT_ISSUER = "https://id.realmroot.dev/api/auth"
 AK_RESOURCE = "https://agent-kanban.dev/api"
-REALMROOT_CONSOLE_URL = "https://id.realmroot.dev"
 REALMROOT_WEB_CLIENT_ID = "01a02088-aac0-74a9-a5a9-ffca6cf338c0"
 REALMROOT_CLI_CLIENT_ID = "01a02088-7878-734d-94dc-de7c9ac081b3"
-AMA_RUNNER_VERSION = "0.8.1"
-GITHUB_APP_ID = "4098405"
-GITHUB_APP_SLUG = "agent-kanban"
 
 # Secrets are set via `wrangler secret put`:
 # REALMROOT_WEB_CLIENT_SECRET, REALMROOT_SESSION_ENCRYPTION_KEY,
-# MAILS_ADMIN_TOKEN, CF_API_TOKEN, GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_PRIVATE_KEY
 # Local dev overrides are in .dev.vars
 
 [observability]
@@ -40,32 +32,15 @@ enabled = true
 [limits]
 cpu_ms = 1000
 
-# Stale-sweep cron. Replaces per-request stale detection on hot paths.
-# Every-minute cadence keeps the detection window aligned with
-# MACHINE_STALE_TIMEOUT_MS (60s) — worst-case "online zombie" is ~2 min
-# (one stale interval plus one cron period).
+# Deliver and reconcile the v2 AMA dispatch outbox.
 [triggers]
 crons = ["* * * * *"]
 
 [assets]
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api", "/api/*", "/.well-known/*", "/share/*"]
+run_worker_first = ["/api", "/api/*", "/.well-known/*", "/skills/*"]
 
-[durable_objects]
-bindings = [{ name = "TUNNEL_RELAY", class_name = "TunnelRelay" }]
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["TunnelRelay"]
-
-[[analytics_engine_datasets]]
-binding = "AE"
-dataset = "agent_kanban_metrics"
-
-[[send_email]]
-name = "EMAIL"
-allowed_sender_addresses = ["noreply@agent-kanban.dev"]
 [[d1_databases]]
 binding = "DB"
 database_name = "agent-kanban-db"
@@ -81,37 +56,18 @@ migrations_dir = "migrations"
 routes = []
 
 [env.staging.vars]
-ALLOWED_HOSTS = "*.workers.dev"
-AK_API_URL = "TODO_STAGING_AK_API_URL"
-CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
 AMA_ORIGIN = "https://ama.tftt.cc"
 AMA_RESOURCE = "https://ama.tftt.cc/api"
 REALMROOT_ISSUER = "https://id.realmroot.dev/api/auth"
 AK_RESOURCE = "TODO_STAGING_AK_API_URL/api"
-REALMROOT_CONSOLE_URL = "https://id.realmroot.dev"
 REALMROOT_WEB_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_WEB_CLIENT_ID"
 REALMROOT_CLI_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_CLI_CLIENT_ID"
-AMA_RUNNER_VERSION = "0.8.1"
-GITHUB_APP_ID = "4153714"
-GITHUB_APP_SLUG = "agent-kanban-staging"
-
-[env.staging.durable_objects]
-bindings = [{ name = "TUNNEL_RELAY", class_name = "TunnelRelay" }]
 
 [env.staging.limits]
 cpu_ms = 1000
 
 [env.staging.triggers]
 crons = ["* * * * *"]
-
-[[env.staging.analytics_engine_datasets]]
-binding = "AE"
-dataset = "agent_kanban_metrics_staging"
-
-[[env.staging.send_email]]
-name = "EMAIL"
-allowed_sender_addresses = ["noreply@agent-kanban.dev"]
-remote = true
 
 [[env.staging.d1_databases]]
 binding = "DB"

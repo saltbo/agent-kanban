@@ -5,17 +5,21 @@
   "description": "Agent-first cross-project kanban board",
   "scripts": {
     "dev": "pnpm --filter @agent-kanban/web dev",
-    "build": "pnpm --filter @agent-kanban/shared build && pnpm --filter @agent-kanban/web build",
-    "typecheck": "tsc -p packages/shared/tsconfig.json --noEmit && tsc -p packages/cli/tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
+    "build": "pnpm --filter @agent-kanban/web build",
+    "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
     "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "smoke:v2": "bash scripts/v2-full-smoke-test.sh",
     "lint": "pnpm -r --parallel run lint",
     "format": "biome format --write .",
     "check": "biome check .",
     "check:fix": "biome check --fix .",
-    "skills:sync": "bash scripts/sync-skill-references.sh",
-    "skills:check": "bash scripts/sync-skill-references.sh --check",
+    "skills:sync": "pnpm skills:check",
+    "skills:check": "test -f skills/agent-kanban/SKILL.md && test ! -e skills/ak-plan && test ! -e skills/ak-task && test ! -e skills/ak-maintainer",
     "prepare": "lefthook install",
-    "install:cli": "bash scripts/install-cli.sh"
+    "install:cli": "node -e \"throw new Error('The ak CLI was retired in v2; use realmroot toolbox agent-kanban and ama-runner')\""
   },
   "keywords": [
     "kanban",
@@ -26,12 +30,18 @@
   "author": "saltbo",
   "license": "FSL-1.1-ALv2",
   "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "overrides": {
+      "@assistant-ui/core": "0.1.13",
+      "@assistant-ui/store": "0.2.6",
+      "@assistant-ui/tap": "0.5.7"
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
     "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@types/dompurify": "^3.2.0",
     "@types/node": "^25.5.2",
     "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^9.2.1",
@@ -43,14 +53,5 @@
     "typescript": "^5.9.3",
     "typescript-language-server": "^5.3.0",
     "vitest": "^3.2.4"
-  },
-  "dependencies": {
-    "@agent-kanban/shared": "workspace:*",
-    "@agentclientprotocol/sdk": "^0.19.0",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.96",
-    "@assistant-ui/react": "^0.12.24",
-    "@openai/codex-sdk": "^0.118.0",
-    "dompurify": "^3.3.3",
-    "framer-motion": "^12.38.0"
   }
 }

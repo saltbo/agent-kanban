@@ -1,6 +1,6 @@
 import { AGENT_RUNTIMES, type AnyAgentRuntime, findInvalidSkillRef, RUNTIME_LABELS } from "@agent-kanban/shared";
 import React, { useEffect, useRef, useState } from "react";
-import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
 import { Button } from "../components/ui/button";
@@ -14,13 +14,12 @@ import { agentColor } from "../lib/agentIdentity";
 export function AgentEditPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { agent, loading } = useAgent(id);
+  const { agent, loading, error: loadError } = useAgent(id);
   const updateAgent = useUpdateAgent();
 
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");
   const [soul, setSoul] = useState("");
-  const [role, setRole] = useState("");
   const [runtime, setRuntime] = useState<AnyAgentRuntime>("claude");
   const [model, setModel] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
@@ -32,7 +31,6 @@ export function AgentEditPage() {
       setName(agent.name ?? "");
       setBio(agent.bio ?? "");
       setSoul(agent.soul ?? "");
-      setRole(agent.role ?? "");
       setRuntime(agent.runtime ?? "claude");
       setModel(agent.model ?? "");
       setSkills(agent.skills ?? []);
@@ -51,6 +49,19 @@ export function AgentEditPage() {
     );
   }
 
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-surface-primary">
+        <Header />
+        <div className="max-w-4xl mx-auto px-8 py-10">
+          <p role="alert" className="text-error text-sm">
+            {(loadError as Error).message}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!agent) {
     return (
       <div className="min-h-screen bg-surface-primary">
@@ -62,11 +73,7 @@ export function AgentEditPage() {
     );
   }
 
-  if (agent.kind === "leader") {
-    return <Navigate to={`/agents/${agent.id}`} replace />;
-  }
-
-  const previewColor = agentColor(agent.public_key || name.trim() || "preview");
+  const previewColor = agentColor(agent.identity_key || name.trim() || "preview");
 
   async function handleSave() {
     if (!name.trim()) return;
@@ -83,13 +90,12 @@ export function AgentEditPage() {
           name: name.trim(),
           bio: bio.trim() || undefined,
           soul: soul.trim() || undefined,
-          role: role.trim() || undefined,
           runtime,
           model: model.trim() || undefined,
           skills: skills.length ? skills : undefined,
         },
       });
-      navigate(`/agents/${agent!.id}`);
+      navigate(`/agents/${agent!.id}${window.location.search}`);
     } catch (err: any) {
       setError(err.message);
     }
@@ -100,7 +106,7 @@ export function AgentEditPage() {
       <Header />
       <div className="max-w-4xl mx-auto px-8 py-10">
         <Link
-          to={`/agents/${agent.id}`}
+          to={`/agents/${agent.id}${window.location.search}`}
           className="flex items-center gap-1.5 text-sm text-content-tertiary hover:text-content-secondary transition-colors mb-6"
         >
           <svg
@@ -127,21 +133,9 @@ export function AgentEditPage() {
             {/* Identity */}
             <fieldset className="space-y-4">
               <legend className="text-[11px] font-mono font-medium text-content-tertiary uppercase tracking-[0.08em] mb-3">Identity</legend>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="edit-agent-name">Name</Label>
-                  <Input id="edit-agent-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bolt" className="font-mono" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="edit-agent-role">Role</Label>
-                  <Input
-                    id="edit-agent-role"
-                    value={role}
-                    onChange={(e) => setRole(e.target.value)}
-                    placeholder="e.g. backend-developer"
-                    className="font-mono"
-                  />
-                </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-agent-name">Name</Label>
+                <Input id="edit-agent-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bolt" className="font-mono" />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="edit-agent-bio">Bio</Label>
@@ -203,7 +197,7 @@ export function AgentEditPage() {
             {error && <p className="text-xs text-destructive">{error}</p>}
 
             <div className="flex items-center gap-3 pt-2">
-              <Button variant="ghost" onClick={() => navigate(`/agents/${agent.id}`)}>
+              <Button variant="ghost" onClick={() => navigate(`/agents/${agent.id}${window.location.search}`)}>
                 Cancel
               </Button>
               <Button onClick={handleSave} disabled={!name.trim() || updateAgent.isPending}>
@@ -218,15 +212,15 @@ export function AgentEditPage() {
             <div className="rounded-lg overflow-hidden border border-border bg-surface-secondary">
               <div className="h-[3px]" style={{ background: previewColor }} />
               <div className="flex flex-col items-center pt-6 pb-4 px-5">
-                <AgentIdenticon publicKey={agent.public_key} size={64} />
+                <AgentIdenticon publicKey={agent.identity_key} size={64} />
                 <h2 className="mt-3 font-mono text-base font-bold tracking-tight text-content-primary">{name.trim() || "Agent"}</h2>
-                {role && <span className="mt-1 text-[10px] font-mono text-content-tertiary bg-surface-tertiary px-1.5 py-0.5 rounded">{role}</span>}
+                <span className="mt-1 text-[10px] font-mono text-content-tertiary bg-surface-tertiary px-1.5 py-0.5 rounded">@{agent.username}</span>
                 {bio && <p className="mt-3 text-xs text-content-secondary text-center leading-relaxed">{bio}</p>}
               </div>
               <div className="border-t border-border/50 px-5 py-3 flex items-center justify-between text-[10px] font-mono text-content-tertiary">
-                <span>{agent.status.tasks.todo + agent.status.tasks.in_progress + agent.status.tasks.in_review} open tasks</span>
-                <span>{formatTokens((agent.input_tokens || 0) + (agent.output_tokens || 0))} tok</span>
-                <span>{formatCost(agent.cost_micro_usd || 0)}</span>
+                <span>{runtime}</span>
+                <span>{model || "default model"}</span>
+                <span>{agent.status.ready ? "ready" : "not ready"}</span>
               </div>
             </div>
           </div>
@@ -234,18 +228,6 @@ export function AgentEditPage() {
       </div>
     </div>
   );
-}
-
-function formatTokens(n: number): string {
-  if (!n) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-function formatCost(microUsd: number): string {
-  if (!microUsd) return "$0.00";
-  return `$${(microUsd / 1_000_000).toFixed(2)}`;
 }
 
 function TagInput({ tags, onChange, placeholder }: { tags: string[]; onChange: (v: string[]) => void; placeholder: string }) {

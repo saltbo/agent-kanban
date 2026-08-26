@@ -1,12 +1,10 @@
-import { CircleDotDashed, Settings, Tags } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Settings, Tags } from "lucide-react";
+import { useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { useBoardMaintainers, useBoards } from "../hooks/useBoard";
+import { useBoards } from "../hooks/useBoard";
 import { api } from "../lib/api";
 import { signOut, useSession } from "../lib/auth-client";
 import { getTheme, setTheme, type Theme } from "../lib/theme";
-import { AgentIdenticon } from "./AgentIdenticon";
-import { BoardMaintainerDialog } from "./BoardMaintainerDialog";
 import { BoardSwitcher } from "./BoardSwitcher";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { Button, buttonVariants } from "./ui/button";
@@ -53,7 +51,6 @@ function ThemeIcon({ theme }: { theme: Theme }) {
 export function Header() {
   const { data: session } = useSession();
   const user = session?.user as { name?: string; email?: string; image?: string; role?: string } | undefined;
-  const isAdmin = user?.role === "admin";
   const { boards, refresh: refreshBoards } = useBoards();
   const { boardId } = useParams<{ boardId: string }>();
 
@@ -63,6 +60,8 @@ export function Header() {
   const navigate = useNavigate();
 
   const activeBoard = boards.find((b: any) => b.id === boardId);
+  const connectionQuery = new URLSearchParams(location.search).get("connection");
+  const withConnection = (path: string) => (connectionQuery ? `${path}?connection=${encodeURIComponent(connectionQuery)}` : path);
 
   function cycleTheme() {
     const next: Theme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
@@ -74,8 +73,8 @@ export function Header() {
     navigate(`/boards/${id}`);
   }
 
-  async function handleBoardCreate(name: string, type: "dev" | "ops") {
-    const created = await api.boards.create({ name, type });
+  async function handleBoardCreate(name: string) {
+    const created = await api.boards.create({ name });
     refreshBoards();
     if (created?.id) navigate(`/boards/${created.id}`);
   }
@@ -113,7 +112,6 @@ export function Header() {
                 />
                 <TooltipContent>Board settings</TooltipContent>
               </Tooltip>
-              <MaintainerControl boardId={activeBoard.id} />
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -137,7 +135,7 @@ export function Header() {
             {navLinks.map(({ to, label }) => (
               <Link
                 key={to}
-                to={to}
+                to={withConnection(to)}
                 className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
                   location.pathname.startsWith(to)
                     ? "text-accent bg-accent-soft"
@@ -148,6 +146,35 @@ export function Header() {
               </Link>
             ))}
           </nav>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Product navigation" />}>
+              <span aria-hidden>☰</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48 md:hidden">
+              <nav aria-label="Product" className="flex flex-col p-1">
+                {[
+                  { to: boardId ? `/boards/${boardId}` : "/", label: "Boards" },
+                  ...navLinks,
+                  { to: "/repositories", label: "Repositories" },
+                  { to: "/settings/profile", label: "Settings" },
+                ].map(({ to, label }) => {
+                  const active =
+                    label === "Boards" ? location.pathname.startsWith("/boards/") : location.pathname.startsWith(to.split("/").slice(0, 2).join("/"));
+                  return (
+                    <Link
+                      key={label}
+                      to={withConnection(to)}
+                      aria-current={active ? "page" : undefined}
+                      className="rounded-md px-2 py-1.5 text-sm text-content-secondary hover:bg-surface-tertiary hover:text-content-primary"
+                    >
+                      {label}
+                    </Link>
+                  );
+                })}
+              </nav>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {/* Avatar + Dropdown */}
           <DropdownMenu>
@@ -168,6 +195,15 @@ export function Header() {
                   <DropdownMenuSeparator />
                 </>
               )}
+
+              <div className="md:hidden">
+                {navLinks.map(({ to, label }) => (
+                  <DropdownMenuItem key={to} onClick={() => navigate(withConnection(to))}>
+                    {label}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+              </div>
 
               <DropdownMenuItem onClick={() => navigate("/settings/profile")}>
                 <svg
@@ -201,24 +237,6 @@ export function Header() {
                 </svg>
                 Repositories
               </DropdownMenuItem>
-
-              {isAdmin && (
-                <DropdownMenuItem onClick={() => navigate("/admin")}>
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                  </svg>
-                  Admin
-                </DropdownMenuItem>
-              )}
 
               <DropdownMenuSeparator />
 
@@ -262,76 +280,5 @@ export function Header() {
         />
       )}
     </>
-  );
-}
-
-function MaintainerControl({ boardId }: { boardId: string }) {
-  const navigate = useNavigate();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [agent, setAgent] = useState<any | null>(null);
-  const { maintainers } = useBoardMaintainers(boardId);
-  const maintainer = maintainers[0] as { id: string; agent_id?: string; status?: string } | undefined;
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!maintainer?.agent_id) {
-      setAgent(null);
-      return;
-    }
-    api.agents
-      .list()
-      .then((agents) => {
-        if (!cancelled) setAgent((agents ?? []).find((candidate: any) => candidate.id === maintainer.agent_id) ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setAgent(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [maintainer?.agent_id]);
-
-  if (!maintainer) {
-    return (
-      <>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button variant="ghost" size="icon-sm" className="relative" aria-label="Add maintainer" onClick={() => setDialogOpen(true)}>
-                <CircleDotDashed className="size-3.5" />
-              </Button>
-            }
-          />
-          <TooltipContent>Add maintainer</TooltipContent>
-        </Tooltip>
-        <BoardMaintainerDialog boardId={boardId} open={dialogOpen} onOpenChange={setDialogOpen} />
-      </>
-    );
-  }
-
-  const maintainerLabel = agent?.name ?? agent?.username ?? maintainer.agent_id ?? maintainer.id;
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="relative rounded-md"
-            aria-label={`View maintainer ${maintainerLabel}`}
-            onClick={() => navigate(`/boards/${boardId}/maintainers/${maintainer.id}`)}
-          >
-            {agent?.public_key ? (
-              <AgentIdenticon publicKey={agent.public_key} size={22} glow={maintainer.status === "active"} />
-            ) : (
-              <Avatar size="sm">
-                <AvatarFallback>{maintainerLabel[0]?.toUpperCase() ?? "?"}</AvatarFallback>
-              </Avatar>
-            )}
-          </Button>
-        }
-      />
-      <TooltipContent>{maintainerLabel}</TooltipContent>
-    </Tooltip>
   );
 }

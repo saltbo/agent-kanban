@@ -9,7 +9,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
-import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { useBoard, useDeleteBoard, useUpdateBoard } from "../hooks/useBoard";
 
@@ -17,17 +16,7 @@ interface BoardSettingsBoard {
   id: string;
   name: string;
   description?: string | null;
-  visibility: "private" | "public";
-  share_slug: string | null;
 }
-
-const BADGE_TYPES = [
-  { type: "agents", label: "Agents", alt: "AK agents badge" },
-  { type: "tasks", label: "Tasks", alt: "AK tasks badge" },
-  { type: "tokens", label: "Tokens", alt: "AK tokens badge" },
-] as const;
-
-type BadgeType = (typeof BADGE_TYPES)[number]["type"];
 
 export function BoardSettingsPage() {
   const { boardId } = useParams<{ boardId: string }>();
@@ -53,7 +42,6 @@ function BoardSettingsContent({ board, boardId }: { board: BoardSettingsBoard; b
         </div>
 
         <BoardDetailsSection board={board} boardId={boardId} />
-        <BoardSharingSection board={board} boardId={boardId} />
         <BoardDangerSection board={board} />
       </main>
     </div>
@@ -113,123 +101,6 @@ function BoardDetailsSection({ board, boardId }: { board: BoardSettingsBoard; bo
       </CardFooter>
     </Card>
   );
-}
-
-function BoardSharingSection({ board, boardId }: { board: BoardSettingsBoard; boardId: string }) {
-  const updateBoard = useUpdateBoard();
-  const isPublic = board.visibility === "public";
-  const shareUrl = board.share_slug ? `${window.location.origin}/share/${board.share_slug}` : null;
-  const badgeBaseUrl = board.share_slug ? `${window.location.origin}/api/share/${board.share_slug}/badge.svg` : null;
-
-  async function toggleVisibility() {
-    const nextVisibility = isPublic ? "private" : "public";
-    try {
-      await updateBoard.mutateAsync({ id: boardId, visibility: nextVisibility });
-      toast.success(nextVisibility === "public" ? "Sharing enabled" : "Sharing disabled");
-    } catch {
-      toast.error("Failed to update sharing");
-    }
-  }
-
-  async function copyShareText(type: "link" | BadgeType) {
-    if (!shareUrl || !badgeBaseUrl) return;
-    const text = type === "link" ? shareUrl : badgeMarkdown(shareUrl, badgeBaseUrl, type);
-    try {
-      await copyTextToClipboard(text);
-      toast.success(type === "link" ? "Share link copied" : `${badgeLabel(type)} badge copied`);
-    } catch {
-      toast.error("Failed to copy");
-    }
-  }
-
-  return (
-    <Card className="mt-6" size="sm">
-      <CardHeader>
-        <CardTitle>
-          <h2>Sharing</h2>
-        </CardTitle>
-        <CardDescription>Enable a public read-only board link and README badge.</CardDescription>
-        <CardAction className="flex items-center gap-2 pl-4">
-          <span className="text-xs text-content-tertiary">{isPublic ? "On" : "Off"}</span>
-          <Switch
-            checked={isPublic}
-            aria-label={isPublic ? "Sharing on" : "Sharing off"}
-            onCheckedChange={toggleVisibility}
-            disabled={updateBoard.isPending}
-          />
-        </CardAction>
-      </CardHeader>
-
-      {isPublic && shareUrl && badgeBaseUrl && (
-        <CardContent>
-          <ShareLinks badgeBaseUrl={badgeBaseUrl} shareUrl={shareUrl} onCopy={copyShareText} />
-        </CardContent>
-      )}
-    </Card>
-  );
-}
-
-function ShareLinks({ badgeBaseUrl, shareUrl, onCopy }: { badgeBaseUrl: string; shareUrl: string; onCopy: (type: "link" | BadgeType) => void }) {
-  return (
-    <div className="space-y-3">
-      <div className="space-y-1.5">
-        <p className="text-xs font-medium text-content-tertiary">Badge previews</p>
-        <div className="space-y-2">
-          {BADGE_TYPES.map((badge) => (
-            <div key={badge.type} className="flex items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <img src={badgeUrl(badgeBaseUrl, badge.type)} alt={badge.alt} className="h-5 max-w-full" />
-              </div>
-              <Button variant="outline" size="xs" onClick={() => onCopy(badge.type)}>
-                Copy {badge.label.toLowerCase()}
-              </Button>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-1.5">
-        <p className="text-xs font-medium text-content-tertiary">Share link</p>
-        <div className="flex items-center gap-2">
-          <code className="min-w-0 flex-1 truncate rounded-lg border border-border bg-surface-primary px-3 py-2 text-[11px] text-content-secondary">
-            {shareUrl}
-          </code>
-          <Button variant="outline" size="xs" onClick={() => onCopy("link")}>
-            Copy link
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function badgeUrl(baseUrl: string, type: BadgeType) {
-  return `${baseUrl}?type=${type}`;
-}
-
-function badgeMarkdown(shareUrl: string, baseUrl: string, type: BadgeType) {
-  return `[![AK ${badgeLabel(type)}](${badgeUrl(baseUrl, type)})](${shareUrl})`;
-}
-
-function badgeLabel(type: BadgeType) {
-  return BADGE_TYPES.find((badge) => badge.type === type)!.label;
-}
-
-async function copyTextToClipboard(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const copied = document.execCommand("copy");
-    textarea.remove();
-    if (!copied) throw new Error("Copy failed");
-  }
 }
 
 function BoardDangerSection({ board }: { board: BoardSettingsBoard }) {

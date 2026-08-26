@@ -7,27 +7,27 @@
 /* ── Our design tokens ── */
 
 :root {
-  --bg-primary: #FAFAFA;
-  --bg-secondary: #F4F4F5;
-  --bg-tertiary: #E4E4E7;
-  --bg-card: #FFFFFF;
-  --text-primary: #09090B;
-  --text-secondary: #52525B;
-  --text-tertiary: #A1A1AA;
-  --accent: #0891B2;
+  --bg-primary: #fafafa;
+  --bg-secondary: #f4f4f5;
+  --bg-tertiary: #e4e4e7;
+  --bg-card: #ffffff;
+  --text-primary: #09090b;
+  --text-secondary: #52525b;
+  --text-tertiary: #a1a1aa;
+  --accent: #0891b2;
   --accent-soft: rgba(8, 145, 178, 0.1);
   --accent-glow: rgba(34, 211, 238, 0.15);
 }
 
 .dark {
-  --bg-primary: #09090B;
-  --bg-secondary: #18181B;
-  --bg-tertiary: #27272A;
-  --bg-card: #18181B;
-  --text-primary: #FAFAFA;
-  --text-secondary: #A1A1AA;
-  --text-tertiary: #71717A;
-  --accent: #22D3EE;
+  --bg-primary: #09090b;
+  --bg-secondary: #18181b;
+  --bg-tertiary: #27272a;
+  --bg-card: #18181b;
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --accent: #22d3ee;
   --accent-soft: rgba(34, 211, 238, 0.1);
   --accent-glow: rgba(34, 211, 238, 0.12);
 }
@@ -78,10 +78,9 @@ body {
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-
-  --color-success: #22C55E;
-  --color-warning: #EAB308;
-  --color-error: #EF4444;
+  --color-success: #22c55e;
+  --color-warning: #eab308;
+  --color-error: #ef4444;
 
   --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
   --animate-card-highlight: card-highlight 1s ease-out forwards;
@@ -90,34 +89,78 @@ body {
   --animate-avatar-leave: avatar-leave 300ms ease-in forwards;
 
   @keyframes pulse-glow {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
   @keyframes card-highlight {
-    0% { border-color: var(--accent); }
-    100% { border-color: var(--border); }
+    0% {
+      border-color: var(--accent);
+    }
+    100% {
+      border-color: var(--border);
+    }
   }
   @keyframes breathe {
-    0%, 100% { box-shadow: var(--breathe-shadow-max); }
-    50% { box-shadow: var(--breathe-shadow-min); }
+    0%,
+    100% {
+      box-shadow: var(--breathe-shadow-max);
+    }
+    50% {
+      box-shadow: var(--breathe-shadow-min);
+    }
   }
   @keyframes avatar-arrive {
-    from { opacity: 0; transform: scale(0.3); }
-    to { opacity: 1; transform: scale(1); }
+    from {
+      opacity: 0;
+      transform: scale(0.3);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
   @keyframes avatar-leave {
-    from { opacity: 1; transform: scale(1); }
-    to { opacity: 0; transform: scale(0.3); }
+    from {
+      opacity: 1;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(0.3);
+    }
   }
   @keyframes avatar-absorb {
-    0% { opacity: 1; transform: scale(1); }
-    60% { opacity: 0.8; transform: scale(0.6); }
-    100% { opacity: 0; transform: scale(0); }
+    0% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    60% {
+      opacity: 0.8;
+      transform: scale(0.6);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(0);
+    }
   }
   @keyframes avatar-emerge {
-    0% { opacity: 0; transform: scale(0); }
-    40% { opacity: 0.8; transform: scale(0.6); }
-    100% { opacity: 1; transform: scale(1); }
+    0% {
+      opacity: 0;
+      transform: scale(0);
+    }
+    40% {
+      opacity: 0.8;
+      transform: scale(0.6);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 }
 
@@ -149,6 +192,17 @@ body {
   background: var(--bg-tertiary);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    animation-duration: 0s;
+    animation-iteration-count: 1;
+    transition-duration: 0s;
+  }
+}
+
 /* ── shadcn color tokens (mapped to our design system) ── */
 
 @layer base {
@@ -168,10 +222,10 @@ body {
     --secondary-foreground: var(--text-primary);
     --muted: var(--bg-tertiary);
     --muted-foreground: var(--text-secondary);
-    --destructive: #EF4444;
-    --border: #E4E4E7;
-    --input: #E4E4E7;
-    --ring: #A1A1AA;
+    --destructive: #ef4444;
+    --border: #e4e4e7;
+    --input: #e4e4e7;
+    --ring: #a1a1aa;
     --radius: 0.5rem;
   }
   .dark {
@@ -187,10 +241,10 @@ body {
     --secondary-foreground: var(--text-primary);
     --muted: var(--bg-tertiary);
     --muted-foreground: var(--text-secondary);
-    --destructive: #EF4444;
-    --border: #27272A;
-    --input: #27272A;
-    --ring: #71717A;
+    --destructive: #ef4444;
+    --border: #27272a;
+    --input: #27272a;
+    --ring: #71717a;
   }
   * {
     @apply border-border outline-ring/50;
