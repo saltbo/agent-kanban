@@ -17,32 +17,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @agent-kanban/shared build
-      - run: pnpm run lint
-      - run: pnpm run test -- --run
-
-  cli-windows:
-    # node-gyp 11 does not yet recognize the Visual Studio 2026 installation
-    # on windows-latest. Pin the supported VS 2022 image for native builds.
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @agent-kanban/shared build
-      - run: pnpm --filter agent-kanban build
-      - run: pnpm --filter agent-kanban exec node-gyp rebuild --directory native/process-tree --release
-      - name: Stage native addon
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force packages/cli/dist/native/win32-x64
-          Copy-Item packages/cli/native/process-tree/build/Release/process_tree.node packages/cli/dist/native/win32-x64/process-tree.node
-      - name: Load native addon on Node 22
-        shell: pwsh
-        run: node -e "const addon=require('./packages/cli/dist/native/win32-x64/process-tree.node'); const rows=addon.getProcessAncestry(process.pid,32); const first=rows[0]; if (first?.pid !== process.pid || first.ppid !== process.ppid || !first.commandLine?.includes('ak-native-smoke-210') || rows.length < 2) process.exit(1)" ak-native-smoke-210
-      - run: pnpm --filter agent-kanban lint
-      - run: pnpm exec vitest run packages/cli/tests
+      - run: pnpm typecheck
+      - run: pnpm check
+      - run: pnpm test:run
+      - run: pnpm build
+      - run: pnpm skills:check

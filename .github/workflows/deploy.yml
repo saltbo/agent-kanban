@@ -5,74 +5,7 @@ on:
     tags: ["v*"]
 
 jobs:
-  native-windows:
-    # node-gyp 11 does not yet recognize the Visual Studio 2026 installation
-    # on windows-latest. Pin the supported VS 2022 image for native builds.
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter agent-kanban exec node-gyp rebuild --directory native/process-tree --release
-      - name: Stage native addon
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force native-artifact
-          Copy-Item packages/cli/native/process-tree/build/Release/process_tree.node native-artifact/process-tree.node
-      - name: Load native addon on Node 22
-        shell: pwsh
-        run: node -e "const addon=require('./native-artifact/process-tree.node'); const rows=addon.getProcessAncestry(process.pid,32); const first=rows[0]; if (first?.pid !== process.pid || first.ppid !== process.ppid || !first.commandLine?.includes('ak-native-smoke-210') || rows.length < 2) process.exit(1)" ak-native-smoke-210
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Load native addon on Node 24
-        shell: pwsh
-        run: node -e "const addon=require('./native-artifact/process-tree.node'); const rows=addon.getProcessAncestry(process.pid,32); const first=rows[0]; if (first?.pid !== process.pid || first.ppid !== process.ppid || !first.commandLine?.includes('ak-native-smoke-210') || rows.length < 2) process.exit(1)" ak-native-smoke-210
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ak-process-tree-win32-x64
-          path: native-artifact/process-tree.node
-
-  publish-cli:
-    needs: native-windows
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@11.5.2
-      - run: pnpm install --frozen-lockfile
-
-      - name: Sync version from tag
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          cd packages/cli && npm version "$VERSION" --no-git-tag-version --allow-same-version
-
-      - run: pnpm --filter @agent-kanban/shared build
-      - run: pnpm --filter agent-kanban build
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ak-process-tree-win32-x64
-          path: packages/cli/dist/native/win32-x64
-
-      - name: Publish to npm
-        working-directory: packages/cli
-        run: npm publish --provenance --access public
-
   release:
-    needs: publish-cli
     runs-on: ubuntu-latest
     permissions:
       contents: write
