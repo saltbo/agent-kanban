@@ -21,4 +21,6 @@ jobs:
       - run: pnpm check
       - run: pnpm test:run
       - run: pnpm build
+      - name: Validate Worker deployment bundle
+        run: pnpm --filter @agent-kanban/web exec wrangler deploy --dry-run
       - run: pnpm skills:check
