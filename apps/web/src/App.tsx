@@ -5,6 +5,7 @@ import { AgentDetailPage } from "./routes/AgentDetailPage";
 import { AgentEditPage } from "./routes/AgentEditPage";
 import { AgentNewPage } from "./routes/AgentNewPage";
 import { AgentsPage } from "./routes/AgentsPage";
+import { AuthCallbackPage } from "./routes/AuthCallbackPage";
 import { AuthPage } from "./routes/AuthPage";
 import { BoardLabelsPage } from "./routes/BoardLabelsPage";
 import { BoardPage } from "./routes/BoardPage";
@@ -38,6 +39,7 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/auth" element={<AuthPage />} />
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
         <Route path="/landing" element={<LandingPage />} />
         <Route path="/" element={<RootRoute />} />
         <Route

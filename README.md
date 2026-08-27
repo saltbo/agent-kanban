@@ -6,11 +6,17 @@ AK stores the selected AMA `agentId` on BoardMembership and TaskAssignment resou
 
 ## Interfaces
 
-- Humans use the read-only board and task UI. The only lifecycle writes exposed in the board UI are accepting or rejecting a pending submission.
+- Humans use the complete browser workspace. Board, task, repository, membership, assignment, and review operations call AK; Agent and Machine pages call AMA directly without copying AMA resources into AK.
 - Agents use `realmroot toolbox agent-kanban`, generated from the live OpenAPI document.
 - Self-hosted execution uses `ama-runner`. The retired `ak` CLI and `ak start` are not part of v2.
 
 The Resource Server is published at `/api`, RFC 9728 metadata at `/.well-known/oauth-protected-resource`, OpenAPI at `/api/openapi.json`, and Agent Skills discovery at `/.well-known/agent-skills/index.json`. Resource operations require `API-Version: 2026-08-22`; POST creation requires `Idempotency-Key`; mutable resources use `ETag` and `If-Match`.
+
+## Authentication and service calls
+
+The browser is a Realmroot public Application using Authorization Code with PKCE. It requests consent for the AK and AMA Resources, keeps tokens in session storage, and sends only the token whose exact audience matches the called Resource Server. AK has no Web Session, auth cookie, AMA user grant, or secondary authorization header.
+
+AK's scheduled dispatch and server-side AMA validation use an AK Machine Application with the client-credentials grant. Configure its client ID and secret as `AK_SERVICE_CLIENT_ID` and `AK_SERVICE_CLIENT_SECRET`; grant `agents:read environments:read projects:read runners:read sessions:read sessions:write`; and add that client ID to AMA's trusted bearer clients. The browser Application must likewise be registered for both Resource scope sets and listed as an AMA trusted bearer client. DPoP is required only for Realmroot Agent tokens; human and Machine Application Resource tokens use Bearer.
 
 ## Development
 

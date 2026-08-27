@@ -15,7 +15,7 @@ Agent-first task coordination. React observation/review SPA + Hono Resource Serv
 
 ## Product and UI
 
-Read `DESIGN.md` before visual work. The AK browser is a complete product workspace: Board/Task/Repository coordination is AK-owned; Agents and Machines remain first-class pages backed by AMA through connection-scoped browser BFF projections. Forms live in a modal, drawer, or secondary page. AK never persists AMA Agent, Environment, Runner, runtime, Session, Vault, or credential definitions.
+Read `DESIGN.md` before visual work. The AK browser is a complete product workspace: Board/Task/Repository coordination is AK-owned; Agents and Machines remain first-class pages backed by direct, connection-scoped AMA Resource calls from the browser. The public SPA stores exact-audience AK and AMA tokens only in session storage; AK has no Web Session or user-token BFF. Forms live in a modal, drawer, or secondary page. AK never persists AMA Agent, Environment, Runner, runtime, Session, Vault, or credential definitions.
 
 ## API
 

@@ -1,15 +1,11 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 4.1 machine-list-and-detail-aggregation
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, collection, fulfillJson, localMachine, signIn } from "./product-fixtures";
+import { localMachine, routeAmaMachines, signIn } from "./product-fixtures";
 
 test("Machines are AMA Environment projections with read-only Runner and Session aggregation", async ({ page }) => {
   await signIn(page);
-  await page.route(new RegExp(`/api/console/ama-connections/${CONNECTION_ID}/machines(?:/[^/?]+)?(?:\\?.*)?$`), (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    if (pathname.endsWith("/machines/env-local")) return fulfillJson(route, localMachine);
-    return fulfillJson(route, collection([localMachine]));
-  });
+  await routeAmaMachines(page, [localMachine]);
 
   await page.goto("/machines?connection=ama-e2e");
   await expect(page.getByRole("heading", { name: "Machines", level: 1 })).toBeVisible();

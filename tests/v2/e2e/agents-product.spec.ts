@@ -1,7 +1,7 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 3.1 ama-agent-list-detail-and-sessions
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, collection, fulfillJson, provisioningAgent, readyAgent, signIn } from "./product-fixtures";
+import { provisioningAgent, readyAgent, routeAmaAgents, signIn } from "./product-fixtures";
 
 test("Agents pages are driven by AMA Agent identity, readiness, configuration, and Sessions", async ({ page }) => {
   await signIn(page);
@@ -10,28 +10,22 @@ test("Agents pages are driven by AMA Agent identity, readiness, configuration, a
   const agentResponses: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("request", (request) => {
-    if (request.url().includes("/api/console/") || request.url().includes("/api/ama-connections")) agentRequests.push(request.url());
+    if (request.url().includes("/api/v1/agents") || request.url().includes("/api/v1/sessions")) agentRequests.push(request.url());
   });
   page.on("response", (response) => {
-    if (response.url().includes("/api/console/") || response.url().includes("/api/ama-connections"))
+    if (response.url().includes("/api/v1/agents") || response.url().includes("/api/v1/sessions"))
       agentResponses.push(`${response.status()} ${response.url()}`);
   });
-  await page.route(new RegExp(`/api/console/ama-connections/${CONNECTION_ID}/agents(?:/[^/?]+)?(?:\\?.*)?$`), (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    if (pathname.endsWith(`/agents/${readyAgent.metadata.uid}`)) return fulfillJson(route, readyAgent);
-    return fulfillJson(route, collection([readyAgent, provisioningAgent]));
-  });
-  await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/sessions*`, (route) =>
-    fulfillJson(
-      route,
-      collection([
-        {
-          metadata: { uid: "session-agent-ready", projectId: "project-e2e", name: "Release verification" },
-          spec: { agentId: readyAgent.metadata.uid },
-          status: { phase: "running" },
-        },
-      ]),
-    ),
+  await routeAmaAgents(
+    page,
+    [readyAgent, provisioningAgent],
+    [
+      {
+        metadata: { uid: "session-agent-ready", projectId: "project-e2e", name: "Release verification" },
+        spec: { agentId: readyAgent.metadata.uid },
+        status: { phase: "running" },
+      },
+    ],
   );
 
   await page.goto("/agents?connection=ama-e2e");

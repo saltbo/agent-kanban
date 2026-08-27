@@ -1,13 +1,13 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 3.2 ama-agent-create-success-and-failure
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, collection, fulfillJson, readyAgent, signIn } from "./product-fixtures";
+import { amaCollection, fulfillJson, readyAgent, signIn } from "./product-fixtures";
 
 test("Agent creation consumes the synchronous AMA Agent representation and preserves failures", async ({ page }) => {
   await signIn(page);
   let createCount = 0;
   let succeeded = false;
-  await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/agents`, (route) => {
+  await page.route(/\/api\/v1\/agents(?:\?.*)?$/, (route) => {
     if (route.request().method() === "POST") {
       createCount += 1;
       if (createCount === 1) {
@@ -21,9 +21,9 @@ test("Agent creation consumes the synchronous AMA Agent representation and prese
       }
       return fulfillJson(route, { detail: "Realmroot identity enrollment failed." }, 422);
     }
-    return fulfillJson(route, collection(succeeded ? [readyAgent] : []));
+    return fulfillJson(route, amaCollection(succeeded ? [readyAgent] : []));
   });
-  await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/sessions`, (route) => fulfillJson(route, collection([])));
+  await page.route(/\/api\/v1\/sessions(?:\?.*)?$/, (route) => fulfillJson(route, amaCollection([])));
 
   await page.goto("/agents?connection=ama-e2e");
   await page.getByRole("link", { name: "New agent" }).click();

@@ -4,7 +4,6 @@ import type { DomainRow } from "./planningRepo";
 export type ActiveAmaBinding = {
   project_uri: string;
   resource_url: string;
-  authorized_subject_id: string;
 };
 
 export class AmaBindingRepo {
@@ -25,17 +24,17 @@ export class AmaBindingRepo {
     return one(
       this.db
         .prepare(
-          "SELECT ac.project_uri, ac.resource_url, ac.authorized_subject_id FROM board_execution_bindings b JOIN ama_connections ac ON ac.id = b.ama_connection_id AND ac.tenant_id = b.tenant_id WHERE b.tenant_id = ? AND b.board_id = ? AND ac.status = 'active'",
+          "SELECT ac.project_uri, ac.resource_url FROM board_execution_bindings b JOIN ama_connections ac ON ac.id = b.ama_connection_id AND ac.tenant_id = b.tenant_id WHERE b.tenant_id = ? AND b.board_id = ? AND ac.status = 'active'",
         )
         .bind(this.tenantId, boardId),
       detail,
     );
   }
 
-  createConnection(id: string, resourceUrl: string, projectUri: string, authorizedSubjectId: string): Promise<D1Result<unknown>> {
+  createConnection(id: string, resourceUrl: string, projectUri: string, createdBySubjectId: string): Promise<D1Result<unknown>> {
     return this.db
-      .prepare("INSERT INTO ama_connections (id, tenant_id, resource_url, project_uri, authorized_subject_id) VALUES (?, ?, ?, ?, ?)")
-      .bind(id, this.tenantId, resourceUrl, projectUri, authorizedSubjectId)
+      .prepare("INSERT INTO ama_connections (id, tenant_id, resource_url, project_uri, created_by_subject_id) VALUES (?, ?, ?, ?, ?)")
+      .bind(id, this.tenantId, resourceUrl, projectUri, createdBySubjectId)
       .run();
   }
 

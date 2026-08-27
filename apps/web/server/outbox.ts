@@ -151,7 +151,6 @@ async function cleanupExpiredContractState(env: Env): Promise<void> {
 
 async function createFallbackRun(env: Env, row: OutboxRow): Promise<boolean> {
   const payload = JSON.parse(row.payload_json) as {
-    authorizedSubjectId?: string;
     projectUri?: string;
     fallback?: {
       assignmentId?: string;
@@ -163,27 +162,18 @@ async function createFallbackRun(env: Env, row: OutboxRow): Promise<boolean> {
     };
   };
   const fallback = payload.fallback;
-  if (
-    !fallback?.assignmentId ||
-    !fallback.previousRunId ||
-    !fallback.agentId ||
-    !fallback.prompt ||
-    !fallback.task ||
-    !payload.authorizedSubjectId ||
-    !payload.projectUri
-  )
+  if (!fallback?.assignmentId || !fallback.previousRunId || !fallback.agentId || !fallback.prompt || !fallback.task || !payload.projectUri)
     throw new Error("Review feedback fallback contract is incomplete");
   const suffix = row.aggregate_id.replace(/[^A-Za-z0-9_-]/g, "").slice(-48);
   const runId = `run_retry_${suffix}`;
   const outboxId = `out_retry_${suffix}`;
-  const agent = await resolveAmaAgent(env, row.tenant_id, payload.authorizedSubjectId, payload.projectUri, fallback.agentId);
+  const agent = await resolveAmaAgent(env, payload.projectUri, fallback.agentId);
   const repository = fallback.repositoryId
     ? await env.DB.prepare("SELECT id, url, default_branch FROM repositories WHERE id = ? AND tenant_id = ?")
         .bind(fallback.repositoryId, row.tenant_id)
         .first<{ id: string; url: string; default_branch: string }>()
     : null;
   const sessionPayload = {
-    authorizedSubjectId: payload.authorizedSubjectId,
     projectUri: payload.projectUri,
     idempotencyKey: `ak:task-run:${runId}`,
     request: amaSessionRequest(agent, repository, fallback.task, fallback.prompt),
@@ -276,16 +266,16 @@ async function terminalizeExhaustedClaims(env: Env, limit: number): Promise<void
 }
 
 async function reconcileAmaSessions(env: Env, limit: number): Promise<void> {
-  const sessions = await env.DB.prepare(`SELECT r.id, r.tenant_id, r.ama_session_uri, ac.authorized_subject_id, ac.project_uri
+  const sessions = await env.DB.prepare(`SELECT r.id, r.tenant_id, r.ama_session_uri, ac.project_uri
     FROM task_runs r JOIN tasks t ON t.id = r.task_id AND t.tenant_id = r.tenant_id
     JOIN board_execution_bindings b ON b.board_id = t.board_id AND b.tenant_id = r.tenant_id
     JOIN ama_connections ac ON ac.id = b.ama_connection_id AND ac.tenant_id = r.tenant_id
     WHERE r.status IN ('pending','running') AND r.ama_session_uri IS NOT NULL ORDER BY r.updated_at LIMIT ?`)
     .bind(limit)
-    .all<{ id: string; tenant_id: string; ama_session_uri: string; authorized_subject_id: string; project_uri: string }>();
+    .all<{ id: string; tenant_id: string; ama_session_uri: string; project_uri: string }>();
   for (const session of sessions.results) {
     try {
-      const amaStatus = await readAmaSession(env, session.tenant_id, session.authorized_subject_id, session.project_uri, session.ama_session_uri);
+      const amaStatus = await readAmaSession(env, session.project_uri, session.ama_session_uri);
       const status = amaStatus === "running" || amaStatus === "idle" ? "running" : ["error", "closed"].includes(amaStatus) ? "failed" : "pending";
       await env.DB.prepare(
         "UPDATE task_runs SET status = ?, version = version + 1, updated_at = datetime('now'), failure_code = ? WHERE id = ? AND tenant_id = ? AND status IN ('pending','running') AND status <> ?",

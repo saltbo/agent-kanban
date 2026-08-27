@@ -39,4 +39,22 @@ describe("active v2 production source boundaries", () => {
     expect(chat).toContain("api.sessions.sessionWs(sessionId)");
     expect(chat).not.toMatch(/useSessionRelay|RelayRuntimeProvider|daemon|tunnel/i);
   });
+
+  it("uses public SPA Resource tokens and a Machine Application instead of retired BFF authorization", () => {
+    const browserAuth = source("apps/web/src/lib/auth-client.ts");
+    const browserApi = source("apps/web/src/lib/api.ts");
+    const serverAma = source("apps/web/server/ama.ts");
+    const routes = source("apps/web/server/routes.ts");
+    const migration = source("apps/web/migrations/0001_v2.sql");
+
+    expect(browserAuth).toContain('response_type: "code"');
+    expect(browserAuth).toContain("resource: [config.ak.resource, config.ama.resource]");
+    expect(browserAuth).toContain("new UserManager");
+    expect(browserApi).toContain('getAuthHeaders("ama")');
+    expect(serverAma).toContain('grant_type: "client_credentials"');
+    expect(serverAma).toContain("AK_SERVICE_CLIENT_ID");
+    for (const retired of ["/api/auth/", "/api/console/", "X-AMA-Realmroot-Authorization", "web_sessions", "ama_grants"]) {
+      expect(`${routes}\n${serverAma}\n${migration}`).not.toContain(retired);
+    }
+  });
 });

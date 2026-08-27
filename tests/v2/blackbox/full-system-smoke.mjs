@@ -10,7 +10,7 @@ import { chromium } from "@playwright/test";
 const AK_ROOT = resolve(import.meta.dirname, "../../..");
 const AMA_ROOT = resolve(AK_ROOT, "../any-managed-agents");
 const RR_CLI_ROOT = resolve(AK_ROOT, "../realmroot/cli");
-const RR_ROOT = resolve(AK_ROOT, "../realmroot/realmroot");
+const RR_ROOT = resolve(process.env.REALMROOT_ROOT ?? resolve(AK_ROOT, "../realmroot/realmroot-agent-private-org"));
 const API_VERSION = "2026-08-22";
 const TIMEOUT = Number(process.env.AK_V2_SMOKE_TIMEOUT_MS ?? 12 * 60_000);
 const DEV = process.argv.includes("--dev");
@@ -182,34 +182,12 @@ async function realAmaResponse(origin, credential, method, path, body, key, proj
     method,
     headers: {
       Authorization: `${credential.tokenType} ${credential.accessToken}`,
-      ...(credential.realmrootAccessToken ? { "X-AMA-Realmroot-Authorization": `Bearer ${credential.realmrootAccessToken}` } : {}),
       ...(projectId ? { "X-AMA-Project-ID": projectId } : {}),
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...(key ? { "Idempotency-Key": key } : {}),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-}
-
-async function addRealmrootManagementCredential(page, rrOrigin, application, credential, resource) {
-  const response = await page.request.post(`${rrOrigin}/api/auth/oauth2/token`, {
-    headers: { origin: rrOrigin },
-    form: {
-      grant_type: "refresh_token",
-      refresh_token: credential.refreshToken,
-      client_id: application.clientId,
-      ...(application.clientSecret ? { client_secret: application.clientSecret } : {}),
-      resource,
-    },
-  });
-  const tokenText = await response.text();
-  if (response.status() !== 200)
-    fail(`Realmroot management token for ${application.clientId} returned ${response.status()}, expected 200`, tokenText);
-  const tokens = JSON.parse(tokenText);
-  if (tokens.token_type?.toLowerCase() !== "bearer" || !tokens.access_token || !tokens.refresh_token)
-    fail("Realmroot did not issue the required User management Bearer", JSON.stringify(tokens));
-  credential.refreshToken = tokens.refresh_token;
-  credential.realmrootAccessToken = tokens.access_token;
 }
 
 async function oauthCredential(page, rrOrigin, application, resource, scopes, contextName = /Realmroot/, additionalResources = []) {
@@ -267,13 +245,33 @@ async function oauthCredential(page, rrOrigin, application, resource, scopes, co
   };
 }
 
-async function akRequest(origin, csrf, cookie, method, path, body, expected = 200, key) {
+async function browserSpaCredential(page, rrOrigin, akOrigin, contextName = /Realmroot/) {
+  await page.goto(`${akOrigin}/auth?returnTo=%2F`);
+  await Promise.all([page.waitForURL((url) => url.origin === rrOrigin), page.getByRole("button", { name: "Continue to Realmroot" }).click()]);
+  if (page.url().includes("/auth/context")) {
+    await page.getByRole("radio", { name: contextName }).last().click();
+    await page.getByRole("button", { name: "Continue" }).click();
+  }
+  if (page.url().includes("/auth/consent")) await page.getByRole("button", { name: "Authorize" }).click();
+  await page.waitForURL((url) => url.origin === akOrigin && url.pathname !== "/auth/callback");
+  const storedUser = await page.evaluate(() => {
+    const entry = Object.entries(sessionStorage).find(([key]) => key.startsWith("oidc.user:"));
+    return entry?.[1] ?? null;
+  });
+  if (!storedUser) fail("AK SPA callback did not persist the Realmroot OIDC user");
+  const user = JSON.parse(storedUser);
+  if (!user.access_token || !user.refresh_token || user.token_type?.toLowerCase() !== "bearer")
+    fail("AK SPA callback did not persist an AK Bearer token and refresh token", storedUser);
+  return { accessToken: user.access_token, refreshToken: user.refresh_token, expiresIn: user.expires_in, tokenType: "Bearer" };
+}
+
+async function akRequest(origin, akAccessToken, method, path, body, expected = 200, key) {
   const response = await fetch(`${origin}${path}`, {
     method,
     headers: {
-      Cookie: cookie,
+      Authorization: `Bearer ${akAccessToken}`,
       "API-Version": API_VERSION,
-      ...(body === undefined ? {} : { "Content-Type": "application/json", "X-CSRF-Token": csrf }),
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...(key ? { "Idempotency-Key": key } : {}),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -286,8 +284,8 @@ async function main() {
   const [rrPort, amaPort, akPort] = await Promise.all([freePort(), freePort(), freePort()]);
   const rrOrigin = `http://127.0.0.1:${rrPort}`;
   const amaOrigin = `${DEV ? "http://localhost" : "http://127.0.0.1"}:${amaPort}`;
-  // Browsers treat localhost as a potentially trustworthy origin, so AK's
-  // production Secure web-session cookie remains testable without weakening it.
+  // Browsers treat localhost as a potentially trustworthy origin for the SPA's
+  // Authorization Code + PKCE callback.
   const akOrigin = `http://localhost:${akPort}`;
   const rrState = join(temp, "realmroot-state");
   const amaState = join(temp, "ama-state");
@@ -309,7 +307,7 @@ async function main() {
         {
           BETTER_AUTH_SECRET: "ak-v2-smoke-better-auth-secret-with-enough-entropy",
           BETTER_AUTH_URL: rrOrigin,
-          TRUSTED_ORIGINS: rrOrigin,
+          TRUSTED_ORIGINS: `${rrOrigin}, ${akOrigin}, ${amaOrigin}`,
           CREDENTIAL_ENCRYPTION_KEY: "ak-v2-smoke-credential-encryption-key-32-bytes",
           E2E_OAUTH_CLIENT_SECRET: "e2e-secret",
           EMAIL_FROM: "e2e@example.com",
@@ -375,8 +373,23 @@ async function main() {
       {
         name: "Agent Kanban smoke web",
         slug: `ak-smoke-${runId}`.slice(0, 63),
-        clientType: "confidential_web",
-        redirectUris: [`${akOrigin}/api/auth/callback`],
+        clientType: "public_spa",
+        redirectUris: [`${akOrigin}/auth/callback`],
+        ownerOrganizationId: platform.id,
+        consentRequired: false,
+      },
+      201,
+    );
+    const akService = await management(
+      page,
+      rrOrigin,
+      "POST",
+      "/api/applications",
+      {
+        name: "Agent Kanban smoke service",
+        slug: `ak-service-${runId}`.slice(0, 63),
+        clientType: "machine",
+        redirectUris: [],
         ownerOrganizationId: platform.id,
         consentRequired: false,
       },
@@ -390,8 +403,8 @@ async function main() {
       {
         name: DEV ? "AMA local console" : "AMA smoke controller",
         slug: `ama-controller-${runId}`.slice(0, 63),
-        clientType: DEV ? "confidential_web" : "public_native",
-        redirectUris: DEV ? [`${amaOrigin}/api/v1/auth/callback`] : [`${rrOrigin}/e2e/oauth-callback`],
+        clientType: DEV ? "public_spa" : "public_native",
+        redirectUris: DEV ? [`${amaOrigin}/auth/callback`] : [`${rrOrigin}/e2e/oauth-callback`],
         ownerOrganizationId: platform.id,
         consentRequired: false,
       },
@@ -412,7 +425,7 @@ async function main() {
       },
       201,
     );
-    if (!amaAuthority.clientSecret || !akWeb.clientSecret) fail("Realmroot did not return one-time Application secrets");
+    if (!amaAuthority.clientSecret || !akService.clientSecret) fail("Realmroot did not return one-time Machine Application secrets");
     const rrResources = await management(page, rrOrigin, "GET", "/api/resource-servers?limit=100&offset=0");
     const rrManagement = rrResources.items.find((item) => item.resourceUrl === `${rrOrigin}/api` || item.identifier === "realmroot");
     if (!rrManagement) fail("Realmroot built-in management Resource Server is missing");
@@ -442,22 +455,20 @@ async function main() {
           AMA_DEFAULT_MODEL: "@cf/moonshotai/kimi-k2.6",
           AMA_RUNTIME_MODE: "test",
           AMA_E2E_TEST_AUTH: "true",
-          AMA_ALLOWED_ORIGINS: amaOrigin,
+          AMA_ALLOWED_ORIGINS: `${amaOrigin},${akOrigin}`,
           AMA_VAULT_ENCRYPTION_KEY: "ak-v2-smoke-vault-encryption-key-32-bytes",
           ...(DEV
             ? {
-                AMA_WEB_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
                 OIDC_BROWSER_SCOPES: DEV_AMA_BROWSER_SCOPES,
               }
             : {}),
           OIDC_ISSUER: `${rrOrigin}/api/auth`,
           OIDC_CLIENT_ID: amaController.clientId,
-          ...(DEV ? { OIDC_CLIENT_SECRET: amaController.clientSecret } : {}),
-          OIDC_TRUSTED_BEARER_CLIENT_IDS: akWeb.clientId,
+          OIDC_TRUSTED_BEARER_CLIENT_IDS: `${akWeb.clientId},${akService.clientId}`,
           OIDC_RESOURCE: `${amaOrigin}/api`,
           OIDC_RUNNER_CLIENT_ID: amaRunner.clientId,
-          REALMROOT_MANAGEMENT_CLIENT_ID: amaAuthority.clientId,
-          REALMROOT_MANAGEMENT_CLIENT_SECRET: amaAuthority.clientSecret,
+          REALMROOT_TOKEN_EXCHANGE_CLIENT_ID: amaAuthority.clientId,
+          REALMROOT_TOKEN_EXCHANGE_CLIENT_SECRET: amaAuthority.clientSecret,
           REALMROOT_MANAGEMENT_RESOURCE: `${rrOrigin}/api`,
         },
         join(AMA_ROOT, "dist/client"),
@@ -532,10 +543,10 @@ async function main() {
           AMA_ORIGIN: amaOrigin,
           AMA_RESOURCE: `${amaOrigin}/api`,
           REALMROOT_ISSUER: `${rrOrigin}/api/auth`,
-          REALMROOT_WEB_CLIENT_ID: akWeb.clientId,
-          REALMROOT_WEB_CLIENT_SECRET: akWeb.clientSecret,
+          REALMROOT_BROWSER_CLIENT_ID: akWeb.clientId,
           REALMROOT_CLI_CLIENT_ID: "realmroot-cli",
-          REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+          AK_SERVICE_CLIENT_ID: akService.clientId,
+          AK_SERVICE_CLIENT_SECRET: akService.clientSecret,
           ALLOWED_HOSTS: `localhost:${akPort}`,
         },
         join(AK_ROOT, "apps/web/dist/client"),
@@ -606,6 +617,12 @@ async function main() {
     await management(page, rrOrigin, "PATCH", `/api/resource-servers/${amaResource.id}`, {
       scopeGrantModes: amaResourceWithScopes.scopes.map(({ value }) => ({ scope: value, grantMode: "automatic" })),
     });
+    const exchangeAuthority = await management(page, rrOrigin, "PATCH", `/api/applications/${amaAuthority.id}`, {
+      resourceScopes: [{ resourceServerId: rrManagement.id, scopes: ["agents:write"] }],
+      tokenExchangeSourceResourceServerIds: [amaResource.id],
+    });
+    if (!exchangeAuthority.tokenExchangeSourceResourceServerIds?.includes(amaResource.id))
+      fail("AMA token-exchange authority did not retain the AMA source Resource allowlist", JSON.stringify(exchangeAuthority));
     const akResource = await management(
       page,
       rrOrigin,
@@ -638,21 +655,26 @@ async function main() {
       "sessions:write",
       "vaults:read",
     ];
-    const runnerScopes = ["runners:read", "runners:write", "work-items:read", "work-items:write", "leases:read", "leases:write", "sessions:write"];
+    const runnerScopes = [
+      "agents:write",
+      "runners:read",
+      "runners:write",
+      "work-items:read",
+      "work-items:write",
+      "leases:read",
+      "leases:write",
+      "sessions:write",
+    ];
     await management(page, rrOrigin, "PATCH", `/api/applications/${amaController.id}`, {
       resourceScopes: [
         {
           resourceServerId: amaResource.id,
           scopes: DEV ? amaResourceWithScopes.scopes.map(({ value }) => value) : controllerScopes,
         },
-        { resourceServerId: rrManagement.id, scopes: ["agents:write"] },
       ],
     });
     await management(page, rrOrigin, "PATCH", `/api/applications/${amaRunner.id}`, {
-      resourceScopes: [
-        { resourceServerId: amaResource.id, scopes: runnerScopes },
-        { resourceServerId: rrManagement.id, scopes: ["agents:write"] },
-      ],
+      resourceScopes: [{ resourceServerId: amaResource.id, scopes: runnerScopes }],
     });
     await management(page, rrOrigin, "PATCH", `/api/applications/${akWeb.id}`, {
       resourceScopes: [
@@ -670,7 +692,14 @@ async function main() {
             "sessions:write",
           ],
         },
-        { resourceServerId: rrManagement.id, scopes: ["agents:write"] },
+      ],
+    });
+    await management(page, rrOrigin, "PATCH", `/api/applications/${akService.id}`, {
+      resourceScopes: [
+        {
+          resourceServerId: amaResource.id,
+          scopes: ["agents:read", "environments:read", "projects:read", "runners:read", "sessions:read", "sessions:write"],
+        },
       ],
     });
 
@@ -697,18 +726,12 @@ async function main() {
       return;
     }
 
-    const controllerCredential = await oauthCredential(page, rrOrigin, amaController, `${amaOrigin}/api`, controllerScopes, /Realmroot/, [
-      `${rrOrigin}/api`,
-    ]);
+    const controllerCredential = await oauthCredential(page, rrOrigin, amaController, `${amaOrigin}/api`, controllerScopes, /Realmroot/);
     const projects = await realAmaRequest(amaOrigin, controllerCredential, "GET", "/api/v1/projects?limit=10", undefined, 200, undefined, null);
     controllerCredential.projectId = projects.data[0]?.id ?? projects.data[0]?.metadata?.uid;
     if (!controllerCredential.projectId) fail("Real Realmroot controller token did not establish an AMA project", JSON.stringify(projects));
-    await addRealmrootManagementCredential(page, rrOrigin, amaController, controllerCredential, `${rrOrigin}/api`);
-    const runnerCredential = await oauthCredential(page, rrOrigin, amaRunner, `${amaOrigin}/api`, [...runnerScopes, "agents:write"], /Realmroot/, [
-      `${rrOrigin}/api`,
-    ]);
+    const runnerCredential = await oauthCredential(page, rrOrigin, amaRunner, `${amaOrigin}/api`, runnerScopes, /Realmroot/);
     runnerCredential.projectId = controllerCredential.projectId;
-    await addRealmrootManagementCredential(page, rrOrigin, amaRunner, runnerCredential, `${rrOrigin}/api`);
 
     await amaRequest(amaOrigin, amaToken.accessToken, amaToken.projectId, "POST", "/api/v1/e2e/catalog/seed", {}, 201);
     const environment = await realAmaRequest(
@@ -817,28 +840,6 @@ async function main() {
         mcpConnectors: [],
       },
     });
-    const missingSecondary = await realAmaResponse(
-      amaOrigin,
-      { ...controllerCredential, realmrootAccessToken: undefined },
-      "POST",
-      "/api/v1/agents",
-      agentCreateBody(`${agentUsername}-missing`, "Missing authority must fail"),
-      `agent-missing-secondary-${runId}`,
-    );
-    const missingSecondaryProblem = await json(missingSecondary, 403, "AMA Agent create without secondary Realmroot authority");
-    if (JSON.stringify(missingSecondaryProblem).includes(controllerCredential.realmrootAccessToken))
-      fail("AMA leaked the Realmroot management credential in a missing-authority response");
-    const mismatchedClient = await realAmaResponse(
-      amaOrigin,
-      { ...controllerCredential, realmrootAccessToken: runnerCredential.realmrootAccessToken },
-      "POST",
-      "/api/v1/agents",
-      agentCreateBody(`${agentUsername}-wrong-client`, "Wrong client must fail"),
-      `agent-wrong-client-${runId}`,
-    );
-    const mismatchedClientProblem = await json(mismatchedClient, 403, "AMA Agent create with a mismatched secondary client");
-    if (JSON.stringify(mismatchedClientProblem).includes(runnerCredential.realmrootAccessToken))
-      fail("AMA leaked the mismatched Realmroot management credential in its response");
     const agentResponse = await realAmaResponse(
       amaOrigin,
       controllerCredential,
@@ -875,60 +876,92 @@ async function main() {
     const managedVault = matchingVaults[0];
     await realAmaRequest(amaOrigin, controllerCredential, "GET", `/api/v1/vaults/${managedVault.metadata.uid}`);
 
-    await page.goto(`${akOrigin}/api/auth/login?return_to=/`);
-    if (page.url().includes("/auth/context")) {
-      await page
-        .getByRole("radio", { name: /Realmroot/ })
-        .last()
-        .click();
-      await page.getByRole("button", { name: "Continue" }).click();
-    }
-    if (page.url().includes("/auth/consent")) await page.getByRole("button", { name: "Authorize" }).click();
-    await page.waitForURL(`${akOrigin}/`);
-    const session = await json(await page.request.get(`${akOrigin}/api/auth/session`), 200, "AK OAuth session");
-    const akCookies = await context.cookies(akOrigin);
-    const cookie = akCookies.map(({ name, value }) => `${name}=${value}`).join("; ");
-    const csrf = session.session.csrfToken;
-
+    const akCredential = await browserSpaCredential(page, rrOrigin, akOrigin);
+    const akAccessToken = akCredential.accessToken;
     const connection = await akRequest(
       akOrigin,
-      csrf,
-      cookie,
+      akAccessToken,
       "POST",
       "/api/ama-connections",
       { resourceUrl: `${amaOrigin}/api`, projectUri: `${amaOrigin}/api/v1/projects/${controllerCredential.projectId}` },
       201,
       "connection",
     );
-    const consoleProjects = await akRequest(akOrigin, csrf, cookie, "GET", "/api/console/ama-projects");
-    if (!consoleProjects.items?.some((value) => value.id === controllerCredential.projectId))
-      fail("AK product BFF did not expose the connected AMA Project", JSON.stringify(consoleProjects));
-    const consoleAgents = await akRequest(akOrigin, csrf, cookie, "GET", `/api/console/ama-connections/${connection.id}/agents`);
-    if (!consoleAgents.items?.some((value) => value.metadata?.uid === agent.metadata.uid && value.identity?.subject === agent.identity.subject))
-      fail("AK Agents product projection did not preserve AMA Agent identity", JSON.stringify(consoleAgents));
-    await akRequest(akOrigin, csrf, cookie, "GET", `/api/console/ama-connections/${connection.id}/agents/${agent.metadata.uid}`);
-    const consoleMachines = await akRequest(akOrigin, csrf, cookie, "GET", `/api/console/ama-connections/${connection.id}/machines`);
-    const consoleMachine = consoleMachines.items?.find((value) => value.environment?.metadata?.uid === environment.metadata.uid);
-    if (!consoleMachine?.runners?.some((value) => value.id === registeredRunner.id))
-      fail("AK Machines product projection did not aggregate the AMA Environment and Runner", JSON.stringify(consoleMachines));
-    await akRequest(akOrigin, csrf, cookie, "GET", `/api/console/ama-connections/${connection.id}/machines/${environment.metadata.uid}`);
-    const board = await akRequest(akOrigin, csrf, cookie, "POST", "/api/boards", { name: "V2 full smoke" }, 201, "board");
-    const boardBeforeAgent = await akRequest(akOrigin, csrf, cookie, "GET", `/api/boards/${board.id}`);
+    const amaBrowserRequests = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin === amaOrigin) amaBrowserRequests.push({ url: request.url(), headers: request.headers() });
+    });
+    await page.goto(`${akOrigin}/agents?connection=${connection.id}`);
+    await page.getByText("AK v2 smoke worker", { exact: true }).waitFor();
+    await page.goto(`${akOrigin}/machines?connection=${connection.id}`);
+    await page.getByText(`ak-smoke-env-${runId}`, { exact: true }).waitFor();
+    const browserCredentials = await page.evaluate(() => {
+      const userEntry = Object.entries(sessionStorage).find(([key]) => key.startsWith("oidc.user:"));
+      const amaEntry = sessionStorage.getItem("ak:ama-resource-token");
+      return { user: userEntry?.[1] ?? null, ama: amaEntry };
+    });
+    if (!browserCredentials.user || !browserCredentials.ama)
+      fail("AK SPA did not retain rotated OIDC and AMA Resource credentials", JSON.stringify(browserCredentials));
+    const rotatedUser = JSON.parse(browserCredentials.user);
+    const cachedAma = JSON.parse(browserCredentials.ama);
+    if (!rotatedUser.refresh_token || rotatedUser.refresh_token === akCredential.refreshToken || !cachedAma.accessToken)
+      fail("AK SPA did not rotate the shared refresh token while acquiring the AMA Resource token", JSON.stringify(browserCredentials));
+    const akAmaCredential = {
+      accessToken: cachedAma.accessToken,
+      refreshToken: rotatedUser.refresh_token,
+      expiresIn: Math.max(1, Math.floor((cachedAma.expiresAt - Date.now()) / 1000)),
+      tokenType: "Bearer",
+      projectId: controllerCredential.projectId,
+    };
+    const corsRequests = amaBrowserRequests.filter(({ url }) => /\/api\/v1\/(agents|environments|runners)/.test(new URL(url).pathname));
+    if (
+      corsRequests.length < 3 ||
+      corsRequests.some(
+        ({ headers }) => !headers.authorization?.startsWith("Bearer ") || headers["x-ama-project-id"] !== controllerCredential.projectId,
+      )
+    )
+      fail("Original AK UI did not call AMA directly with its Resource token and project boundary", JSON.stringify(corsRequests));
+    const browserProjects = await realAmaRequest(amaOrigin, akAmaCredential, "GET", "/api/v1/projects?limit=10", undefined, 200, undefined, null);
+    if (!browserProjects.data?.some((value) => (value.id ?? value.metadata?.uid) === controllerCredential.projectId))
+      fail("Public SPA AMA token did not expose its AMA Project", JSON.stringify(browserProjects));
+    const browserCors = await page.evaluate(
+      async ({ origin, accessToken, projectId }) => {
+        const response = await fetch(`${origin}/api/v1/projects?limit=10`, {
+          headers: { Authorization: `Bearer ${accessToken}`, "X-AMA-Project-ID": projectId },
+        });
+        return { status: response.status, body: await response.text() };
+      },
+      { origin: amaOrigin, accessToken: akAmaCredential.accessToken, projectId: controllerCredential.projectId },
+    );
+    const browserCorsBody = browserCors.status === 200 ? JSON.parse(browserCors.body) : null;
+    if (browserCors.status !== 200 || !browserCorsBody?.data?.some((value) => (value.id ?? value.metadata?.uid) === controllerCredential.projectId))
+      fail("AK-origin browser CORS request did not reach AMA with Authorization and project headers", JSON.stringify(browserCors));
+    const browserAgents = await realAmaRequest(amaOrigin, akAmaCredential, "GET", "/api/v1/agents?limit=100");
+    if (!browserAgents.data?.some((value) => value.metadata?.uid === agent.metadata.uid && value.identity?.subject === agent.identity.subject))
+      fail("Direct AMA Agents projection did not preserve Agent identity", JSON.stringify(browserAgents));
+    await realAmaRequest(amaOrigin, akAmaCredential, "GET", `/api/v1/agents/${agent.metadata.uid}`);
+    const browserEnvironments = await realAmaRequest(amaOrigin, akAmaCredential, "GET", "/api/v1/environments?limit=100");
+    const browserRunners = await realAmaRequest(amaOrigin, akAmaCredential, "GET", "/api/v1/runners?limit=100");
+    if (
+      !browserEnvironments.data?.some((value) => value.metadata?.uid === environment.metadata.uid) ||
+      !browserRunners.data?.some((value) => value.id === registeredRunner.id && value.environmentId === environment.metadata.uid)
+    )
+      fail("Direct AMA Machines sources did not expose the Environment and Runner", JSON.stringify({ browserEnvironments, browserRunners }));
+    const board = await akRequest(akOrigin, akAccessToken, "POST", "/api/boards", { name: "V2 full smoke" }, 201, "board");
+    const boardBeforeAgent = await akRequest(akOrigin, akAccessToken, "GET", `/api/boards/${board.id}`);
     const repository = await akRequest(
       akOrigin,
-      csrf,
-      cookie,
+      akAccessToken,
       "POST",
       "/api/repositories",
       { name: "smoke", url: "https://github.com/octocat/Hello-World.git", defaultBranch: "master" },
       201,
       "repository",
     );
-    await akRequest(akOrigin, csrf, cookie, "PUT", `/api/boards/${board.id}/execution-binding`, { amaConnectionId: connection.id }, 201);
+    await akRequest(akOrigin, akAccessToken, "PUT", `/api/boards/${board.id}/execution-binding`, { amaConnectionId: connection.id }, 201);
     await akRequest(
       akOrigin,
-      csrf,
-      cookie,
+      akAccessToken,
       "POST",
       `/api/boards/${board.id}/memberships`,
       { agentId: agent.metadata.uid, capabilities: ["work"] },
@@ -937,8 +970,7 @@ async function main() {
     );
     const task = await akRequest(
       akOrigin,
-      csrf,
-      cookie,
+      akAccessToken,
       "POST",
       `/api/boards/${board.id}/tasks`,
       {
@@ -950,15 +982,15 @@ async function main() {
       201,
       "task",
     );
-    await akRequest(akOrigin, csrf, cookie, "POST", `/api/tasks/${task.id}/assignments`, { agentId: agent.metadata.uid }, 201, "assignment");
-    const runResource = await akRequest(akOrigin, csrf, cookie, "POST", `/api/tasks/${task.id}/runs`, {}, 201, "run");
+    await akRequest(akOrigin, akAccessToken, "POST", `/api/tasks/${task.id}/assignments`, { agentId: agent.metadata.uid }, 201, "assignment");
+    const runResource = await akRequest(akOrigin, akAccessToken, "POST", `/api/tasks/${task.id}/runs`, {}, 201, "run");
     const malformedDpop = await fetch(`${akOrigin}/api/boards`, {
       headers: { Authorization: "DPoP invalid.invalid.invalid", DPoP: "invalid.invalid.invalid", "API-Version": API_VERSION },
     });
     if (malformedDpop.status !== 401) fail("AK did not fail closed for malformed DPoP", await malformedDpop.text());
     await triggerScheduled(akOrigin, "AK");
     const running = await waitFor(async () => {
-      const value = await akRequest(akOrigin, csrf, cookie, "GET", `/api/task-runs/${runResource.id}`);
+      const value = await akRequest(akOrigin, akAccessToken, "GET", `/api/task-runs/${runResource.id}`);
       return value.status === "running" && value.amaSessionUri ? value : false;
     }, "unique AMA Session dispatch");
     const sessions = await realAmaRequest(amaOrigin, controllerCredential, "GET", "/api/v1/sessions?limit=50");
@@ -976,8 +1008,9 @@ async function main() {
       fail("AMA labelSelector did not reconcile the unique AK Session", JSON.stringify(reconciledSessions));
     if (
       dispatchedSession.spec?.agentId !== agent.metadata.uid ||
-      dispatchedSession.spec?.runtime !== agent.spec.runtime ||
       dispatchedSession.metadata?.labels?.["agent-kanban-run"] !== `ak:task-run:${runResource.id}` ||
+      dispatchedSession.spec?.runtime !== agent.spec.runtime ||
+      dispatchedSession.spec?.environmentId !== environment.metadata.uid ||
       dispatchedSession.identity !== undefined ||
       dispatchedSession.workload !== undefined ||
       dispatchedSession.vault !== undefined ||
@@ -985,7 +1018,7 @@ async function main() {
       dispatchedSession.spec?.task !== undefined ||
       dispatchedSession.spec?.repository !== undefined
     )
-      fail("AK did not use the native AMA Session Agent/runtime contract", JSON.stringify(dispatchedSession));
+      fail("AK did not use the native AMA Session Agent contract", JSON.stringify(dispatchedSession));
     const repositoryVolume = dispatchedSession.spec?.volumes?.find((volume) => volume.name === "repository");
     const repositoryMount = dispatchedSession.spec?.volumeMounts?.find((mount) => mount.name === "repository");
     if (
@@ -996,19 +1029,14 @@ async function main() {
     )
       fail("AK did not map the Task Repository to native AMA Session volumes", JSON.stringify(dispatchedSession.spec));
 
-    const projectedSessions = await akRequest(akOrigin, csrf, cookie, "GET", `/api/console/ama-connections/${connection.id}/sessions`);
-    const projectedSession = projectedSessions.items?.find((value) => value.metadata?.uid === dispatchedSession.metadata.uid);
-    if (projectedSession?.spec?.agentId !== agent.metadata.uid || projectedSession?.spec?.runtime !== agent.spec.runtime)
-      fail("AK AMA Session projection did not preserve AMA's resolved placement contract", JSON.stringify(projectedSessions));
-    const projectedMachine = await akRequest(
-      akOrigin,
-      csrf,
-      cookie,
-      "GET",
-      `/api/console/ama-connections/${connection.id}/machines/${environment.metadata.uid}`,
-    );
-    if (!projectedMachine.sessions?.some((value) => value.metadata?.uid === dispatchedSession.metadata.uid))
-      fail("AK Machine projection did not include the running AMA Session", JSON.stringify(projectedMachine));
+    const projectedSessions = await realAmaRequest(amaOrigin, akAmaCredential, "GET", "/api/v1/sessions?limit=100");
+    const projectedSession = projectedSessions.data?.find((value) => value.metadata?.uid === dispatchedSession.metadata.uid);
+    if (
+      projectedSession?.spec?.agentId !== agent.metadata.uid ||
+      projectedSession?.spec?.runtime !== agent.spec.runtime ||
+      projectedSession?.spec?.environmentId !== environment.metadata.uid
+    )
+      fail("Direct AMA Session projection did not preserve the Agent placement contract", JSON.stringify(projectedSessions));
 
     const expectedAgentScopes = ["boards:read", "boards:write", "execution:read", "reviews:read", "reviews:write", "tasks:read", "work:write"];
     let lastApprovalPollAt = 0;
@@ -1036,14 +1064,14 @@ async function main() {
         }
         lastApprovalPollAt = Date.now();
       }
-      const taskValue = await akRequest(akOrigin, csrf, cookie, "GET", `/api/tasks/${task.id}`);
+      const taskValue = await akRequest(akOrigin, akAccessToken, "GET", `/api/tasks/${task.id}`);
       if (taskValue.status !== "in_review") return false;
-      const collection = await akRequest(akOrigin, csrf, cookie, "GET", `/api/tasks/${task.id}/submissions`);
+      const collection = await akRequest(akOrigin, akAccessToken, "GET", `/api/tasks/${task.id}/submissions`);
       return collection.items.find((value) => value.status === "pending_review") ?? false;
     }, "Agent progress and first submission");
     if (firstSubmission.summary !== "first smoke submission")
       fail("First Agent submission summary was not the requested value", JSON.stringify(firstSubmission));
-    const firstProgress = await akRequest(akOrigin, csrf, cookie, "GET", `/api/task-runs/${runResource.id}/progress-entries`);
+    const firstProgress = await akRequest(akOrigin, akAccessToken, "GET", `/api/task-runs/${runResource.id}/progress-entries`);
     if (!firstProgress.items.some((entry) => entry.kind === "checkpoint" && entry.body === "board patch forbidden 403; real runner started"))
       fail("Agent did not record the expected first checkpoint and forbidden Board write outcome", JSON.stringify(firstProgress));
     await waitFor(
@@ -1062,14 +1090,13 @@ async function main() {
       "Agent-attributed Board capability rejection log",
       5_000,
     );
-    const boardAfterAgent = await akRequest(akOrigin, csrf, cookie, "GET", `/api/boards/${board.id}`);
+    const boardAfterAgent = await akRequest(akOrigin, akAccessToken, "GET", `/api/boards/${board.id}`);
     if (boardAfterAgent.name !== boardBeforeAgent.name || boardAfterAgent.version !== boardBeforeAgent.version)
       fail("Agent-attributed forbidden Board PATCH changed Board state", JSON.stringify({ boardBeforeAgent, boardAfterAgent }));
     const rejection = { decision: "rejected", body: "Add the corrected black-box proof and resubmit." };
     const rejected = await akRequest(
       akOrigin,
-      csrf,
-      cookie,
+      akAccessToken,
       "POST",
       `/api/task-submissions/${firstSubmission.id}/reviews`,
       rejection,
@@ -1078,8 +1105,7 @@ async function main() {
     );
     const replay = await akRequest(
       akOrigin,
-      csrf,
-      cookie,
+      akAccessToken,
       "POST",
       `/api/task-submissions/${firstSubmission.id}/reviews`,
       rejection,
@@ -1089,28 +1115,27 @@ async function main() {
     if (replay.id !== rejected.id) fail("AK review idempotency replay changed the resource");
     await triggerScheduled(akOrigin, "AK");
     const corrected = await waitFor(async () => {
-      const collection = await akRequest(akOrigin, csrf, cookie, "GET", `/api/tasks/${task.id}/submissions`);
+      const collection = await akRequest(akOrigin, akAccessToken, "GET", `/api/tasks/${task.id}/submissions`);
       return collection.items.find((value) => value.status === "pending_review" && value.id !== firstSubmission.id) ?? false;
     }, "same-Session review feedback and corrected submission");
     if (corrected.summary !== "corrected smoke submission")
       fail("Corrected Agent submission summary was not the requested value", JSON.stringify(corrected));
-    const allProgress = await akRequest(akOrigin, csrf, cookie, "GET", `/api/task-runs/${runResource.id}/progress-entries`);
+    const allProgress = await akRequest(akOrigin, akAccessToken, "GET", `/api/task-runs/${runResource.id}/progress-entries`);
     const checkpoints = allProgress.items.filter((entry) => entry.kind === "checkpoint").map((entry) => entry.body);
     for (const expected of ["board patch forbidden 403; real runner started", "review feedback resumed"])
       if (!checkpoints.includes(expected)) fail(`Missing exact Agent checkpoint: ${expected}`, JSON.stringify(allProgress));
     await akRequest(
       akOrigin,
-      csrf,
-      cookie,
+      akAccessToken,
       "POST",
       `/api/task-submissions/${corrected.id}/reviews`,
       { decision: "accepted", body: "Full chain verified." },
       201,
       "accept-review",
     );
-    const done = await akRequest(akOrigin, csrf, cookie, "GET", `/api/tasks/${task.id}`);
+    const done = await akRequest(akOrigin, akAccessToken, "GET", `/api/tasks/${task.id}`);
     if (done.status !== "done") fail("AK Task did not reach done", JSON.stringify(done));
-    const taskRuns = await akRequest(akOrigin, csrf, cookie, "GET", `/api/tasks/${task.id}/runs`);
+    const taskRuns = await akRequest(akOrigin, akAccessToken, "GET", `/api/tasks/${task.id}/runs`);
     if (taskRuns.items.length !== 1) fail("Recoverable rejection created a duplicate TaskRun", JSON.stringify(taskRuns));
 
     await realAmaRequest(amaOrigin, controllerCredential, "DELETE", new URL(agentUri).pathname, undefined, 204);
@@ -1128,9 +1153,8 @@ async function main() {
           .join("\n"),
       );
     const processLogs = processes.map((entry) => entry.output.join("")).join("\n");
-    for (const token of [controllerCredential.realmrootAccessToken, runnerCredential.realmrootAccessToken]) {
-      if (token && processLogs.includes(token)) fail("A secondary Realmroot management credential leaked into service logs");
-    }
+    for (const token of [akCredential.accessToken, akAmaCredential.accessToken, controllerCredential.accessToken])
+      if (token && processLogs.includes(token)) fail("A Realmroot Resource token leaked into service logs");
     info(`PASS: real RR=${rrOrigin}, AMA=${amaOrigin}, AK=${akOrigin}; Agent ${agent.identity.subject}; Session ${running.amaSessionUri}`);
   } catch (error) {
     const diagnostics = processes.map(({ name, output }) => `--- ${name} ---\n${output.join("").split(/\r?\n/).slice(-80).join("\n")}`).join("\n");

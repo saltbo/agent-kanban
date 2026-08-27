@@ -87,12 +87,11 @@ export class ExecutionRepo {
   ): Promise<{
     id: string;
     ama_session_uri: string | null;
-    authorized_subject_id: string;
     project_uri: string;
   } | null> {
     const placeholders = statuses.map(() => "?").join(",");
     return this.db
-      .prepare(`SELECT r.id, r.ama_session_uri, ac.authorized_subject_id, ac.project_uri
+      .prepare(`SELECT r.id, r.ama_session_uri, ac.project_uri
       FROM task_runs r
       JOIN board_execution_bindings beb ON beb.board_id = ? AND beb.tenant_id = r.tenant_id
       JOIN ama_connections ac ON ac.id = beb.ama_connection_id AND ac.tenant_id = r.tenant_id

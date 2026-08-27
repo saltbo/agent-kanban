@@ -1,7 +1,7 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 3.2 agent-edit-and-retire-preserve-pending-and-errors
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, collection, fulfillJson, readyAgent, signIn } from "./product-fixtures";
+import { amaCollection, fulfillJson, readyAgent, signIn } from "./product-fixtures";
 
 function deferred() {
   let release!: () => void;
@@ -15,7 +15,7 @@ test("Agent edit and retirement stay pending and preserve their owning error sur
   await signIn(page);
   const patchGate = deferred();
   const retireGate = deferred();
-  await page.route(new RegExp(`/api/console/ama-connections/${CONNECTION_ID}/agents(?:/[^/?]+)?(?:\\?.*)?$`), async (route) => {
+  await page.route(/\/api\/v1\/agents(?:\/[^/?]+)?(?:\?.*)?$/, async (route) => {
     const method = route.request().method();
     const pathname = new URL(route.request().url()).pathname;
     if (method === "PATCH") {
@@ -27,9 +27,9 @@ test("Agent edit and retirement stay pending and preserve their owning error sur
       return fulfillJson(route, { detail: "AMA could not retire the Agent." }, 503);
     }
     if (pathname.endsWith(`/agents/${readyAgent.metadata.uid}`)) return fulfillJson(route, readyAgent);
-    return fulfillJson(route, collection([readyAgent]));
+    return fulfillJson(route, amaCollection([readyAgent]));
   });
-  await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/sessions`, (route) => fulfillJson(route, collection([])));
+  await page.route(/\/api\/v1\/sessions(?:\?.*)?$/, (route) => fulfillJson(route, amaCollection([])));
 
   await page.goto("/agents/agent-ready?connection=ama-e2e");
   await page.getByRole("button", { name: "•••" }).click();

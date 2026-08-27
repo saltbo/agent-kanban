@@ -17,48 +17,11 @@ CREATE TABLE tenant_members (
   PRIMARY KEY (tenant_id, subject_id)
 );
 
-CREATE TABLE web_sessions (
-  id TEXT PRIMARY KEY,
-  token_hash TEXT NOT NULL UNIQUE,
-  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  subject_id TEXT NOT NULL,
-  email TEXT,
-  name TEXT,
-  image TEXT,
-  role TEXT NOT NULL DEFAULT 'member',
-  scopes_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(scopes_json)),
-  csrf_token TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX web_sessions_expiry ON web_sessions(expires_at);
-
-CREATE TABLE login_attempts (
-  id_hash TEXT PRIMARY KEY,
-  state_hash TEXT NOT NULL UNIQUE,
-  nonce TEXT NOT NULL,
-  pkce_verifier TEXT NOT NULL,
-  return_to TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
-
 CREATE TABLE dpop_replays (
   thumbprint TEXT NOT NULL,
   jti TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   PRIMARY KEY (thumbprint, jti)
-);
-
-CREATE TABLE ama_grants (
-  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  subject_id TEXT NOT NULL,
-  refresh_token_ciphertext TEXT NOT NULL,
-  refresh_token_nonce TEXT NOT NULL,
-  access_token_ciphertext TEXT NOT NULL,
-  access_token_nonce TEXT NOT NULL,
-  access_token_expires_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (tenant_id, subject_id)
 );
 
 CREATE TABLE boards (
@@ -224,12 +187,11 @@ CREATE TABLE ama_connections (
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   resource_url TEXT NOT NULL,
   project_uri TEXT NOT NULL,
-  authorized_subject_id TEXT NOT NULL,
+  created_by_subject_id TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (tenant_id, authorized_subject_id) REFERENCES ama_grants(tenant_id, subject_id) ON DELETE RESTRICT,
   UNIQUE (tenant_id, project_uri)
 );
 

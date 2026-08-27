@@ -1,7 +1,7 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 4.2 machine-delete-preserves-pending-and-errors
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, collection, fulfillJson, localMachine, signIn } from "./product-fixtures";
+import { fulfillJson, localMachine, routeAmaMachines, signIn } from "./product-fixtures";
 
 test("Machine removal stays pending and preserves the Environment detail when AMA fails", async ({ page }) => {
   await signIn(page);
@@ -9,15 +9,13 @@ test("Machine removal stays pending and preserves the Environment detail when AM
   const deletion = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route(new RegExp(`/api/console/ama-connections/${CONNECTION_ID}/machines(?:/[^/?]+)?(?:\\?.*)?$`), async (route) => {
-    const method = route.request().method();
-    const pathname = new URL(route.request().url()).pathname;
-    if (method === "DELETE") {
+  await routeAmaMachines(page, [localMachine]);
+  await page.route(/\/api\/v1\/environments\/env-local$/, async (route) => {
+    if (route.request().method() === "DELETE") {
       await deletion;
       return fulfillJson(route, { detail: "AMA could not remove the Environment." }, 503);
     }
-    if (pathname.endsWith("/machines/env-local")) return fulfillJson(route, { ...localMachine, id: "env-local", name: "Build Mac" });
-    return fulfillJson(route, collection([{ ...localMachine, id: "env-local", name: "Build Mac" }]));
+    return route.fallback();
   });
 
   await page.goto("/machines/env-local?connection=ama-e2e");

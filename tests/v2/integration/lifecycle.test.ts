@@ -2,40 +2,58 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccessRepo } from "../../../apps/web/server/accessRepo";
 import { dispatchOutbox } from "../../../apps/web/server/outbox";
 import { createTestApplication, jsonRequest, responseJson, type TestApplication } from "../helpers/app";
-import { startAmaServer } from "../helpers/protocol-servers";
+import { startAmaServer, startOidcServer } from "../helpers/protocol-servers";
 
 type Resource = { id: string; status?: string; agentId?: string; amaSessionUri?: string | null };
 
 describe("AK → AMA assignment and complete Task lifecycle", () => {
   let app!: TestApplication;
   let ama!: Awaited<ReturnType<typeof startAmaServer>>;
+  let oidc!: Awaited<ReturnType<typeof startOidcServer>>;
 
   beforeEach(async () => {
-    ama = await startAmaServer();
+    oidc = await startOidcServer();
+    ama = await startAmaServer({ issuer: oidc.issuer, subject: "agent-001", runtime: "ama" });
     app = await createTestApplication({
       AMA_ORIGIN: ama.origin,
       AMA_RESOURCE: `${ama.origin}/api`,
-      REALMROOT_ISSUER: ama.identity.issuer,
+      REALMROOT_ISSUER: oidc.issuer,
     });
-    await app.db.batch([
-      app.db.prepare("INSERT INTO tenants (id) VALUES (?)").bind("tenant-a"),
-      app.db
-        .prepare(
-          `INSERT INTO ama_grants
-             (tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce,
-              access_token_ciphertext, access_token_nonce, access_token_expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .bind("tenant-a", "local-controller", "unused", "unused", "unused", "unused", "2099-01-01T00:00:00.000Z"),
-    ]);
+    await app.db.prepare("INSERT INTO tenants (id) VALUES (?)").bind("tenant-a").run();
   });
 
   afterEach(async () => {
     await app?.close();
     await ama?.close();
+    await oidc?.close();
+  });
+
+  it("uses a Machine Application client_credentials token for every server-side AMA request", async () => {
+    await app.close();
+    app = await createTestApplication({
+      AMA_ORIGIN: ama.origin,
+      AMA_RESOURCE: `${ama.origin}/api`,
+      REALMROOT_ISSUER: oidc.issuer,
+      AK_SERVICE_CLIENT_ID: "ak-machine",
+      AK_SERVICE_CLIENT_SECRET: "machine-secret",
+    });
+    const connection = await create("/api/ama-connections", { resourceUrl: `${ama.origin}/api`, projectUri: ama.projectUri }, "machine-connection");
+    expect(connection.id).toBeTruthy();
+    await vi.waitFor(() => expect(oidc.requests.some((request) => request.path === "/api/auth/oauth2/token")).toBe(true));
+    const tokenRequest = oidc.requests.find((request) => request.path === "/api/auth/oauth2/token")!;
+    expect(new URLSearchParams(tokenRequest.body).get("grant_type")).toBe("client_credentials");
+    expect(new URLSearchParams(tokenRequest.body).get("resource")).toBe(`${ama.origin}/api`);
+    expect(new URLSearchParams(tokenRequest.body).get("scope")?.split(" ").sort()).toEqual(
+      ["agents:read", "environments:read", "projects:read", "runners:read", "sessions:read", "sessions:write"].sort(),
+    );
+    expect(tokenRequest.headers.authorization).toMatch(/^Basic /);
+    const projectRequest = ama.requests.find((request) => request.path === "/api/v1/projects/project-a");
+    expect(projectRequest?.headers.authorization).toBe("Bearer service-token");
+    expect(projectRequest?.headers).not.toHaveProperty("x-ama-realmroot-authorization");
   });
 
   it("persists the AMA Agent ID, dispatches one native Session, rejects/resumes, and accepts", async () => {
+    expect(app.env.AMA_RESOURCE).toBe(`${ama.origin}/api`);
     const connection = await create("/api/ama-connections", { resourceUrl: `${ama.origin}/api`, projectUri: ama.projectUri }, "connection");
     const board = await create("/api/boards", { name: "Release" }, "board");
     const repository = await create(

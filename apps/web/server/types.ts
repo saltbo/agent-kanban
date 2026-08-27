@@ -2,10 +2,10 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   REALMROOT_ISSUER: string;
-  REALMROOT_WEB_CLIENT_ID: string;
-  REALMROOT_WEB_CLIENT_SECRET: string;
-  REALMROOT_SESSION_ENCRYPTION_KEY: string;
+  REALMROOT_BROWSER_CLIENT_ID: string;
   REALMROOT_CLI_CLIENT_ID: string;
+  AK_SERVICE_CLIENT_ID: string;
+  AK_SERVICE_CLIENT_SECRET: string;
   AK_RESOURCE: string;
   AK_PUBLIC_ORIGIN?: string;
   AMA_ORIGIN: string;
@@ -15,7 +15,7 @@ export interface Env {
 }
 
 export type Principal = {
-  source: "session" | "token";
+  source: "token";
   type: "human" | "machine" | "agent" | "service";
   subjectId: string;
   tenantId: string;
@@ -34,7 +34,5 @@ declare module "hono" {
     principal: Principal;
     ownerId: string;
     actorAgentIds?: Map<string, Promise<string | null>>;
-    user?: { id: string; name: string; email: string; image?: string | null; role: string };
-    session?: { id: string; expiresAt: Date; csrfToken: string };
   }
 }

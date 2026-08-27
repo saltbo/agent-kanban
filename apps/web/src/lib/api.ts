@@ -1,5 +1,5 @@
 import type { Repository } from "@agent-kanban/shared";
-import { getCsrfToken, getSession } from "./auth-client";
+import { getAuthHeaders } from "./auth-client";
 
 const API_VERSION = "2026-08-22";
 const etags = new Map<string, string>();
@@ -8,18 +8,16 @@ type Page<T> = { items: T[]; pagination?: { nextPageToken?: string | null } };
 type Problem = { detail?: string; title?: string; type?: string; error?: { message?: string; code?: string } };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  let csrf = getCsrfToken();
-  if (!csrf && method !== "GET") csrf = (await getSession())?.session.csrfToken ?? null;
   if ((method === "PATCH" || method === "DELETE") && !etags.has(path)) await request<unknown>("GET", path);
+  const authorization = await getAuthHeaders("ak");
 
   const response = await fetch(`/api${path}`, {
     method,
-    credentials: "include",
     headers: {
       Accept: "application/json, application/problem+json",
       "Content-Type": "application/json",
       "API-Version": API_VERSION,
-      ...(csrf ? { "x-csrf-token": csrf } : {}),
+      ...authorization,
       ...(method === "POST" ? { "Idempotency-Key": crypto.randomUUID() } : {}),
       ...(method === "PATCH" || method === "DELETE" ? { "If-Match": etags.get(path)! } : {}),
     },
@@ -87,6 +85,13 @@ async function connectionId(): Promise<string> {
   return active[0].id;
 }
 
+async function activeConnection(): Promise<any> {
+  const id = await connectionId();
+  const connection = (await connections()).find((candidate) => candidate.id === id);
+  if (!connection) throw new Error(`AMA connection '${id}' is not available.`);
+  return connection;
+}
+
 async function runnerCommand(environmentId: string): Promise<string> {
   const id = await connectionId();
   const values = await connections();
@@ -96,8 +101,62 @@ async function runnerCommand(environmentId: string): Promise<string> {
   return `ama-runner auth login --api-server "${apiServer}"\n\nama-runner --api-server "${apiServer}" --project-id "${projectId}" --environment-id "${environmentId}"`;
 }
 
-function amaPath(connection: string, suffix: string): string {
-  return `/console/ama-connections/${encodeURIComponent(connection)}${suffix}`;
+async function amaRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  if (!path.startsWith("/api/v1/") || path.startsWith("//")) throw new Error("AMA request path is invalid.");
+  const connection = await activeConnection();
+  const projectId = decodeURIComponent(new URL(connection.projectUri).pathname.split("/").filter(Boolean).at(-1) ?? "");
+  const authorization = await getAuthHeaders("ama");
+  if (!authorization.authorization) throw new Error("Realmroot AMA authorization is required.");
+  const response = await fetch(new URL(path, new URL(connection.resourceUrl).origin), {
+    method,
+    headers: {
+      Accept: "application/json, application/problem+json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...authorization,
+      "X-AMA-Project-ID": projectId,
+      ...(method === "POST" ? { "Idempotency-Key": crypto.randomUUID() } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status === 204) return undefined as T;
+  let data: Problem | T;
+  try {
+    data = (await response.json()) as Problem | T;
+  } catch {
+    throw new Error(`AMA returned an invalid JSON response for ${method} ${path}.`);
+  }
+  if (!response.ok) {
+    const problem = data as Problem;
+    const error = new Error(problem?.detail || problem?.error?.message || problem?.title || `AMA HTTP ${response.status}`);
+    Object.assign(error, {
+      status: response.status,
+      code: problem?.type || problem?.error?.code || "AMA_REQUEST_FAILED",
+      requestId: response.headers.get("Request-Id") ?? undefined,
+    });
+    throw error;
+  }
+  return data as T;
+}
+
+async function amaItems<T>(path: string): Promise<T[]> {
+  const values: T[] = [];
+  const target = new URL(path, "http://ama.local");
+  const cursors = new Set<string>();
+  for (let page = 0; page < 1_000; page += 1) {
+    const result = await amaRequest<{ data?: T[]; pagination?: { hasMore?: boolean; nextCursor?: string | null } }>(
+      "GET",
+      `${target.pathname}${target.search}`,
+    );
+    if (!Array.isArray(result.data)) invalidAmaRepresentation("collection");
+    values.push(...result.data);
+    if (!result.pagination?.hasMore) return values;
+    const cursor = result.pagination.nextCursor;
+    if (!cursor || cursors.has(cursor)) throw new Error("AMA returned invalid cursor pagination metadata.");
+    cursors.add(cursor);
+    target.searchParams.set("cursor", cursor);
+  }
+  throw new Error("AMA collection exceeded the pagination safety limit.");
 }
 
 function invalidAmaRepresentation(kind: string): never {
@@ -205,14 +264,11 @@ function mapMachine(machine: any) {
 }
 
 async function listAgents(_params?: Record<string, string>): Promise<any[]> {
-  const connection = await connectionId();
-  const page = await request<Page<any>>("GET", amaPath(connection, "/agents"));
-  return page.items.map(mapAgent);
+  return (await amaItems<any>("/api/v1/agents?limit=100")).map(mapAgent);
 }
 
 async function createAgent(input: any): Promise<any> {
-  const connection = await connectionId();
-  return request<any>("POST", amaPath(connection, "/agents"), {
+  return amaRequest<any>("POST", "/api/v1/agents", {
     username: input.username,
     metadata: { name: input.name || input.username, description: input.bio ?? null },
     spec: {
@@ -229,8 +285,71 @@ async function createAgent(input: any): Promise<any> {
 }
 
 async function listMachines() {
-  const connection = await connectionId();
-  return (await request<Page<any>>("GET", amaPath(connection, "/machines"))).items.map(mapMachine);
+  return (await amaMachines()).map(mapMachine);
+}
+
+async function amaMachines(): Promise<any[]> {
+  const [environmentResult, runnerResult, sessionResult, agentResult] = await Promise.allSettled([
+    amaItems<any>("/api/v1/environments?limit=100"),
+    amaItems<any>("/api/v1/runners?limit=100"),
+    amaItems<any>("/api/v1/sessions?limit=100"),
+    amaItems<any>("/api/v1/agents?limit=100"),
+  ]);
+  if (environmentResult.status === "rejected") throw environmentResult.reason;
+  const environments = environmentResult.value;
+  const runners = runnerResult.status === "fulfilled" ? runnerResult.value : [];
+  const sessions = sessionResult.status === "fulfilled" ? sessionResult.value : [];
+  const agents = agentResult.status === "fulfilled" ? agentResult.value : [];
+  const warnings = [
+    ...(runnerResult.status === "rejected" ? ["AMA Runners are temporarily unavailable."] : []),
+    ...(sessionResult.status === "rejected" ? ["AMA Sessions are temporarily unavailable."] : []),
+    ...(agentResult.status === "rejected" ? ["AMA Agents are temporarily unavailable."] : []),
+  ];
+  const machine = (environment: any | null, attached: any[]) => {
+    const relatedSessions = sessions.filter((session) => session.spec?.environmentId === environment?.metadata?.uid);
+    const heartbeats = attached
+      .map((runner) => runner.lastHeartbeatAt)
+      .filter((value): value is string => typeof value === "string")
+      .sort();
+    return {
+      id: environment?.metadata?.uid ?? `runner-${attached[0].id}`,
+      name: environment?.metadata?.name ?? attached[0]?.name ?? "Unbound runner",
+      description: environment?.metadata?.description ?? null,
+      type: environment?.spec?.type ?? "self_hosted",
+      phase: environment?.status?.phase ?? "active",
+      status: attached.some((runner) => runner.state === "active") ? "online" : "offline",
+      lastHeartbeatAt: heartbeats.at(-1) ?? null,
+      sessionCount: relatedSessions.length,
+      activeSessionCount: relatedSessions.filter((session) => ["pending", "running", "idle"].includes(session.status?.phase)).length,
+      runtimes: attached.flatMap((runner) => runner.runtimes ?? []),
+      runners: attached,
+      sessions: relatedSessions,
+      agents: agents.filter((agent) => relatedSessions.some((session) => session.spec?.agentId === agent.metadata?.uid)),
+      warnings,
+      environment,
+    };
+  };
+  const result = environments.map((environment) =>
+    machine(
+      environment,
+      runners.filter((runner) => runner.environmentId === environment.metadata?.uid),
+    ),
+  );
+  for (const runner of runners.filter((item) => !item.environmentId)) result.push(machine(null, [runner]));
+  return result;
+}
+
+function createAmaEnvironment(name: string, type: "cloud" | "self_hosted") {
+  return amaRequest<any>("POST", "/api/v1/environments", {
+    metadata: { name, description: null },
+    spec: {
+      scope: "project",
+      type,
+      networking: { type: "open", allowMcpServers: true, allowPackageManagers: true },
+      packages: { type: "packages", apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] },
+      variables: {},
+    },
+  });
 }
 
 async function boardView(id: string) {
@@ -382,14 +501,10 @@ export const api = {
   },
   agents: {
     list: listAgents,
-    get: async (id: string) => {
-      const connection = await connectionId();
-      return mapAgent(await request<any>("GET", amaPath(connection, `/agents/${encodeURIComponent(id)}`)));
-    },
+    get: async (id: string) => mapAgent(await amaRequest<any>("GET", `/api/v1/agents/${encodeURIComponent(id)}`)),
     create: createAgent,
     update: async (id: string, body: Record<string, unknown>) => {
-      const connection = await connectionId();
-      return request<any>("PATCH", amaPath(connection, `/agents/${encodeURIComponent(id)}`), {
+      return amaRequest<any>("PATCH", `/api/v1/agents/${encodeURIComponent(id)}`, {
         metadata: {
           ...(typeof body.name === "string" ? { name: body.name } : {}),
           ...(typeof body.bio === "string" ? { description: body.bio } : {}),
@@ -407,35 +522,30 @@ export const api = {
       });
     },
     delete: async (id: string) => {
-      const connection = await connectionId();
-      return request<void>("DELETE", amaPath(connection, `/agents/${encodeURIComponent(id)}`));
+      return amaRequest<void>("DELETE", `/api/v1/agents/${encodeURIComponent(id)}`);
     },
     inbox: async (_id?: string): Promise<any> => ({ emails: [] }),
     inboxEmail: async (_id?: string, _emailId?: string): Promise<any> => null,
     sessions: async (agentId: string) => {
-      const connection = await connectionId();
-      const page = await request<Page<any>>("GET", amaPath(connection, "/sessions"));
-      return page.items.filter((session) => session.spec?.agentId === agentId);
+      return (await amaItems<any>("/api/v1/sessions?limit=100")).filter((session) => session.spec?.agentId === agentId);
     },
   },
   machines: {
     list: listMachines,
     get: async (id: string) => {
-      const connection = await connectionId();
-      return mapMachine(await request<any>("GET", amaPath(connection, `/machines/${encodeURIComponent(id)}`)));
+      const machine = (await amaMachines()).find((candidate) => candidate.id === id);
+      if (!machine) throw new Error("AMA has no matching Machine.");
+      return mapMachine(machine);
     },
     createCloud: async (input: { name?: string } = {}) => {
-      const connection = await connectionId();
-      return request<any>("POST", amaPath(connection, "/machines"), { name: input.name ?? "Cloud Sandbox", type: "cloud" });
+      return createAmaEnvironment(input.name ?? "Cloud Sandbox", "cloud");
     },
     createSelfHosted: async (input: { name: string }) => {
-      const connection = await connectionId();
-      return request<any>("POST", amaPath(connection, "/machines"), { ...input, type: "self_hosted" });
+      return createAmaEnvironment(input.name, "self_hosted");
     },
     runnerCommand,
     delete: async (id: string) => {
-      const connection = await connectionId();
-      return request<void>("DELETE", amaPath(connection, `/machines/${encodeURIComponent(id)}`));
+      return amaRequest<void>("DELETE", `/api/v1/environments/${encodeURIComponent(id)}`);
     },
   },
   ama: { provision: async () => ({ ok: true, project_id: await connectionId() }) },

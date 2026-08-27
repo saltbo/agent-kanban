@@ -1,7 +1,7 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 3.3 ama-agent-boundary-failures
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, signIn } from "./product-fixtures";
+import { signIn } from "./product-fixtures";
 
 const failures = [
   {
@@ -44,7 +44,7 @@ const failures = [
 for (const failure of failures) {
   test(`Agents renders a distinct ${failure.type.split("/").at(-1)} recovery state`, async ({ page }) => {
     await signIn(page);
-    await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/agents*`, (route) =>
+    await page.route(/\/api\/v1\/agents(?:\?.*)?$/, (route) =>
       route.fulfill({
         status: failure.status,
         contentType: "application/problem+json",
@@ -58,7 +58,6 @@ for (const failure of failures) {
     const alert = page.getByRole("alert");
     await expect(alert).toContainText(failure.detail);
     await expect(alert.getByRole("button", { name: failure.action }).or(alert.getByRole("link", { name: failure.action }))).toBeVisible();
-    await expect(alert).toContainText("request-ama-boundary");
     await expect(page.getByText(/leader|worker/i)).toHaveCount(0);
   });
 }

@@ -4,7 +4,7 @@ import { AccessRepo } from "./accessRepo";
 import { resolveAmaActorAgentId } from "./ama";
 import { AmaBindingRepo } from "./amaBindingRepo";
 import { ApiProblem } from "./contract";
-import { AuthError, authenticateRealmrootToken, authenticateWebSession, CsrfError } from "./realmrootAuth";
+import { AuthError, authenticateRealmrootToken } from "./realmrootAuth";
 import type { Env, Principal } from "./types";
 
 export const authenticationMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
@@ -12,7 +12,7 @@ export const authenticationMiddleware: MiddlewareHandler<{ Bindings: Env }> = as
     const developmentPrincipal = devPrincipal(c);
     const authorization = c.req.header("authorization");
     if (!developmentPrincipal && authorization) validateAuthorizationSyntax(authorization);
-    const principal = developmentPrincipal ?? (authorization ? await authenticateRealmrootToken(c) : await authenticateWebSession(c));
+    const principal = developmentPrincipal ?? (authorization ? await authenticateRealmrootToken(c) : null);
     if (!principal) throw new ApiProblem(401, "unauthorized", "Unauthorized", "Authentication is required.");
     c.set("principal", principal);
     c.set("ownerId", principal.tenantId);
@@ -22,7 +22,6 @@ export const authenticationMiddleware: MiddlewareHandler<{ Bindings: Env }> = as
     await next();
   } catch (error) {
     if (error instanceof ApiProblem) throw error;
-    if (error instanceof CsrfError) throw new ApiProblem(403, "csrf-invalid", "Forbidden", error.message);
     if (error instanceof AuthError || error instanceof joseErrors.JOSEError)
       throw new ApiProblem(401, "invalid-credentials", "Unauthorized", "Realmroot credentials are invalid.");
     throw error;
@@ -125,7 +124,7 @@ async function actorAmaAgentId(c: Context<{ Bindings: Env }>, boardId: string): 
   if (existing) return existing;
   const resolved = (async () => {
     const binding = await new AmaBindingRepo(c.env.DB, principal.tenantId).activeBinding(boardId);
-    return resolveAmaActorAgentId(c.env, principal.tenantId, binding.authorized_subject_id, binding.project_uri, actor);
+    return resolveAmaActorAgentId(c.env, binding.project_uri, actor);
   })();
   cached.set(boardId, resolved);
   return resolved;

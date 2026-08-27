@@ -1,7 +1,7 @@
-import { type Context, Hono } from "hono";
+import { Hono } from "hono";
 import skillDocument from "../../../skills/agent-kanban/SKILL.md?raw";
 import { AccessRepo } from "./accessRepo";
-import { AmaSessionTerminalError, amaSessionRequest, fetchAmaConsole, readAmaSession, resolveAmaAgent, validateAmaConnection } from "./ama";
+import { AmaSessionTerminalError, amaSessionRequest, readAmaSession, resolveAmaAgent, validateAmaConnection } from "./ama";
 import { AmaBindingRepo } from "./amaBindingRepo";
 import { authenticationMiddleware, requireAssignedActor, requireBoardCapability } from "./auth";
 import {
@@ -24,17 +24,7 @@ import { isConstraintError, newId, ping, publicRow } from "./db";
 import { ExecutionRepo } from "./executionRepo";
 import { openApiDocument } from "./openapi";
 import { type DomainRow, PlanningRepo } from "./planningRepo";
-import {
-  AmaUserGrantRequired,
-  beginRealmrootLogin,
-  endRealmrootWebSession,
-  finishRealmrootLogin,
-  readRealmrootWebSession,
-  realmrootManagementBearerToken,
-  releaseAmaGrantIfUnused,
-  resourceUrl,
-  revokeReleasedAmaGrant,
-} from "./realmrootAuth";
+import { AK_SCOPES, AMA_SCOPES, resourceUrl } from "./realmrootAuth";
 import type { Env } from "./types";
 
 type Row = DomainRow;
@@ -43,12 +33,7 @@ const CAPABILITIES = new Set(["plan", "assign", "work", "review", "maintain"]);
 export const api = new Hono<{ Bindings: Env }>();
 
 api.onError((error, c) => {
-  const value =
-    error instanceof ApiProblem
-      ? error
-      : error instanceof AmaUserGrantRequired
-        ? new ApiProblem(error.status, "ama-user-grant-required", "AMA Authorization Required", error.message)
-        : new ApiProblem(500, "internal", "Internal Server Error", "The request failed unexpectedly.");
+  const value = error instanceof ApiProblem ? error : new ApiProblem(500, "internal", "Internal Server Error", "The request failed unexpectedly.");
   c.set("failureClassification", value.type);
   if (!(error instanceof ApiProblem)) c.set("failureCause", error instanceof Error ? error.message : String(error));
   return problem(c, value);
@@ -60,6 +45,14 @@ api.get("/api/ready", async (c) => {
   await ping(c.env.DB);
   return c.json({ status: "ready", version: API_VERSION });
 });
+api.get("/api/configz", (c) =>
+  c.json({
+    issuer: c.env.REALMROOT_ISSUER.replace(/\/$/, ""),
+    clientId: c.env.REALMROOT_BROWSER_CLIENT_ID,
+    ak: { resource: resourceUrl(c.env, c.req.url), scopes: [...AK_SCOPES] },
+    ama: { resource: c.env.AMA_RESOURCE.replace(/\/$/, ""), scopes: [...AMA_SCOPES] },
+  }),
+);
 api.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
 api.get("/.well-known/oauth-protected-resource/api", protectedResourceMetadata);
 api.get("/.well-known/agent-skills/index.json", async (c) =>
@@ -84,64 +77,10 @@ api.get("/api", (c) =>
   }),
 );
 
-api.get("/api/auth/login", beginRealmrootLogin);
-api.get("/api/auth/callback", finishRealmrootLogin);
-api.get("/api/auth/session", readRealmrootWebSession);
-api.post("/api/auth/logout", endRealmrootWebSession);
-
 api.use("/api/*", apiVersionMiddleware);
 api.use("/api/*", authenticationMiddleware);
 
 api.get("/api/tenants/current", (c) => c.json({ id: c.get("principal").tenantId, links: { self: canonical(c, "/api/tenants/current") } }));
-
-api.get("/api/console/ama-projects", async (c) => amaProjects(c));
-api.get("/api/console/ama-connections/:connectionId/agents", async (c) => amaCollection(c, c.req.param("connectionId"), "/api/v1/agents?limit=100"));
-api.post("/api/console/ama-connections/:connectionId/agents", async (c) =>
-  amaMutation(c, c.req.param("connectionId"), "/api/v1/agents", "POST", await jsonObject(c)),
-);
-api.get("/api/console/ama-connections/:connectionId/agents/:agentId", async (c) =>
-  amaResourceResponse(c, c.req.param("connectionId"), `/api/v1/agents/${encodeURIComponent(c.req.param("agentId"))}`),
-);
-api.patch("/api/console/ama-connections/:connectionId/agents/:agentId", async (c) =>
-  amaMutation(c, c.req.param("connectionId"), `/api/v1/agents/${encodeURIComponent(c.req.param("agentId"))}`, "PATCH", await jsonObject(c)),
-);
-api.delete("/api/console/ama-connections/:connectionId/agents/:agentId", async (c) =>
-  amaMutation(c, c.req.param("connectionId"), `/api/v1/agents/${encodeURIComponent(c.req.param("agentId"))}`, "DELETE"),
-);
-api.get("/api/console/ama-connections/:connectionId/environments", async (c) =>
-  amaCollection(c, c.req.param("connectionId"), "/api/v1/environments?limit=100"),
-);
-api.get("/api/console/ama-connections/:connectionId/runners", async (c) =>
-  amaCollection(c, c.req.param("connectionId"), "/api/v1/runners?limit=100"),
-);
-api.get("/api/console/ama-connections/:connectionId/sessions", async (c) =>
-  amaCollection(c, c.req.param("connectionId"), "/api/v1/sessions?limit=100"),
-);
-
-api.get("/api/console/ama-connections/:connectionId/machines", async (c) => c.json({ items: await amaMachines(c, c.req.param("connectionId")) }));
-api.get("/api/console/ama-connections/:connectionId/machines/:machineId", async (c) => {
-  const machine = (await amaMachines(c, c.req.param("connectionId"))).find((item) => item.id === c.req.param("machineId"));
-  if (!machine) throw new ApiProblem(404, "machine-not-found", "Machine Not Found", "AMA has no matching Environment.");
-  return c.json(machine);
-});
-api.post("/api/console/ama-connections/:connectionId/machines", async (c) => {
-  const body = await jsonObject(c);
-  const name = requiredString(body, "name", 160);
-  const type = body.type === "cloud" ? "cloud" : "self_hosted";
-  return amaMutation(c, c.req.param("connectionId"), "/api/v1/environments", "POST", {
-    metadata: { name, description: optionalString(body, "description") ?? null },
-    spec: {
-      scope: "project",
-      type,
-      networking: { type: "open", allowMcpServers: true, allowPackageManagers: true },
-      packages: { type: "packages", apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] },
-      variables: {},
-    },
-  });
-});
-api.delete("/api/console/ama-connections/:connectionId/machines/:machineId", async (c) =>
-  amaMutation(c, c.req.param("connectionId"), `/api/v1/environments/${encodeURIComponent(c.req.param("machineId"))}`, "DELETE"),
-);
 
 api.get("/api/boards", async (c) => {
   const page = await pageRequest(c);
@@ -512,12 +451,11 @@ api.post("/api/boards/:boardId/memberships", async (c) => {
     body,
     "mem",
     async (id) => {
-      const principal = c.get("principal");
       const binding = await amaBindings(c).activeBinding(
         board.id,
         "The board needs an active AMA execution binding before adding Agent memberships.",
       );
-      await resolveAmaAgent(c.env, principal.tenantId, binding.authorized_subject_id, binding.project_uri, agentId);
+      await resolveAmaAgent(c.env, binding.project_uri, agentId);
       await executeConstraint(() => access(c).createMembership(id, board.id, agentId, capabilities));
       const row = await membershipRow(c, id);
       const value = resource(c, row, `/api/board-memberships/${id}`, ["capabilities_json"]);
@@ -575,9 +513,8 @@ api.post("/api/tasks/:taskId/assignments", async (c) => {
     "asn",
     async (id) => {
       if (task.status !== "todo") throw new ApiProblem(409, "task-not-assignable", "Task Not Assignable", "Only todo tasks can be assigned.");
-      const principal = c.get("principal");
       const binding = await amaBindings(c).activeBinding(task.board_id);
-      await resolveAmaAgent(c.env, principal.tenantId, binding.authorized_subject_id, binding.project_uri, agentId);
+      await resolveAmaAgent(c.env, binding.project_uri, agentId);
       if (!(await access(c).hasWorkMembership(task.board_id, agentId)))
         throw new ApiProblem(422, "agent-not-member", "Agent Not Eligible", "The Agent needs a BoardMembership with work capability.");
       try {
@@ -639,16 +576,9 @@ api.post("/api/tasks/:taskId/runs", async (c) => {
       const binding = await amaBindings(c).activeBinding(task.board_id);
       const outboxId = newId("out");
       const taskUri = canonical(c, `/api/tasks/${task.id}`);
-      const agent = await resolveAmaAgent(
-        c.env,
-        c.get("principal").tenantId,
-        binding.authorized_subject_id,
-        binding.project_uri,
-        assignment.agent_id,
-      );
+      const agent = await resolveAmaAgent(c.env, binding.project_uri, assignment.agent_id);
       const repository = task.repository_id ? await repositoryRow(c, task.repository_id) : null;
       const payload = {
-        authorizedSubjectId: binding.authorized_subject_id,
         projectUri: binding.project_uri,
         idempotencyKey: `ak:task-run:${id}`,
         traceparent: c.get("traceparent"),
@@ -749,7 +679,6 @@ api.post("/api/tasks/:taskId/messages", async (c) => {
           body: text,
           outboxId,
           payload: JSON.stringify({
-            authorizedSubjectId: run.authorized_subject_id,
             projectUri: run.project_uri,
             idempotencyKey: `ak:task-message:${id}`,
             traceparent: c.get("traceparent"),
@@ -853,7 +782,7 @@ api.post("/api/task-submissions/:submissionId/reviews", async (c) => {
         if (active?.ama_session_uri) {
           let phase: string | undefined;
           try {
-            phase = await readAmaSession(c.env, principal.tenantId, active.authorized_subject_id, active.project_uri, active.ama_session_uri);
+            phase = await readAmaSession(c.env, active.project_uri, active.ama_session_uri);
           } catch (error) {
             if (error instanceof AmaSessionTerminalError) active = null;
             else
@@ -876,7 +805,6 @@ api.post("/api/task-submissions/:submissionId/reviews", async (c) => {
             runId: active.id,
             outboxId: newId("out"),
             payload: JSON.stringify({
-              authorizedSubjectId: active.authorized_subject_id,
               projectUri: active.project_uri,
               idempotencyKey: `ak:task-review:${id}`,
               traceparent: c.get("traceparent"),
@@ -894,7 +822,7 @@ api.post("/api/task-submissions/:submissionId/reviews", async (c) => {
           };
         } else {
           const binding = await amaBindings(c).activeBinding(task.board_id);
-          const agent = await resolveAmaAgent(c.env, principal.tenantId, binding.authorized_subject_id, binding.project_uri, assignment.agent_id);
+          const agent = await resolveAmaAgent(c.env, binding.project_uri, assignment.agent_id);
           const newRunId = newId("run");
           continuation = {
             kind: "replacement",
@@ -902,7 +830,6 @@ api.post("/api/task-submissions/:submissionId/reviews", async (c) => {
             assignmentId: assignment.id,
             outboxId: newId("out"),
             payload: JSON.stringify({
-              authorizedSubjectId: binding.authorized_subject_id,
               projectUri: binding.project_uri,
               idempotencyKey: `ak:task-run:${newRunId}`,
               traceparent: c.get("traceparent"),
@@ -960,7 +887,7 @@ api.post("/api/ama-connections", async (c) => {
     async (id) => {
       const principal = c.get("principal");
       await ensureTenant(c);
-      await validateAmaConnection(c.env, principal.tenantId, principal.subjectId, resourceUrlValue, projectUri);
+      await validateAmaConnection(c.env, resourceUrlValue, projectUri);
       await executeConstraint(() => amaBindings(c).createConnection(id, resourceUrlValue, projectUri, principal.subjectId));
       const row = await amaConnectionRow(c, id);
       const value = resource(c, row, `/api/ama-connections/${id}`);
@@ -997,7 +924,6 @@ api.delete("/api/ama-connections/:connectionId", async (c) => {
   const result = await amaBindings(c).deleteUnusedConnection(row.id, row.version);
   rejectConnectionInUse(await amaBindings(c).connectionInUse(row.id));
   requireChanged(result);
-  await revokeReleasedAmaGrant(c.env, await releaseAmaGrantIfUnused(c.env, c.get("principal").tenantId, row.authorized_subject_id));
   return c.body(null, 204);
 });
 
@@ -1082,7 +1008,7 @@ async function ensureTenant(c: any): Promise<void> {
 
 function resource(c: any, row: Row, path: string, jsonFields: string[] = []): any {
   const value = publicRow(row, jsonFields);
-  delete value.authorizedSubjectId;
+  delete value.createdBySubjectId;
   return { ...value, links: { self: canonical(c, path) } };
 }
 
@@ -1188,335 +1114,6 @@ function execution(c: any): ExecutionRepo {
 
 function amaBindings(c: any): AmaBindingRepo {
   return new AmaBindingRepo(c.env.DB, c.get("principal").tenantId);
-}
-
-type AmaPage = { data?: Array<Record<string, any>>; pagination?: { hasMore?: boolean; nextCursor?: string | null; [key: string]: unknown } };
-
-async function amaProjects(c: Context<any>): Promise<Response> {
-  const principal = c.get("principal");
-  const items: Array<Record<string, any>> = [];
-  const target = new URL("/api/v1/projects?limit=100", "http://ama.invalid");
-  const cursors = new Set<string>();
-  let complete = false;
-  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
-    const body = (await amaBody(
-      await fetchAmaConsole(c.env, principal.tenantId, principal.subjectId, `${target.pathname}${target.search}`),
-    )) as AmaPage;
-    if (!body || !Array.isArray(body.data))
-      throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid Project collection.");
-    if (body.data.some((project) => typeof project.id !== "string" || typeof project.name !== "string"))
-      throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid Project representation.");
-    items.push(...body.data);
-    if (!body.pagination?.hasMore) {
-      complete = true;
-      break;
-    }
-    const cursor = body.pagination.nextCursor;
-    if (typeof cursor !== "string" || !cursor || cursors.has(cursor))
-      throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned invalid Project pagination metadata.");
-    cursors.add(cursor);
-    target.searchParams.set("cursor", cursor);
-  }
-  if (!complete) throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA Project pagination exceeded the safety limit.");
-  return c.json({
-    items: items.map((project) => ({
-      ...project,
-      uri: new URL(`/api/v1/projects/${encodeURIComponent(String(project.id))}`, c.env.AMA_ORIGIN).toString(),
-      resourceUrl: c.env.AMA_RESOURCE,
-    })),
-    pagination: { pageSize: items.length },
-  });
-}
-
-async function amaProject(c: Context<any>, connectionId: string): Promise<{ id: string; name: string }> {
-  let connection: any;
-  try {
-    connection = await amaConnectionRow(c, connectionId);
-  } catch (error) {
-    if (error instanceof ApiProblem && error.status === 404)
-      throw new ApiProblem(404, "ama-connection-required", "AMA Connection Required", "Connect an AMA Project before using this product surface.");
-    throw error;
-  }
-  const target = new URL(connection.project_uri);
-  if (target.origin !== new URL(c.env.AMA_ORIGIN).origin)
-    throw new ApiProblem(502, "ama-contract-invalid", "AMA Contract Invalid", "The saved AMA Project origin is invalid.");
-  const match = target.pathname.match(/^\/api\/v1\/projects\/([^/]+)$/);
-  if (!match || target.search || target.hash)
-    throw new ApiProblem(502, "ama-contract-invalid", "AMA Contract Invalid", "The saved AMA Project URI is invalid.");
-  return { id: decodeURIComponent(match[1]), name: connection.project_uri };
-}
-
-async function amaRequest(c: Context<any>, connectionId: string, path: string, init: RequestInit = {}): Promise<Response> {
-  const principal = c.get("principal");
-  const project = await amaProject(c, connectionId);
-  const headers = new Headers(init.headers);
-  headers.set("X-AMA-Project-ID", project.id);
-  try {
-    return await fetchAmaConsole(c.env, principal.tenantId, principal.subjectId, path, { ...init, headers });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "TimeoutError")
-      throw new ApiProblem(503, "ama-unavailable", "AMA Unavailable", "AMA did not respond before the request deadline.");
-    throw error;
-  }
-}
-
-async function amaBody(response: Response): Promise<unknown> {
-  const text = await response.text();
-  let body: unknown;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    if (response.status === 401)
-      throw new ApiProblem(401, "ama-grant-required", "AMA Authorization Required", "The AMA authorization is missing or expired.");
-    if (response.status >= 500)
-      throw new ApiProblem(503, "ama-unavailable", "AMA Unavailable", `AMA returned HTTP ${response.status} without a readable problem response.`);
-    throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned a response that is not valid JSON.");
-  }
-  if (!response.ok) {
-    const problem = body as { error?: { message?: string }; detail?: string } | null;
-    if (response.status === 401)
-      throw new ApiProblem(
-        401,
-        "ama-grant-required",
-        "AMA Authorization Required",
-        problem?.detail ?? "The AMA authorization is missing or expired.",
-      );
-    if (response.status === 403)
-      throw new ApiProblem(403, "ama-forbidden", "AMA Access Denied", problem?.detail ?? "This account cannot access the requested AMA resources.");
-    if (response.status >= 500)
-      throw new ApiProblem(503, "ama-unavailable", "AMA Unavailable", problem?.detail ?? `AMA returned HTTP ${response.status}.`);
-    if (response.status === 400 || response.status === 422)
-      throw new ApiProblem(
-        response.status,
-        "ama-validation",
-        "AMA Validation Failed",
-        problem?.error?.message ?? problem?.detail ?? "AMA rejected the request.",
-      );
-    if (response.status === 429)
-      throw new ApiProblem(429, "ama-rate-limited", "AMA Rate Limited", problem?.detail ?? "AMA rate limited the request.");
-    throw new ApiProblem(
-      response.status === 404 ? 404 : response.status === 409 ? 409 : response.status === 422 ? 422 : 502,
-      "ama-request-failed",
-      "AMA Request Failed",
-      problem?.error?.message ?? problem?.detail ?? `AMA returned HTTP ${response.status}.`,
-    );
-  }
-  return body;
-}
-
-async function amaCollection(c: Context<any>, connectionId: string, path: string): Promise<Response> {
-  const project = await amaProject(c, connectionId);
-  const items = await amaAll(c, connectionId, path);
-  return c.json({ items, project, pagination: { pageSize: items.length } });
-}
-
-async function amaAll(c: Context<any>, connectionId: string, path: string): Promise<Array<Record<string, any>>> {
-  const target = new URL(path, "http://ama.invalid");
-  const items: Array<Record<string, any>> = [];
-  const cursors = new Set<string>();
-  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
-    const requestPath = `${target.pathname}${target.search}`;
-    const body = (await amaBody(await amaRequest(c, connectionId, requestPath))) as AmaPage;
-    if (!body || !Array.isArray(body.data))
-      throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid collection representation.");
-    if (target.pathname === "/api/v1/agents") for (const item of body.data) validateAmaAgent(item);
-    if (target.pathname === "/api/v1/sessions") for (const item of body.data) validateAmaSession(item);
-    if (target.pathname === "/api/v1/environments") for (const item of body.data) validateAmaEnvironment(item);
-    if (target.pathname === "/api/v1/runners") for (const item of body.data) validateAmaRunner(item);
-    items.push(...body.data);
-    if (!body.pagination?.hasMore) return items;
-    const cursor = body.pagination.nextCursor;
-    if (typeof cursor !== "string" || !cursor || cursors.has(cursor))
-      throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned invalid cursor pagination metadata.");
-    cursors.add(cursor);
-    target.searchParams.set("cursor", cursor);
-  }
-  throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA collection pagination exceeded the safety limit.");
-}
-
-async function amaResourceResponse(c: Context<any>, connectionId: string, path: string): Promise<Response> {
-  const value = await amaBody(await amaRequest(c, connectionId, path));
-  validateAmaValue(path, value);
-  return c.json(value as never);
-}
-
-async function amaMutation(
-  c: Context<any>,
-  connectionId: string,
-  path: string,
-  method: "POST" | "PATCH" | "DELETE",
-  body?: Record<string, unknown>,
-): Promise<Response> {
-  const headers = new Headers();
-  if (body !== undefined) headers.set("content-type", "application/json");
-  const idempotencyKey = c.req.header("Idempotency-Key");
-  if (idempotencyKey) headers.set("Idempotency-Key", idempotencyKey);
-  if ((method === "POST" && path === "/api/v1/agents") || (method === "DELETE" && /^\/api\/v1\/agents\/[^/]+$/.test(path))) {
-    const principal = c.get("principal");
-    headers.set("X-AMA-Realmroot-Authorization", `Bearer ${await realmrootManagementBearerToken(c.env, principal.tenantId, principal.subjectId)}`);
-  }
-  const response = await amaRequest(c, connectionId, path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  if (method === "POST" && path === "/api/v1/agents" && response.ok && response.status !== 201)
-    throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA Agent creation did not return HTTP 201.");
-  const retryAfter = response.headers.get("Retry-After");
-  const location = response.headers.get("Location");
-  if (retryAfter) c.header("Retry-After", retryAfter);
-  if (location) c.header("Location", location);
-  const value = await amaBody(response);
-  if (value !== null) {
-    if (method === "POST" && path === "/api/v1/agents") validateAmaAgent(value as Record<string, any>);
-    else if (method === "POST" && path === "/api/v1/environments") validateAmaEnvironment(value);
-    else if (method === "PATCH" && /^\/api\/v1\/agents\/[^/]+$/.test(path)) validateAmaAgent(value as Record<string, any>);
-  }
-  return value === null
-    ? new Response(null, { status: response.status })
-    : new Response(JSON.stringify(value), { status: response.status, headers: { "content-type": "application/json" } });
-}
-
-async function amaMachines(c: Context<any>, connectionId: string): Promise<Array<Record<string, unknown>>> {
-  const [environmentResult, runnerResult, sessionResult, agentResult] = await Promise.allSettled([
-    amaAll(c, connectionId, "/api/v1/environments?limit=100"),
-    amaAll(c, connectionId, "/api/v1/runners?limit=100"),
-    amaAll(c, connectionId, "/api/v1/sessions?limit=100"),
-    amaAll(c, connectionId, "/api/v1/agents?limit=100"),
-  ]);
-  if (environmentResult.status === "rejected") throw environmentResult.reason;
-  const environments = environmentResult.value;
-  const runners = runnerResult.status === "fulfilled" ? runnerResult.value : [];
-  const sessions = sessionResult.status === "fulfilled" ? sessionResult.value : [];
-  const agents = agentResult.status === "fulfilled" ? agentResult.value : [];
-  for (const environment of environments) {
-    if (typeof environment.metadata?.uid !== "string" || typeof environment.metadata?.name !== "string" || typeof environment.spec?.type !== "string")
-      throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid Environment representation.");
-  }
-  for (const runner of runners) {
-    validateAmaRunner(runner);
-  }
-  for (const session of sessions) {
-    validateAmaSession(session);
-  }
-  const warnings = [
-    ...(runnerResult.status === "rejected" ? ["AMA Runners are temporarily unavailable."] : []),
-    ...(sessionResult.status === "rejected" ? ["AMA Sessions are temporarily unavailable."] : []),
-    ...(agentResult.status === "rejected" ? ["AMA Agents are temporarily unavailable."] : []),
-  ];
-  const machine = (environment: Record<string, any> | null, attached: Array<Record<string, any>>) => {
-    const id = environment?.metadata?.uid ?? `runner-${attached[0].id}`;
-    const relatedSessions = sessions.filter((session) => session.spec?.environmentId === environment?.metadata?.uid);
-    const heartbeats = attached
-      .map((runner) => runner.lastHeartbeatAt)
-      .filter((value): value is string => typeof value === "string")
-      .sort();
-    return {
-      id,
-      name: environment?.metadata?.name ?? attached[0]?.name ?? "Unbound runner",
-      description: environment?.metadata?.description ?? null,
-      type: environment?.spec?.type ?? "self_hosted",
-      phase: environment?.status?.phase ?? "active",
-      status: attached.some((runner) => runner.state === "active") ? "online" : "offline",
-      lastHeartbeatAt: heartbeats.at(-1) ?? null,
-      sessionCount: relatedSessions.length,
-      activeSessionCount: relatedSessions.filter((session) => ["pending", "running", "idle"].includes(session.status?.phase)).length,
-      runtimes: attached.flatMap((runner) => runner.runtimes ?? []),
-      runners: attached,
-      sessions: relatedSessions,
-      agents: agents.filter((agent) => relatedSessions.some((session) => session.spec?.agentId === agent.metadata?.uid)),
-      warnings,
-      environment,
-    };
-  };
-  const result = environments.map((environment) =>
-    machine(
-      environment,
-      runners.filter((runner) => runner.environmentId === environment.metadata?.uid),
-    ),
-  );
-  for (const runner of runners.filter((item) => !item.environmentId)) result.push(machine(null, [runner]));
-  return result;
-}
-
-function validateAmaValue(path: string, value: unknown): void {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid resource representation.");
-  const resource = value as Record<string, any>;
-  if (/^\/api\/v1\/agents\/[^/]+$/.test(path)) validateAmaAgent(resource);
-}
-
-function validateAmaEnvironment(value: unknown): void {
-  const environment = value as Record<string, any> | null;
-  if (
-    !environment ||
-    typeof environment.metadata?.uid !== "string" ||
-    typeof environment.metadata?.name !== "string" ||
-    !(environment.metadata.description === null || typeof environment.metadata.description === "string") ||
-    !["cloud", "self_hosted"].includes(environment.spec?.type) ||
-    typeof environment.status?.phase !== "string"
-  )
-    throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid Environment representation.");
-}
-
-function validateAmaSession(value: unknown): void {
-  const session = value as Record<string, any> | null;
-  if (
-    !session ||
-    typeof session.metadata?.uid !== "string" ||
-    typeof session.metadata?.name !== "string" ||
-    typeof session.spec?.agentId !== "string" ||
-    typeof session.status?.phase !== "string"
-  )
-    throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid Session representation.");
-}
-
-function validateAmaAgent(agent: Record<string, any>): void {
-  if (
-    typeof agent.metadata?.uid !== "string" ||
-    typeof agent.metadata?.name !== "string" ||
-    !(agent.metadata.description === null || typeof agent.metadata.description === "string") ||
-    typeof agent.identity?.issuer !== "string" ||
-    typeof agent.identity?.subject !== "string" ||
-    typeof agent.identity?.username !== "string" ||
-    typeof agent.spec?.runtime !== "string" ||
-    typeof agent.spec?.systemPrompt !== "string" ||
-    !(agent.spec.provider === null || typeof agent.spec.provider === "string") ||
-    !(agent.spec.model === null || typeof agent.spec.model === "string") ||
-    !isStringArray(agent.spec.skills) ||
-    !isStringArray(agent.spec.allowedTools) ||
-    typeof agent.status?.ready !== "boolean" ||
-    typeof agent.status?.phase !== "string" ||
-    typeof agent.status?.version !== "number"
-  )
-    throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid Agent representation.");
-}
-
-function validateAmaRunner(runner: Record<string, any>): void {
-  const validRuntimes =
-    Array.isArray(runner.runtimes) &&
-    runner.runtimes.every(
-      (runtime: Record<string, any>) =>
-        runtime &&
-        typeof runtime === "object" &&
-        typeof runtime.runtime === "string" &&
-        isStringArray(runtime.models) &&
-        typeof runtime.state === "string" &&
-        (runtime.version === undefined || typeof runtime.version === "string") &&
-        (runtime.detail === undefined || typeof runtime.detail === "string"),
-    );
-  if (
-    !runner ||
-    typeof runner.id !== "string" ||
-    typeof runner.name !== "string" ||
-    typeof runner.state !== "string" ||
-    typeof runner.currentLoad !== "number" ||
-    typeof runner.maxConcurrent !== "number" ||
-    !(runner.environmentId == null || typeof runner.environmentId === "string") ||
-    !(runner.lastHeartbeatAt == null || typeof runner.lastHeartbeatAt === "string") ||
-    !validRuntimes
-  )
-    throw new ApiProblem(502, "ama-invalid-response", "AMA Contract Mismatch", "AMA returned an invalid Runner representation.");
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function capabilitiesFrom(body: Record<string, unknown>): string[] {

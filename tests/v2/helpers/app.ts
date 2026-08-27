@@ -33,16 +33,15 @@ export async function createTestApplication(overrides: Partial<Env> = {}): Promi
     DB: db,
     ASSETS: { fetch: () => Promise.resolve(new Response("not found", { status: 404 })) } as Fetcher,
     REALMROOT_ISSUER: "http://realmroot.invalid/api/auth",
-    REALMROOT_WEB_CLIENT_ID: "ak-web",
-    REALMROOT_WEB_CLIENT_SECRET: "web-secret",
-    REALMROOT_SESSION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+    REALMROOT_BROWSER_CLIENT_ID: "ak-browser",
     REALMROOT_CLI_CLIENT_ID: "ak-cli",
+    AK_SERVICE_CLIENT_ID: "ak-service",
+    AK_SERVICE_CLIENT_SECRET: "service-secret",
     AK_RESOURCE: `${AK_ORIGIN}/api`,
     AK_API_URL: AK_ORIGIN,
     AMA_ORIGIN: "http://ama.invalid",
     AMA_RESOURCE: "http://ama.invalid/api",
     AK_DEV_AUTH_SECRET: DEV_SECRET,
-    AMA_DEV_ACCESS_TOKEN: "ama-test-token",
     ...overrides,
   } satisfies Env;
 
@@ -55,12 +54,7 @@ export async function createTestApplication(overrides: Partial<Env> = {}): Promi
       headers.set("X-AK-Dev-Tenant", identity.tenant ?? "tenant-a");
       if (identity.issuer) headers.set("X-AK-Dev-Actor-Issuer", identity.issuer);
       if (identity.subject) headers.set("X-AK-Dev-Actor-Subject", identity.subject);
-      if (
-        !headers.has("API-Version") &&
-        path.startsWith("/api/") &&
-        !path.startsWith("/api/auth/") &&
-        !["/api/health", "/api/ready", "/api/openapi.json"].includes(path)
-      ) {
+      if (!headers.has("API-Version") && path.startsWith("/api/") && !["/api/health", "/api/ready", "/api/openapi.json"].includes(path)) {
         headers.set("API-Version", API_VERSION);
       }
       return api.request(`${AK_ORIGIN}${path}`, { ...init, headers }, env);

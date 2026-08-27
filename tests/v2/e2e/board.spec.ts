@@ -1,10 +1,5 @@
-import { expect, type Page, test } from "@playwright/test";
-
-const SESSION_COOKIE = "ak-v2-e2e-session";
-
-async function signIn(page: Page) {
-  await page.context().addCookies([{ name: "ak_session", value: SESSION_COOKIE, url: "http://127.0.0.1:6265", httpOnly: true, sameSite: "Lax" }]);
-}
+import { expect, test } from "@playwright/test";
+import { signIn } from "./product-fixtures";
 
 test("unauthenticated visitors get the Realmroot sign-in boundary", async ({ page }) => {
   await page.goto("/");

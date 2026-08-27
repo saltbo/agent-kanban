@@ -19,7 +19,18 @@ export async function startOidcServer() {
   const publicJwk = await exportJWK(signing.publicKey);
   Object.assign(publicJwk, { kid: "realmroot-test", use: "sig", alg: "ES256" });
   let origin = "";
+  const requests: Array<{ method: string; path: string; headers: Record<string, string>; body: string }> = [];
   const local = await listen((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on("end", () => {
+      requests.push({
+        method: request.method ?? "GET",
+        path: request.url ?? "/",
+        headers: Object.fromEntries(Object.entries(request.headers).flatMap(([key, value]) => (typeof value === "string" ? [[key, value]] : []))),
+        body: Buffer.concat(chunks).toString("utf8"),
+      });
+    });
     if (request.url === "/api/auth/.well-known/openid-configuration") {
       return sendJson(response, {
         issuer: `${origin}/api/auth`,
@@ -30,6 +41,8 @@ export async function startOidcServer() {
       });
     }
     if (request.url === "/api/auth/jwks") return sendJson(response, { keys: [publicJwk] });
+    if (request.url === "/api/auth/oauth2/token" && request.method === "POST")
+      return sendJson(response, { access_token: "service-token", token_type: "Bearer", expires_in: 300 });
     response.writeHead(404).end();
   });
   origin = local.origin;
@@ -69,7 +82,7 @@ export async function startOidcServer() {
       .sign(signing.privateKey);
   }
 
-  return { ...local, issuer: `${origin}/api/auth`, accessToken };
+  return { ...local, issuer: `${origin}/api/auth`, accessToken, requests };
 }
 
 export async function dpopProof(input: { privateKey: KeyLike; publicKey: KeyLike; accessToken: string; method: string; url: string; jti?: string }) {

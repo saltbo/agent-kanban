@@ -15,10 +15,10 @@
     "AMA_ORIGIN": "http://127.0.0.1:9",
     "AMA_RESOURCE": "http://127.0.0.1:9/api",
     "REALMROOT_ISSUER": "http://127.0.0.1:8/api/auth",
-    "REALMROOT_WEB_CLIENT_ID": "ak-e2e-web",
-    "REALMROOT_WEB_CLIENT_SECRET": "e2e-secret",
+    "REALMROOT_BROWSER_CLIENT_ID": "ak-e2e-browser",
     "REALMROOT_CLI_CLIENT_ID": "ak-e2e-cli",
-    "REALMROOT_SESSION_ENCRYPTION_KEY": "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+    "AK_SERVICE_CLIENT_ID": "ak-e2e-service",
+    "AK_SERVICE_CLIENT_SECRET": "e2e-secret"
   },
   "d1_databases": [
     {

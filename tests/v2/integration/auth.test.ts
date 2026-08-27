@@ -103,16 +103,7 @@ describe("Realmroot native Resource Server authentication", () => {
       .bind("task-agent", "tenant-agent", "board-agent", "Assigned work", "controller")
       .run();
     await app.db
-      .prepare(
-        `INSERT INTO ama_grants
-           (tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce,
-            access_token_ciphertext, access_token_nonce, access_token_expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind("tenant-agent", "controller", "unused", "unused", "unused", "unused", "2099-01-01T00:00:00.000Z")
-      .run();
-    await app.db
-      .prepare("INSERT INTO ama_connections (id, tenant_id, resource_url, project_uri, authorized_subject_id) VALUES (?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO ama_connections (id, tenant_id, resource_url, project_uri, created_by_subject_id) VALUES (?, ?, ?, ?, ?)")
       .bind("connection-agent", "tenant-agent", `${ama.origin}/api`, ama.projectUri, "controller")
       .run();
     await app.db
@@ -225,34 +216,10 @@ describe("Realmroot native Resource Server authentication", () => {
     expect((await raw("/api/boards", { headers: { Authorization: `Bearer ${bearerAgent}`, "API-Version": API_VERSION } })).status).toBe(401);
   });
 
-  it("enforces the persisted OAuth grant scopes for BFF sessions", async () => {
-    const token = "partial-web-session";
-    const tokenHash = createHash("sha256").update(token).digest("hex");
-    await app.db.prepare("INSERT INTO tenants (id) VALUES (?)").bind("tenant-web").run();
-    await app.db
-      .prepare(
-        "INSERT INTO web_sessions (id, token_hash, tenant_id, subject_id, role, scopes_json, csrf_token, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .bind("web-session", tokenHash, "tenant-web", "controller", "admin", '["boards:read"]', "csrf-web", "2099-01-01T00:00:00.000Z")
-      .run();
-    const headers = { Cookie: `ak_session=${token}`, "API-Version": API_VERSION };
-    expect((await raw("/api/boards", { headers })).status).toBe(200);
-    const forbidden = await raw("/api/boards", {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json", "Idempotency-Key": "partial", "X-CSRF-Token": "csrf-web" },
-      body: JSON.stringify({ name: "No grant" }),
+  it("does not authenticate retired Web Session cookies", async () => {
+    const response = await raw("/api/boards", {
+      headers: { Cookie: "ak_session=retired", "API-Version": API_VERSION },
     });
-    expect(forbidden.status).toBe(403);
-    expect(await responseJson(forbidden)).toMatchObject({ type: "https://agent-kanban.dev/problems/insufficient-scope" });
-
-    await app.db.prepare("UPDATE web_sessions SET scopes_json = ? WHERE id = ?").bind('["boards:read","boards:write"]', "web-session").run();
-    const allowed = await raw("/api/boards", {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json", "Idempotency-Key": "full", "X-CSRF-Token": "csrf-web" },
-      body: JSON.stringify({ name: "Granted" }),
-    });
-    expect(allowed.status).toBe(201);
+    expect(response.status).toBe(401);
   });
 });
-
-import { createHash } from "node:crypto";

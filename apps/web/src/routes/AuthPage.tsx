@@ -1,5 +1,6 @@
 import { useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
+import { signIn } from "../lib/auth-client";
 
 export function AuthPage() {
   const [params] = useSearchParams();
@@ -17,10 +18,7 @@ export function AuthPage() {
             {error}
           </p>
         ) : null}
-        <Button
-          className="mt-6 w-full"
-          onClick={() => window.location.assign(`/api/auth/login${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ""}`)}
-        >
+        <Button className="mt-6 w-full" onClick={() => void signIn(returnTo?.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/")}>
           Continue to Realmroot
         </Button>
       </section>

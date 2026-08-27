@@ -6,9 +6,10 @@ Agent Kanban v2 retains the complete v1 browser product shell while changing
 the ownership behind it. AK owns Boards, Tasks, Labels, Repositories,
 Memberships, Assignments, Runs, Progress, Messages, Submissions, and Reviews.
 AMA owns Agents, Environments, Runners, Sessions, runtime configuration, and
-Realmroot identity provisioning. The browser reaches AMA only through
-connection-scoped, session-authenticated `/api/console` BFF resources; these
-resources are not published in the AK Toolbox OpenAPI.
+Realmroot identity provisioning. The public SPA signs in with Authorization
+Code + PKCE and requests separate Realmroot Bearer tokens for the AK and AMA
+Resource audiences. Board and Task calls go to AK; Agent, Environment, Runner,
+and Session calls go directly to AMA with the selected connection's Project ID.
 
 The archived v1 experience is a behavior reference, not a source dependency.
 The v2 application must not restore AK Agent/Machine persistence, leader/worker
@@ -18,37 +19,24 @@ identity kinds, local Agent keys, `ak start`, the AK CLI, or the daemon.
 
 | Product surface | v1 behavior to retain | Current v2 baseline | Required v2 ownership |
 | --- | --- | --- | --- |
-| Application shell | Route-aware header, Board switcher, Agents, Machines, Repositories, Settings, theme and sign-out | One route-less Board screen | Browser shell + Realmroot BFF session |
+| Application shell | Route-aware header, Board switcher, Agents, Machines, Repositories, Settings, theme and sign-out | Restored product shell | Browser shell + Realmroot public SPA PKCE |
 | Board | `/boards/:boardId`, five columns, filters, responsive single-column tabs, task detail sheet | Five columns at `/`, selector, detail aside | AK resources |
 | Task detail | Brief, assignment, execution state, progress, messages, artifacts, review history, reject/complete | Observability and review exist | AK resources; AMA Session URI is display-only |
 | Board management | Create/switch Board, edit/delete Board, Labels | Missing | AK resources; forms remain dialog/secondary routes |
-| Agents | List, detail, create/edit, Sessions and failure/empty states | Missing | AMA Agent resources through console BFF |
+| Agents | List, detail, create/edit, Sessions and failure/empty states | Restored | Direct AMA Agent and Session resources |
 | Machines | List/detail/add/remove, status, runtime availability and linked Agents | Missing | AMA Environment product projection with read-only Runner/Session aggregation |
 | Repositories | List, create, validation, remove, failure/empty states | Missing | AK Repository resources |
 | Browser quality | Desktop and mobile navigation, keyboard dialogs/sheets, theme, responsive columns | Task drawer/review focus and reduced motion only | Shared accessible shell and feature surfaces |
 
-## Required Browser BFF Resources
+## Required Browser Resource Boundaries
 
-These paths are session-authenticated product projections and must stay absent
-from `/api/openapi.json` and Realmroot Toolbox discovery:
-
-- `/api/console/ama-projects`
-- `/api/console/ama-connections/{connectionId}/agents`
-- `/api/console/ama-connections/{connectionId}/environments`
-- `/api/console/ama-connections/{connectionId}/machines`
-- `/api/console/ama-connections/{connectionId}/runners`
-- `/api/console/ama-connections/{connectionId}/sessions`
-
-Collection responses use `{ items, pagination }`. AMA resource projections
-retain canonical `metadata.uid`, `metadata.projectId`, `spec`, and `status`.
-Machine projections use `{ environment, runners, sessions, agents }`; status,
-capacity, runtime availability, and session counts are derived from those
-embedded authoritative AMA resources, never stored by AK.
-
-Every console response must normalize downstream failures into a stable Problem
-Details response while preserving `Request-Id`. The UI distinguishes missing
-connection, missing/revoked AMA grant, forbidden, unavailable, invalid upstream
-payload, empty collection, and background-refresh failure.
+AK publishes `/api/configz` with the public browser client, both exact Resource
+audiences, and scope allowlists. The browser keeps the AK and AMA access tokens
+separate and sends neither token to the other Resource Server. AMA collections
+use their native `{ data, pagination }` contract. Machine projections are
+derived in the browser from `/api/v1/environments`, `/api/v1/runners`,
+`/api/v1/sessions`, and `/api/v1/agents`; AK stores no Machine projection.
+`/api/auth/*` and `/api/console/*` must remain absent.
 
 ## Test Scenarios
 
@@ -184,7 +172,7 @@ payload, empty collection, and background-refresh failure.
 
 1. Return missing connection, missing/revoked grant, forbidden, unavailable, and invalid-payload responses.
    - expect: each stable category has a distinct action: connect AMA, reauthorize, request access, retry, or report contract drift.
-   - expect: no failure silently falls back to AK Agent data or stale identity definitions.
+   - expect: no failure silently falls back to AK Agent data, a retired console BFF, or stale identity definitions.
 
 ### 4. AMA Machine Projection
 
@@ -262,9 +250,9 @@ payload, empty collection, and background-refresh failure.
 3. Run automated accessibility scanning on every stable route state.
    - expect: no serious or critical WCAG 2.2 AA violation is reported.
 
-## Initial Red Boundary
+## Authentication Boundary
 
-The current v2 application should fail first on route-aware product navigation:
-`/boards/board-main`, `/agents`, `/machines`, `/repositories`, and
-`/settings/profile` all render the same route-less Board application and there
-is no console AMA transport. These failures are product gaps, not locator drift.
+Protected deep links must survive the SPA PKCE redirect and callback. Tests
+assert S256, both Resource indicators, per-audience Bearer headers, selected AMA
+Project headers, and the absence of Web Session cookies, CSRF headers, custom
+secondary AMA authorization headers, and retired BFF routes.

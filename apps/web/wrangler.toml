@@ -17,11 +17,11 @@ AMA_ORIGIN = "https://ama.tftt.cc"
 AMA_RESOURCE = "https://ama.tftt.cc/api"
 REALMROOT_ISSUER = "https://id.realmroot.dev/api/auth"
 AK_RESOURCE = "https://agent-kanban.dev/api"
-REALMROOT_WEB_CLIENT_ID = "01a02088-aac0-74a9-a5a9-ffca6cf338c0"
+REALMROOT_BROWSER_CLIENT_ID = "TODO_REALMROOT_AK_PUBLIC_BROWSER_CLIENT_ID"
 REALMROOT_CLI_CLIENT_ID = "01a02088-7878-734d-94dc-de7c9ac081b3"
 
 # Secrets are set via `wrangler secret put`:
-# REALMROOT_WEB_CLIENT_SECRET, REALMROOT_SESSION_ENCRYPTION_KEY,
+# AK_SERVICE_CLIENT_ID and AK_SERVICE_CLIENT_SECRET
 # Local dev overrides are in .dev.vars
 
 [observability]
@@ -60,7 +60,7 @@ AMA_ORIGIN = "https://ama.tftt.cc"
 AMA_RESOURCE = "https://ama.tftt.cc/api"
 REALMROOT_ISSUER = "https://id.realmroot.dev/api/auth"
 AK_RESOURCE = "TODO_STAGING_AK_API_URL/api"
-REALMROOT_WEB_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_WEB_CLIENT_ID"
+REALMROOT_BROWSER_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_PUBLIC_BROWSER_CLIENT_ID"
 REALMROOT_CLI_CLIENT_ID = "TODO_STAGING_REALMROOT_AK_CLI_CLIENT_ID"
 
 [env.staging.limits]

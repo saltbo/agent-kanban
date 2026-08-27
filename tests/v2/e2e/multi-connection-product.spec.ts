@@ -1,7 +1,7 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 1.3 connection-selection-is-url-addressable
 import { expect, test } from "@playwright/test";
-import { collection, fulfillJson, readyAgent, signIn } from "./product-fixtures";
+import { amaCollection, collection, fulfillJson, readyAgent, signIn } from "./product-fixtures";
 
 test("the connection query selects the matching AMA Project and scopes every product request", async ({ page }) => {
   await signIn(page);
@@ -25,12 +25,11 @@ test("the connection query selects the matching AMA Project and scopes every pro
     ),
   );
   const requestedConnections: string[] = [];
-  await page.route("**/api/console/ama-connections/*/agents", (route) => {
-    const connectionId = new URL(route.request().url()).pathname.split("/")[4];
-    requestedConnections.push(connectionId);
+  await page.route(/\/api\/v1\/agents(?:\?.*)?$/, (route) => {
+    requestedConnections.push(route.request().headers()["x-ama-project-id"] ?? "missing");
     return fulfillJson(
       route,
-      collection([
+      amaCollection([
         {
           ...readyAgent,
           metadata: { ...readyAgent.metadata, uid: "agent-secondary", name: "Secondary Agent", projectId: "project-secondary" },
@@ -38,16 +37,16 @@ test("the connection query selects the matching AMA Project and scopes every pro
       ]),
     );
   });
-  await page.route("**/api/console/ama-connections/*/sessions", (route) => {
-    requestedConnections.push(new URL(route.request().url()).pathname.split("/")[4]);
-    return fulfillJson(route, collection([]));
+  await page.route(/\/api\/v1\/sessions(?:\?.*)?$/, (route) => {
+    requestedConnections.push(route.request().headers()["x-ama-project-id"] ?? "missing");
+    return fulfillJson(route, amaCollection([]));
   });
 
   await page.goto("/agents?connection=ama-secondary");
 
   await expect(page.getByRole("link", { name: "Secondary Agent" })).toBeVisible();
   expect(requestedConnections.length).toBeGreaterThanOrEqual(1);
-  expect(new Set(requestedConnections)).toEqual(new Set(["ama-secondary"]));
+  expect(new Set(requestedConnections)).toEqual(new Set(["project-secondary"]));
   await expect(page).toHaveURL(/\/agents\?connection=ama-secondary$/);
 
   await page.getByRole("link", { name: "Machines" }).click();

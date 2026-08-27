@@ -1,12 +1,11 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 1.4 legacy-agent-and-administration-surfaces-stay-absent
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, collection, fulfillJson, readyAgent, signIn } from "./product-fixtures";
+import { readyAgent, routeAmaAgents, signIn } from "./product-fixtures";
 
 test("restored product UX does not restore v1 identity, daemon, or administration surfaces", async ({ page }) => {
   await signIn(page);
-  await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/agents*`, (route) => fulfillJson(route, collection([readyAgent])));
-  await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/sessions*`, (route) => fulfillJson(route, collection([])));
+  await routeAmaAgents(page, [readyAgent], []);
 
   await page.goto("/agents?connection=ama-e2e");
   const interactiveLegacySurface = page

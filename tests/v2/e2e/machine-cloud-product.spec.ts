@@ -1,19 +1,21 @@
 // spec: tests/v2/e2e/product-experience.plan.md
 // scenario: 4.2 cloud-machine-has-no-local-runner-command
 import { expect, test } from "@playwright/test";
-import { CONNECTION_ID, collection, fulfillJson, signIn } from "./product-fixtures";
+import { amaCollection, fulfillJson, signIn } from "./product-fixtures";
 
 test("a cloud AMA Environment never instructs the user to start a local runner", async ({ page }) => {
   await signIn(page);
-  await page.route(`**/api/console/ama-connections/${CONNECTION_ID}/machines`, (route) => {
+  await page.route(/\/api\/v1\/environments(?:\?.*)?$/, (route) => {
     if (route.request().method() === "POST")
       return fulfillJson(route, {
         metadata: { uid: "env-cloud", projectId: "project-e2e", name: "Cloud Sandbox" },
         spec: { type: "cloud" },
         status: { phase: "active" },
       });
-    return fulfillJson(route, collection([]));
+    return fulfillJson(route, amaCollection([]));
   });
+  for (const resource of ["runners", "sessions", "agents"])
+    await page.route(new RegExp(`/api/v1/${resource}(?:\\?.*)?$`), (route) => fulfillJson(route, amaCollection([])));
 
   await page.goto("/machines?connection=ama-e2e");
   await page.getByRole("button", { name: "Add Machine" }).click();

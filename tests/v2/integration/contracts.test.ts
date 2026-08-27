@@ -15,6 +15,18 @@ describe("Agent Kanban v2 HTTP and D1 contracts", () => {
     const health = await app.request("/api/health");
     expect(health.status).toBe(200);
     expect(await responseJson(health)).toEqual({ status: "ok", version: API_VERSION });
+    expect(await responseJson(await app.request("/api/configz"))).toEqual({
+      issuer: "http://realmroot.invalid/api/auth",
+      clientId: "ak-browser",
+      ak: {
+        resource: `${AK_ORIGIN}/api`,
+        scopes: expect.arrayContaining(["boards:read", "reviews:write"]),
+      },
+      ama: {
+        resource: "http://ama.invalid/api",
+        scopes: expect.arrayContaining(["agents:read", "environments:write", "sessions:write"]),
+      },
+    });
 
     const metadata = await responseJson<Record<string, unknown>>(await app.request("/.well-known/oauth-protected-resource/api"));
     expect(metadata).toMatchObject({ resource: `${AK_ORIGIN}/api`, authorization_servers: ["http://realmroot.invalid/api/auth"] });
@@ -112,7 +124,16 @@ describe("Agent Kanban v2 HTTP and D1 contracts", () => {
   });
 
   it("has no mounted v1 API or retired CLI/daemon resources", async () => {
-    for (const path of ["/api/v1/boards", "/api/agents", "/api/machines", "/api/runtimes", "/api/daemon/heartbeat"]) {
+    for (const path of [
+      "/api/v1/boards",
+      "/api/agents",
+      "/api/machines",
+      "/api/runtimes",
+      "/api/daemon/heartbeat",
+      "/api/auth/session",
+      "/api/auth/login",
+      "/api/console/ama-projects",
+    ]) {
       const response = await app.request(path);
       expect(response.status, path).toBe(404);
     }
