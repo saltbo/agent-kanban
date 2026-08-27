@@ -18,6 +18,12 @@ The browser is a Realmroot public Application using Authorization Code with PKCE
 
 AK's scheduled dispatch and server-side AMA validation use an AK Machine Application with the client-credentials grant. Configure its client ID and secret as `AK_SERVICE_CLIENT_ID` and `AK_SERVICE_CLIENT_SECRET`; grant `agents:read environments:read projects:read runners:read sessions:read sessions:write`; and add that client ID to AMA's trusted bearer clients. The browser Application must likewise be registered for both Resource scope sets and listed as an AMA trusted bearer client. DPoP is required only for Realmroot Agent tokens; human and Machine Application Resource tokens use Bearer.
 
+## Production release configuration
+
+Register AK as one Realmroot `public_spa` Application with no client secret. Its redirect URIs are `https://agent-kanban.dev/auth/callback` and `https://ak.tftt.cc/auth/callback`; its post-logout URIs and CORS origins are the corresponding site origins. Authorize the AK and AMA Resource scope sets published by `/api/configz`, then set the same client ID as AK's `REALMROOT_BROWSER_CLIENT_ID` and include it in AMA's `OIDC_TRUSTED_BEARER_CLIENT_IDS`.
+
+AK v1 registered `TunnelRelay` as a SQLite Durable Object. The v2 Worker removes that class and declares the `v2` deletion migration in `wrangler.toml`. The first production v2 release must use `wrangler deploy` so Cloudflare applies the migration; gradual `versions upload` cannot apply Durable Object migrations. Non-production branch builds use `wrangler deploy --dry-run` and never change production traffic.
+
 ## Development
 
 ```sh
