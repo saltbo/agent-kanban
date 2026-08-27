@@ -282,8 +282,8 @@ async function akRequest(origin, akAccessToken, method, path, body, expected = 2
 async function main() {
   const temp = mkdtempSync(join(tmpdir(), "ak-v2-full-smoke-"));
   const [rrPort, amaPort, akPort] = await Promise.all([freePort(), freePort(), freePort()]);
-  const rrOrigin = `http://127.0.0.1:${rrPort}`;
-  const amaOrigin = `${DEV ? "http://localhost" : "http://127.0.0.1"}:${amaPort}`;
+  const rrOrigin = `http://localhost:${rrPort}`;
+  const amaOrigin = `http://localhost:${amaPort}`;
   // Browsers treat localhost as a potentially trustworthy origin for the SPA's
   // Authorization Code + PKCE callback.
   const akOrigin = `http://localhost:${akPort}`;
@@ -322,7 +322,7 @@ async function main() {
       ["exec", "wrangler", "d1", "migrations", "apply", "realmroot-ak-v2-smoke-db", "--local", "--config", rrConfig, "--persist-to", rrState],
       RR_ROOT,
     );
-    start("realmroot", "pnpm", ["exec", "vite", "dev", "--host", "127.0.0.1", "--port", String(rrPort), "--strictPort"], RR_ROOT, {
+    start("realmroot", "pnpm", ["exec", "vite", "dev", "--host", "localhost", "--port", String(rrPort), "--strictPort"], RR_ROOT, {
       ...process.env,
       CF_WRANGLER_CONFIG: rrConfig,
       CF_PERSIST_STATE_PATH: rrState,
@@ -706,7 +706,7 @@ async function main() {
     // Realmroot snapshots registered OAuth audiences when its Worker starts.
     // Restart through the normal process boundary after public Resource registration.
     await stopProcess("realmroot");
-    start("realmroot-restarted", "pnpm", ["exec", "vite", "dev", "--host", "127.0.0.1", "--port", String(rrPort), "--strictPort"], RR_ROOT, {
+    start("realmroot-restarted", "pnpm", ["exec", "vite", "dev", "--host", "localhost", "--port", String(rrPort), "--strictPort"], RR_ROOT, {
       ...process.env,
       CF_WRANGLER_CONFIG: rrConfig,
       CF_PERSIST_STATE_PATH: rrState,
