@@ -13,7 +13,7 @@ afterEach(async () => {
   await Promise.all(resources.splice(0).map((resource) => resource.dispose()));
 });
 
-describe("D1 current Task action actor writes", () => {
+describe("D1 current Task action actor writes", { timeout: 15_000 }, () => {
   it("keeps same-Board concurrent Task allocation contiguous while retrying sequence races or returning 409", async () => {
     const { db, ownerId, boardId } = await fixture("concurrent-allocation");
 
@@ -40,7 +40,7 @@ describe("D1 current Task action actor writes", () => {
     await expect(
       db.prepare("SELECT COUNT(*) AS count FROM task_actions WHERE task_id IN (SELECT id FROM tasks WHERE board_id = ?)").bind(boardId).first(),
     ).resolves.toEqual({ count: committed.length });
-  }, 15_000);
+  });
 
   it("writes a default Task creation as the system actor", async () => {
     const { db, ownerId, boardId } = await fixture("default-system");
