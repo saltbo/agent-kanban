@@ -5,12 +5,11 @@ compatibility_flags = ["nodejs_compat"]
 preview_urls = true
 
 [[routes]]
-pattern = "ak.tftt.cc/*"
-zone_name = "tftt.cc"
-
-[[routes]]
 pattern = "agent-kanban.dev"
 custom_domain = true
+
+[triggers]
+crons = []
 
 [vars]
 AK_PUBLIC_ORIGIN = "https://agent-kanban.dev"

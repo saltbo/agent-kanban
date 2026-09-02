@@ -40,12 +40,12 @@ translated to Agency without introducing AK Agent or Machine persistence.
 
 ## Session observation
 
-Remote's signed Agent binding contains the runtime and raw runtime Session
-identifier. AK stores those values on claim. Agency resolves the exact Session
-by the bound Realmroot Agent actor, canonical runtime, and raw identifier. The
-organization-wide lookup is authorized only for AK's confidential service
-identity; AK then exposes the Session and a read-only event socket to
-authenticated board viewers.
+Remote's signed Agent binding contains the runtime and canonical Agency Session
+identifier. AK stores those values on claim. AK uses the current caller's
+delegated Agency authority and the tenant's mapped Agency Project to read that
+Session through Agency's standard Session resource, then exposes the Session and
+a read-only event socket to authenticated board viewers. Agency has no
+AK-specific configuration or behavior; the dependency is strictly AK to Agency.
 
 The proxy accepts only history-backfill frames from the browser. It never
 guesses the latest Agent Session, accepts a caller-supplied Session URL, or

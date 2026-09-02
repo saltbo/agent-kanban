@@ -1,210 +1,139 @@
-import type { Env } from "@server/env";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const { clientCredentialsToken, ClientCredentialsFailure } = vi.hoisted(() => {
-  class ClientCredentialsFailure extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "RealmrootClientCredentialsFailure";
-    }
-  }
-  return {
-    clientCredentialsToken: vi.fn(),
-    ClientCredentialsFailure,
-  };
-});
-
-vi.mock("@server/adapters/realmroot/clientCredentials", () => ({
-  RealmrootClientCredentialsFailure: ClientCredentialsFailure,
-  realmrootClientCredentialsToken: clientCredentialsToken,
-}));
-
 import { agencySessionObservationClient } from "@server/adapters/agency/sessionObservation";
-import { inboxTaskLifecycleNotifier } from "@server/adapters/realmroot/inboxTaskLifecycleNotifier";
+import type { Env } from "@server/env";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-const accessToken = "access-token-SENTINEL";
-const clientSecret = "client-secret-SENTINEL";
-const upstreamCredential = "upstream-credential-SENTINEL";
-const binding = {
-  agentActorId: "agent_1",
-  runtime: "codex",
-  runtimeSessionId: "runtime_session_1",
+const authorization = {
+  token: "delegated-session-token-SENTINEL",
+  projectId: "ama-project-1",
+  traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 };
 
 function env(): Env {
-  return {
-    AMA_ORIGIN: "https://agency.example.com/configured-path",
-    AK_PUBLIC_ORIGIN: "https://agent-kanban.example.com",
-    INBOX_RESOURCE: "https://inbox.example.com/api",
-    INBOX_API_VERSION: "2026-08-31",
-    OIDC_SERVICE_CLIENT_ID: "ak-service",
-    OIDC_SERVICE_CLIENT_SECRET: clientSecret,
-    OIDC_ISSUER: "https://id.example.com/api/auth",
-  } as Env;
+  return { AMA_ORIGIN: "https://agency.example.com/configured-path" } as Env;
 }
 
-describe("Agency Session observation boundary failures", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    clientCredentialsToken.mockResolvedValue(accessToken);
-  });
+function session() {
+  return {
+    metadata: {
+      uid: "session-canonical-1",
+      projectId: authorization.projectId,
+      name: "Observed Session",
+      createdAt: "2026-09-02T00:00:00.000Z",
+      updatedAt: "2026-09-02T00:01:00.000Z",
+      archivedAt: null,
+    },
+    spec: { runtime: "codex" },
+    status: { phase: "idle" },
+  };
+}
 
+describe("Agency Session observation boundary", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("[spec: tasks/assign] [spec: session-observation/exact-session] uses the shared OIDC Service credentials for Inbox notifications and Agency Session observation", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === "https://inbox.example.com/api/messages") return new Response(null, { status: 201 });
-        return Response.json({ data: [], pagination: { hasMore: false, nextCursor: null } });
-      }),
-    );
+  it("[spec: session-observation/exact-session] reads a canonical Session with delegated project authorization", async () => {
+    const fetchMock = vi.fn(async () => Response.json(session()));
+    vi.stubGlobal("fetch", fetchMock);
 
-    const configuration = env();
-    await inboxTaskLifecycleNotifier(configuration).notify({
-      taskId: "task_1",
-      assigneeActorId: "agent_1",
-      event: "assigned",
-      version: "version_1",
-    });
-    await agencySessionObservationClient(configuration).findByRuntimeBinding(binding);
+    await expect(agencySessionObservationClient(env(), authorization).getSession("session-canonical-1")).resolves.toEqual(session());
 
-    expect(clientCredentialsToken).toHaveBeenNthCalledWith(1, {
-      issuer: configuration.OIDC_ISSUER,
-      clientId: "ak-service",
-      clientSecret,
-      resource: configuration.INBOX_RESOURCE,
-      scope: "messages:create",
-    });
-    expect(clientCredentialsToken).toHaveBeenNthCalledWith(2, {
-      issuer: configuration.OIDC_ISSUER,
-      clientId: "ak-service",
-      clientSecret,
-      resource: "https://agency.example.com/api",
-      origin: "https://agency.example.com",
-      scope: "sessions:read",
-    });
+    const [input, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(input));
+    expect(url.href).toBe("https://agency.example.com/api/v1/sessions/session-canonical-1");
+    expect([...url.searchParams]).toEqual([]);
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${authorization.token}`);
+    expect(headers.get("X-AMA-Project-ID")).toBe(authorization.projectId);
+    expect(headers.get("traceparent")).toBe(authorization.traceparent);
   });
 
-  it("redacts Inbox network error details from the lifecycle notification failure", async () => {
-    const cause = new Error(`network failed: ${upstreamCredential}`);
+  it("[spec: session-observation/exact-session] maps a missing canonical Session to null", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Promise.reject(cause)),
+      vi.fn(async () => new Response(null, { status: 404 })),
     );
-
-    const error = await inboxTaskLifecycleNotifier(env())
-      .notify({
-        taskId: "task_1",
-        assigneeActorId: "agent_1",
-        event: "assigned",
-        version: "version_1",
-      })
-      .catch((caught: unknown) => caught);
-
-    expect(error).toMatchObject({
-      name: "TaskLifecycleNotificationFailure",
-      message: "Inbox task notification is unavailable",
-      cause,
-    });
-    expect(String(error)).not.toContain(upstreamCredential);
+    await expect(agencySessionObservationClient(env(), authorization).getSession("session-missing")).resolves.toBeNull();
   });
 
-  it("preserves the stable Agency token failure and its diagnostic cause", async () => {
-    const cause = new ClientCredentialsFailure("token endpoint unavailable");
-    clientCredentialsToken.mockRejectedValueOnce(cause);
+  it("rejects malformed and invalid successful Session responses", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{", { status: 200 }))
+      .mockResolvedValueOnce(Response.json({ metadata: { uid: "session-canonical-1" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = agencySessionObservationClient(env(), authorization);
 
-    await expect(agencySessionObservationClient(env()).findByRuntimeBinding(binding)).rejects.toMatchObject({
-      name: "AgencySessionObservationFailure",
-      code: "UNAVAILABLE",
-      message: "Agency authorization failed",
-      cause,
+    await expect(client.getSession("session-canonical-1")).rejects.toMatchObject({
+      code: "INVALID_RESPONSE",
+      message: "Agency returned malformed Session JSON",
+      cause: expect.any(SyntaxError),
     });
-  });
-
-  it("keeps an Agency lookup HTTP failure stable without consuming its response body", async () => {
-    const response = new Response(upstreamCredential, { status: 503 });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => response),
-    );
-
-    await expect(agencySessionObservationClient(env()).findByRuntimeBinding(binding)).rejects.toMatchObject({
-      code: "UNAVAILABLE",
-      message: "Agency Session lookup failed with HTTP 503",
+    await expect(client.getSession("session-canonical-1")).rejects.toMatchObject({
+      code: "INVALID_RESPONSE",
+      message: "Agency returned an invalid Session response",
     });
-
-    expect(response.bodyUsed).toBe(false);
-  });
-
-  it("keeps an Agency socket HTTP failure stable without consuming its response body", async () => {
-    const response = new Response(upstreamCredential, { status: 502 });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => response),
-    );
-
-    await expect(agencySessionObservationClient(env()).connectSessionSocket("session_1", binding)).rejects.toMatchObject({
-      code: "UNAVAILABLE",
-      message: "Agency Session socket failed with HTTP 502",
-    });
-
-    expect(response.bodyUsed).toBe(false);
   });
 
   it.each([
     {
-      operation: "findByRuntimeBinding" as const,
-      invoke: () => agencySessionObservationClient(env()).findByRuntimeBinding(binding),
+      operation: "Session read",
+      invoke: (client: ReturnType<typeof agencySessionObservationClient>) => client.getSession("session-canonical-1"),
+      message: "Agency Session read failed with HTTP 503",
     },
     {
-      operation: "connectSessionSocket" as const,
-      invoke: () => agencySessionObservationClient(env()).connectSessionSocket("session_1", binding),
+      operation: "Session socket",
+      invoke: (client: ReturnType<typeof agencySessionObservationClient>) => client.connectSessionSocket("session-canonical-1"),
+      message: "Agency Session socket failed with HTTP 503",
     },
-  ])("preserves the stable Agency $operation network failure and its cause", async ({ invoke }) => {
-    const cause = new Error(`network failed: ${upstreamCredential}`);
+  ])("does not consume a credential-bearing upstream body when the $operation fails", async ({ invoke, message }) => {
+    const response = new Response("provider-secret-SENTINEL", { status: 503 });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+
+    await expect(invoke(agencySessionObservationClient(env(), authorization))).rejects.toMatchObject({
+      code: "UNAVAILABLE",
+      message,
+    });
+    expect(response.bodyUsed).toBe(false);
+  });
+
+  it("preserves stable lookup and socket network failures with their causes", async () => {
+    const cause = new Error("network failure credential-SENTINEL");
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => Promise.reject(cause)),
     );
+    const client = agencySessionObservationClient(env(), authorization);
 
-    await expect(invoke()).rejects.toMatchObject({
-      name: "AgencySessionObservationFailure",
+    await expect(client.getSession("session-canonical-1")).rejects.toMatchObject({
+      code: "UNAVAILABLE",
+      message: "Agency request failed",
+      cause,
+    });
+    await expect(client.connectSessionSocket("session-canonical-1")).rejects.toMatchObject({
       code: "UNAVAILABLE",
       message: "Agency request failed",
       cause,
     });
   });
 
-  it("preserves the stable malformed Agency lookup failure and its parse cause", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("{", { status: 200 })),
-    );
+  it("opens the standard canonical Session socket without binding query parameters", async () => {
+    const upstream = {} as WebSocket;
+    const fetchMock = vi.fn(async () => ({ status: 101, webSocket: upstream }) as Response & { webSocket: WebSocket });
+    vi.stubGlobal("fetch", fetchMock);
 
-    const error = await agencySessionObservationClient(env())
-      .findByRuntimeBinding(binding)
-      .catch((caught: unknown) => caught);
-    expect(error).toMatchObject({
-      name: "AgencySessionObservationFailure",
-      code: "INVALID_RESPONSE",
-      message: "Agency returned malformed Session JSON",
-      cause: expect.any(SyntaxError),
-    });
-  });
+    await expect(agencySessionObservationClient(env(), authorization).connectSessionSocket("session-canonical-1")).resolves.toBe(upstream);
 
-  it("returns a stable failure for an invalid Agency lookup payload", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ data: "invalid", pagination: { hasMore: false } })),
-    );
-
-    await expect(agencySessionObservationClient(env()).findByRuntimeBinding(binding)).rejects.toMatchObject({
-      code: "INVALID_RESPONSE",
-      message: "Agency returned an invalid Session response",
-    });
+    const [input, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(input));
+    expect(url.href).toBe("https://agency.example.com/api/v1/sessions/session-canonical-1/socket");
+    expect([...url.searchParams]).toEqual([]);
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${authorization.token}`);
+    expect(headers.get("X-AMA-Project-ID")).toBe(authorization.projectId);
+    expect(headers.get("Upgrade")).toBe("websocket");
   });
 });

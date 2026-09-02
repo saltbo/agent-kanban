@@ -1,4 +1,4 @@
-import { agencySessionObservationClient } from "@server/adapters/agency/sessionObservation";
+import { agencySessionObservationClient, assertAgencySessionObservationConfigured } from "@server/adapters/agency/sessionObservation";
 import {
   addTaskAction,
   assertTaskOwner,
@@ -14,6 +14,7 @@ import {
 } from "@server/adapters/d1/taskRepo";
 import { createSSEResponse } from "@server/adapters/stream/sse";
 import type { Env } from "@server/env";
+import { amaAuthorization } from "@server/http/resource-server/amaProjectionDependencies";
 import { pageResponse, readPageWindow } from "@server/http/resource-server/pagination";
 import { taskNoteResource, taskResource } from "@server/http/resource-server/representation";
 import {
@@ -188,7 +189,7 @@ async function getTaskSession(c: TaskContext): Promise<Response> {
   const task = await requireTask(c);
   const binding = requireTaskSession(task);
   try {
-    return c.json(await resolveAgencySession(c.env, binding));
+    return c.json(await resolveAgencySession(c, binding));
   } catch (error) {
     return mapSessionObservationFailure(c, error);
   }
@@ -198,35 +199,38 @@ async function getTaskSessionWebSocket(c: TaskContext): Promise<Response> {
   const task = await requireTask(c);
   const binding = requireTaskSession(task);
   try {
-    const client = agencySessionObservationClient(c.env);
-    const session = await observeTaskSession(client, {
-      agentActorId: binding.agent_actor_id,
-      runtime: binding.runtime,
-      runtimeSessionId: binding.runtime_session_id,
+    const upgrade = c.req.header("Upgrade")?.toLowerCase() === "websocket";
+    const client = await taskSessionClient(c, upgrade ? ["sessions:read", "sessions:write"] : ["sessions:read"]);
+    const session = await observeTaskSession(client.adapter, {
+      sessionId: binding.runtime_session_id,
+      projectId: client.projectId,
     });
-    if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") {
+    if (!upgrade) {
       const url = new URL(c.req.url);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       return c.json({ url: url.toString(), sessionId: session.metadata.uid });
     }
-    return relayReadOnlyAgencySocket(
-      await client.connectSessionSocket(session.metadata.uid, {
-        agentActorId: binding.agent_actor_id,
-        runtime: binding.runtime,
-        runtimeSessionId: binding.runtime_session_id,
-      }),
-    );
+    return relayReadOnlyAgencySocket(await client.adapter.connectSessionSocket(session.metadata.uid));
   } catch (error) {
     return mapSessionObservationFailure(c, error);
   }
 }
 
-async function resolveAgencySession(cenv: Env, binding: NonNullable<Task["session_binding"]>) {
-  return observeTaskSession(agencySessionObservationClient(cenv), {
-    agentActorId: binding.agent_actor_id,
-    runtime: binding.runtime,
-    runtimeSessionId: binding.runtime_session_id,
+async function resolveAgencySession(c: TaskContext, binding: NonNullable<Task["session_binding"]>) {
+  const client = await taskSessionClient(c, ["sessions:read"]);
+  return observeTaskSession(client.adapter, {
+    sessionId: binding.runtime_session_id,
+    projectId: client.projectId,
   });
+}
+
+async function taskSessionClient(c: TaskContext, scopes: readonly string[]) {
+  assertAgencySessionObservationConfigured(c.env);
+  const { projectId, token } = await amaAuthorization(c, scopes);
+  return {
+    projectId,
+    adapter: agencySessionObservationClient(c.env, { token, projectId, traceparent: c.get("traceparent") }),
+  };
 }
 
 function relayReadOnlyAgencySocket(upstream: WebSocket): Response {
@@ -303,10 +307,7 @@ function isBackfillRequest(value: string | ArrayBuffer): value is string {
 
 function mapSessionObservationFailure(c: TaskContext, error: unknown): Response {
   if (error instanceof TaskSessionObservationFailure) {
-    if (error.code === "SESSION_NOT_FOUND") {
-      return c.json({ error: { code: "AMA_SESSION_NOT_FOUND", message: error.message } }, 404);
-    }
-    return c.json({ error: { code: "AMA_SESSION_AMBIGUOUS", message: error.message } }, 409);
+    return c.json({ error: { code: "AMA_SESSION_NOT_FOUND", message: error.message } }, 404);
   }
   throw error;
 }

@@ -2,7 +2,6 @@ import { AuthError, authenticateRealmrootToken, authenticateWebSession, CsrfErro
 import type { Env } from "@server/env";
 import { isPublishedV2Operation, v2Problem } from "@server/http/middleware/v2Contract";
 import type { Context, Next } from "hono";
-import { errors as joseErrors } from "jose";
 
 type IdentityType = "user" | "machine" | "realmroot:agent" | "service";
 
@@ -99,10 +98,7 @@ export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) 
     return enforceRouteRule(c, next);
   } catch (error) {
     if (error instanceof CsrfError) return authorizationFailure(c, error.message);
-    if (error instanceof AuthError || error instanceof joseErrors.JOSEError) {
-      const message = error instanceof AuthError ? error.message : "Invalid Realmroot authority";
-      return authenticationFailure(c, message);
-    }
+    if (error instanceof AuthError) return authenticationFailure(c, error.message);
     throw error;
   }
 }

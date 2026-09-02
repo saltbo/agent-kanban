@@ -279,6 +279,164 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     expect(dpop.status, await dpop.clone().text()).toBe(200);
   });
 
+  it.each(["ak_legacy", "opaque-resource-token"])("returns RFC 9457 authentication failure for non-JWT Bearer token %s", async (token) => {
+    const response = await api.fetch(
+      new Request(`${resource}/boards`, {
+        headers: { authorization: `Bearer ${token}`, "API-Version": "2026-08-29" },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("Content-Type")).toContain("application/problem+json");
+    await expect(response.json()).resolves.toMatchObject({
+      type: `${resource}/problems/authentication-required`,
+      title: "Authentication required",
+      status: 401,
+      detail: "Invalid OIDC access token",
+      instance: expect.stringMatching(/^urn:request:/),
+    });
+  });
+
+  it("returns a 5xx Problem for OIDC discovery and signing-key failures while malformed credentials remain 401", async () => {
+    const url = `${resource}/boards`;
+    const dependencyIssuer = `https://id-dependency-${randomUUID()}.test/api/auth`;
+    const dependencyJwksUri = `${dependencyIssuer}/jwks`;
+    env = { ...env, OIDC_ISSUER: dependencyIssuer };
+    const authority = await realmrootAgentAuthority(url, "GET", "board:read", "actor-toolbox", {
+      issuer: dependencyIssuer,
+      jwksUri: dependencyJwksUri,
+    });
+    const requestWithAuthority = () =>
+      api.fetch(
+        new Request(url, {
+          headers: {
+            authorization: `DPoP ${authority.accessToken}`,
+            dpop: authority.proof,
+            "API-Version": "2026-08-29",
+          },
+        }),
+        env,
+      );
+
+    const unavailableFetch = vi.fn(async () => Promise.reject(new Error("discovery unavailable sentinel")));
+    vi.stubGlobal("fetch", unavailableFetch);
+    const malformedCompact = await api.fetch(new Request(url, { headers: { authorization: "Bearer aaa.bbb.ccc" } }), env);
+    expect(malformedCompact.status).toBe(401);
+    await expect(malformedCompact.json()).resolves.toMatchObject({
+      type: `${resource}/problems/authentication-required`,
+      status: 401,
+      detail: "Invalid OIDC access token",
+    });
+    expect(unavailableFetch).not.toHaveBeenCalled();
+
+    const discoveryFailure = await requestWithAuthority();
+    expect(discoveryFailure.status).toBe(500);
+    await expect(discoveryFailure.json()).resolves.toMatchObject({
+      type: `${resource}/problems/internal-error`,
+      status: 500,
+      detail: "The server could not complete the request",
+    });
+
+    const invalidMetadata = [
+      { name: "null document", value: null },
+      {
+        name: "wrong-type endpoint",
+        value: {
+          issuer: "replace-at-request-time",
+          authorization_endpoint: 42,
+          token_endpoint: "https://id.example.test/token",
+          jwks_uri: "https://id.example.test/jwks",
+        },
+      },
+      {
+        name: "invalid endpoint URL",
+        value: {
+          issuer: "replace-at-request-time",
+          authorization_endpoint: "not-an-absolute-url",
+          token_endpoint: "https://id.example.test/token",
+          jwks_uri: "https://id.example.test/jwks",
+        },
+      },
+      {
+        name: "non-HTTPS endpoint",
+        value: {
+          issuer: "replace-at-request-time",
+          authorization_endpoint: "http://id.example.test/authorize",
+          token_endpoint: "https://id.example.test/token",
+          jwks_uri: "https://id.example.test/jwks",
+        },
+      },
+      {
+        name: "empty algorithms",
+        value: {
+          issuer: "replace-at-request-time",
+          authorization_endpoint: "https://id.example.test/authorize",
+          token_endpoint: "https://id.example.test/token",
+          jwks_uri: "https://id.example.test/jwks",
+          id_token_signing_alg_values_supported: [],
+        },
+      },
+      {
+        name: "only unsafe algorithms",
+        value: {
+          issuer: "replace-at-request-time",
+          authorization_endpoint: "https://id.example.test/authorize",
+          token_endpoint: "https://id.example.test/token",
+          jwks_uri: "https://id.example.test/jwks",
+          id_token_signing_alg_values_supported: ["none", "HS256"],
+        },
+      },
+    ] as const;
+    for (const invalid of invalidMetadata) {
+      const metadataIssuer = `https://id-metadata-${randomUUID()}.test/api/auth`;
+      env = { ...env, OIDC_ISSUER: metadataIssuer };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          const target = input instanceof Request ? input.url : String(input);
+          expect(target, invalid.name).toBe(`${metadataIssuer}/.well-known/openid-configuration`);
+          const value = invalid.value && typeof invalid.value === "object" ? { ...invalid.value, issuer: metadataIssuer } : invalid.value;
+          return Response.json(value);
+        }),
+      );
+
+      const response = await requestWithAuthority();
+      expect(response.status, invalid.name).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        type: `${resource}/problems/internal-error`,
+        status: 500,
+        detail: "The server could not complete the request",
+      });
+    }
+
+    env = { ...env, OIDC_ISSUER: dependencyIssuer };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const target = input instanceof Request ? input.url : String(input);
+        if (target === `${dependencyIssuer}/.well-known/openid-configuration`) {
+          return Response.json({
+            issuer: dependencyIssuer,
+            authorization_endpoint: `${dependencyIssuer}/oauth2/authorize`,
+            token_endpoint: `${dependencyIssuer}/oauth2/token`,
+            jwks_uri: dependencyJwksUri,
+          });
+        }
+        if (target === dependencyJwksUri) return new Response(null, { status: 503 });
+        throw new Error(`Unexpected request: ${target}`);
+      }),
+    );
+    const jwksFailure = await requestWithAuthority();
+    expect(jwksFailure.status).toBe(500);
+    await expect(jwksFailure.json()).resolves.toMatchObject({
+      type: `${resource}/problems/internal-error`,
+      status: 500,
+      detail: "The server could not complete the request",
+    });
+  });
+
   it.each(["boards", "repositories"] as const)(
     "[spec: resource-server/generic-operations] creates %s without an Idempotency-Key",
     async (resourceKind) => {
@@ -1095,7 +1253,15 @@ async function mutateCreatedResource(resourceKind: "boards" | "repositories" | "
   return before;
 }
 
-async function realmrootAgentAuthority(htu: string, method: string, scope: string, actorId = "actor-toolbox") {
+async function realmrootAgentAuthority(
+  htu: string,
+  method: string,
+  scope: string,
+  actorId = "actor-toolbox",
+  authorityUrls: { issuer: string; jwksUri: string } = { issuer, jwksUri },
+) {
+  const authorityIssuer = authorityUrls.issuer;
+  const authorityJwksUri = authorityUrls.jwksUri;
   const issuerKeys = await issuerKeysPromise;
   const issuerPublicJwk = await exportJWK(issuerKeys.publicKey);
   issuerPublicJwk.kid = "toolbox-generic-issuer-key";
@@ -1104,17 +1270,17 @@ async function realmrootAgentAuthority(htu: string, method: string, scope: strin
     vi.fn(async (target: RequestInfo | URL, init?: RequestInit) => {
       const request = target instanceof Request ? target : new Request(String(target), init);
       const url = request.url;
-      if (url === `${issuer}/.well-known/openid-configuration`) {
+      if (url === `${authorityIssuer}/.well-known/openid-configuration`) {
         oidcDiscoveryRequests += 1;
         return Response.json({
-          issuer,
-          authorization_endpoint: `${issuer}/oauth2/authorize`,
-          token_endpoint: `${issuer}/oauth2/token`,
-          jwks_uri: jwksUri,
+          issuer: authorityIssuer,
+          authorization_endpoint: `${authorityIssuer}/oauth2/authorize`,
+          token_endpoint: `${authorityIssuer}/oauth2/token`,
+          jwks_uri: authorityJwksUri,
         });
       }
-      if (url === jwksUri) return Response.json({ keys: [issuerPublicJwk] });
-      if (url === `${issuer}/oauth2/token`) {
+      if (url === authorityJwksUri) return Response.json({ keys: [issuerPublicJwk] });
+      if (url === `${authorityIssuer}/oauth2/token`) {
         machineTokenRequests.push(request);
         return Response.json({ access_token: "inbox-machine-token" });
       }
@@ -1132,11 +1298,11 @@ async function realmrootAgentAuthority(htu: string, method: string, scope: strin
     scope,
     client_id: "realmroot-cli",
     cnf: { jkt: thumbprint },
-    act: { iss: issuer, sub: actorId },
+    act: { iss: authorityIssuer, sub: actorId },
     "urn:realmroot:params:oauth:org": tenantId,
   })
     .setProtectedHeader({ alg: "ES256", kid: issuerPublicJwk.kid, typ: "at+jwt" })
-    .setIssuer(issuer)
+    .setIssuer(authorityIssuer)
     .setAudience(resource)
     .setSubject("controller-toolbox")
     .setIssuedAt()

@@ -7,6 +7,14 @@ import { ensureAmaProject } from "@server/usecases/ama/ensureAmaProject";
 import type { Context } from "hono";
 
 export async function amaProjectionDependencies(c: Context<{ Bindings: Env }>, scopes: readonly string[]) {
+  const authorization = await amaAuthorization(c, scopes);
+  return {
+    projectId: authorization.projectId,
+    adapter: new AmaResourceProjectionAdapter(c.env, authorization.token, c.get("traceparent")),
+  };
+}
+
+export async function amaAuthorization(c: Context<{ Bindings: Env }>, scopes: readonly string[]) {
   const principal = c.get("principal");
   const binding = new D1AmaProjectBindingAdapter(c.env.DB);
   const storedProjectId = await binding.findProjectId(principal.tenantId);
@@ -17,5 +25,5 @@ export async function amaProjectionDependencies(c: Context<{ Bindings: Env }>, s
   });
   const projectId =
     storedProjectId ?? (await ensureAmaProject(binding, new AmaProjectCatalogAdapter(c.env, token, c.get("traceparent")), principal.tenantId));
-  return { projectId, adapter: new AmaResourceProjectionAdapter(c.env, token, c.get("traceparent")) };
+  return { projectId, token };
 }
