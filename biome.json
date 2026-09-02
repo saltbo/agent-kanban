@@ -1,16 +1,18 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.8/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.4.10/schema.json",
   "files": {
     "includes": [
       "**",
       "!**/dist",
       "!**/node_modules",
       "!**/.wrangler",
+      "!**/playwright-report",
+      "!**/test-results",
       "!**/pnpm-lock.yaml",
       "!**/*.min.js",
       "!**/*.min.css",
       "!**/*.css",
-      "!**/apps/web/src/components/ui"
+      "!**/src/components/ui"
     ]
   },
   "formatter": {

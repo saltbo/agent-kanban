@@ -6,17 +6,17 @@ Thanks for your interest in Agent Kanban! Here's how to get involved.
 
 1. Fork the repo and clone it locally
 2. Install dependencies: `pnpm install`
-3. Build shared types: `pnpm --filter @agent-kanban/shared build`
-4. Run migrations: `pnpm --filter @agent-kanban/web db:migrate`
-5. Start dev server: `pnpm dev`
-6. Run tests: `pnpm test`
+3. Run migrations: `pnpm db:migrate`
+4. Start dev server: `pnpm dev`
+5. Run the exact tests selected for your changed behaviour
 
 ## Making Changes
 
 - Create a feature branch from `main`
 - Keep changes focused — one concern per PR
-- Add tests for new API endpoints or business logic
-- Run `pnpm test` and `pnpm lint` before submitting
+- Change or add the scenario in `spec/*.feature` first
+- Add `[spec: capability/scenario]` to the cheapest proving test
+- Run `pnpm lint:spec` and the exact changed test cases before submitting
 
 ## Code Style
 
@@ -40,10 +40,10 @@ refactor(web): extract activity log into standalone component
 
 If your change modifies the D1 schema:
 
-1. Create a new SQL file in `apps/web/migrations/`
+1. Create a new SQL file in `migrations/`
 2. Name it `NNNN_description.sql` (sequential number)
 3. Include both the schema change and any data backfill
-4. Test with `pnpm --filter @agent-kanban/web db:migrate`
+4. Test with `pnpm db:migrate`
 
 ## Reporting Issues
 

@@ -1,6 +1,0 @@
-{
-  "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "agent-kanban-fake-ama-e2e",
-  "main": "./fake-ama-worker.mjs",
-  "compatibility_date": "2026-02-05"
-}

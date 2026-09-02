@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const config = readFileSync(new URL("../apps/web/wrangler.toml", import.meta.url), "utf8");
+const config = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
 
 function tableBody(header: string): string {
   const start = config.indexOf(header);
@@ -47,16 +47,17 @@ describe("production wrangler configuration", () => {
     );
   });
 
-  it("pins AMA runner 0.8.1 in production and staging", () => {
-    expect(stringValue(tableBody("[vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.1");
-    expect(stringValue(tableBody("[env.staging.vars]"), "AMA_RUNNER_VERSION")).toBe("0.8.1");
-  });
-
   it("keeps staging routes explicitly empty", () => {
     const staging = tableBody("[env.staging]");
 
     expect(stringArrayValue(staging, "routes")).toEqual([]);
     expect(staging).not.toContain("ak.tftt.cc");
     expect(staging).not.toContain("agent-kanban.dev");
+  });
+
+  it("deletes the legacy TunnelRelay Durable Object without retaining a binding", () => {
+    expect(config).not.toContain("[[durable_objects.bindings]]");
+    expect(config).not.toMatch(/^binding\s*=\s*"TUNNEL_RELAY"$/m);
+    expect(tableBody('[[migrations]]\ntag = "v2"')).toContain('deleted_classes = ["TunnelRelay"]');
   });
 });

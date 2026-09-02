@@ -24,16 +24,12 @@ test.describe("Settings Page", () => {
     await expect(page.getByText("Sharing enabled")).toBeVisible();
     await expect(page.getByRole("switch", { name: "Sharing on" })).toHaveAttribute("aria-checked", "true");
     await expect(page.getByText("Badge previews")).toBeVisible();
-    await expect(page.getByAltText("AK agents badge")).toBeVisible();
     await expect(page.getByAltText("AK tasks badge")).toBeVisible();
-    await expect(page.getByAltText("AK tokens badge")).toBeVisible();
     await expect(page.getByText("Share link")).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Copy agents" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy tasks" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Copy tokens" })).toBeVisible();
-    await page.getByRole("button", { name: "Copy tokens" }).click();
-    await expect(page.getByText("Tokens badge copied")).toBeVisible();
+    await page.getByRole("button", { name: "Copy tasks" }).click();
+    await expect(page.getByText("Tasks badge copied")).toBeVisible();
     await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
   });
 });

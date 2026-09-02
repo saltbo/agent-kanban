@@ -29,7 +29,7 @@ test.describe("Realmroot authentication", () => {
     expect(loginRequests).toBe(1);
   });
 
-  test("requests AK and AMA resources and their browser scopes in one authorization", async ({ request }, testInfo) => {
+  test("requests the AK resource with browser and projection scopes for delegated AMA access", async ({ request }) => {
     const metadataResponse = await request.get("/.well-known/oauth-protected-resource/api");
     expect(metadataResponse.ok()).toBe(true);
     const metadata = (await metadataResponse.json()) as { resource: string };
@@ -38,27 +38,33 @@ test.describe("Realmroot authentication", () => {
     expect(login.status()).toBe(302);
     const authorizationUrl = new URL(login.headers().location);
     expect(authorizationUrl.origin + authorizationUrl.pathname).toBe("https://id.realmroot.dev/api/auth/oauth2/authorize");
-    expect(authorizationUrl.searchParams.getAll("resource")).toEqual([metadata.resource, testInfo.config.metadata.e2eAmaResource]);
+    expect(authorizationUrl.searchParams.getAll("resource")).toEqual([metadata.resource]);
 
-    const scopes = new Set(authorizationUrl.searchParams.get("scope")?.split(" "));
-    for (const scope of [
-      "openid",
-      "profile",
-      "email",
-      "offline_access",
-      "ak:read",
-      "ak:write",
-      "agents:read",
-      "agents:write",
-      "projects:read",
-      "projects:write",
-      "sessions:read",
-      "sessions:write",
-      "vaults:read",
-      "vaults:write",
-    ]) {
-      expect(scopes).toContain(scope);
-    }
+    expect(new Set(authorizationUrl.searchParams.get("scope")?.split(" "))).toEqual(
+      new Set([
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "board:read",
+        "board:write",
+        "repository:read",
+        "repository:write",
+        "agent:read",
+        "agent:write",
+        "machine:read",
+        "machine:write",
+        "task:read",
+        "task:write",
+        "task:assign",
+        "task:claim",
+        "task:release",
+        "task:review",
+        "task:reject",
+        "task:complete",
+        "task:cancel",
+      ]),
+    );
   });
 
   test("renders callback failures returned by the server", async ({ page }) => {

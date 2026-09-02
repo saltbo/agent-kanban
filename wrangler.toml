@@ -1,0 +1,95 @@
+name = "agent-kanban"
+main = "./server/worker/index.ts"
+compatibility_date = "2026-04-13"
+compatibility_flags = ["nodejs_compat"]
+preview_urls = true
+
+[[routes]]
+pattern = "ak.tftt.cc/*"
+zone_name = "tftt.cc"
+
+[[routes]]
+pattern = "agent-kanban.dev"
+custom_domain = true
+
+[vars]
+ALLOWED_HOSTS = "agent-kanban.dev"
+AK_PUBLIC_ORIGIN = "https://agent-kanban.dev"
+OIDC_ISSUER = "https://id.realmroot.dev/api/auth"
+OIDC_WEB_CLIENT_ID = "01a05a6d-17cf-7053-bfe0-8e6238ec16ca"
+OIDC_SERVICE_CLIENT_ID = "01a05923-40b8-742b-b15d-bc38631f691f"
+INBOX_RESOURCE = "https://inbox.realmroot.dev/api"
+INBOX_API_VERSION = "2026-08-11"
+AMA_ORIGIN = "https://ama.tftt.cc"
+GITHUB_APP_ID = "4098405"
+GITHUB_APP_SLUG = "agent-kanban"
+
+# Secrets are set via `wrangler secret put`:
+# OIDC_WEB_CLIENT_SECRET, OIDC_SERVICE_CLIENT_SECRET,
+# AK_SESSION_ENCRYPTION_KEY, AK_SIGNING_KEY (canonical Base64, 32 bytes),
+# GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_PRIVATE_KEY
+# Local dev overrides are in .dev.vars
+
+[observability]
+enabled = true
+
+# Cap CPU time per request. Normal handlers are <100ms; 1000ms leaves
+# headroom for the heaviest real query while killing runaway loops.
+[limits]
+cpu_ms = 1000
+
+[assets]
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api", "/api/*", "/.well-known/*", "/share/*"]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TunnelRelay"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["TunnelRelay"]
+
+[[send_email]]
+name = "EMAIL"
+allowed_sender_addresses = ["noreply@agent-kanban.dev"]
+[[d1_databases]]
+binding = "DB"
+database_name = "agent-kanban-db"
+database_id = "13cdf435-a99c-4744-9eca-9ed22b232581"
+migrations_dir = "migrations"
+
+# ----------------------------------------------------------------------------
+# Staging environment — non-main branch builds via Workers Builds.
+# CLOUDFLARE_ENV=staging is set automatically in the build script.
+# vars and durable_objects are NOT inherited — must be redeclared.
+# ----------------------------------------------------------------------------
+[env.staging]
+routes = []
+
+[env.staging.vars]
+ALLOWED_HOSTS = "*.workers.dev"
+AK_PUBLIC_ORIGIN = "https://bodev.agent-kanban.dev"
+OIDC_ISSUER = "https://id.realmroot.dev/api/auth"
+OIDC_WEB_CLIENT_ID = "01a05a6d-17cf-7053-bfe0-8e6238ec16ca"
+OIDC_SERVICE_CLIENT_ID = "01a05923-40b8-742b-b15d-bc38631f691f"
+INBOX_RESOURCE = "https://inbox.realmroot.dev/api"
+INBOX_API_VERSION = "2026-08-11"
+AMA_ORIGIN = "https://ama.tftt.cc"
+GITHUB_APP_ID = "4153714"
+GITHUB_APP_SLUG = "agent-kanban-staging"
+
+[env.staging.limits]
+cpu_ms = 1000
+
+[[env.staging.send_email]]
+name = "EMAIL"
+allowed_sender_addresses = ["noreply@agent-kanban.dev"]
+remote = true
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "agent-kanban-db-staging"
+database_id = "d12fc329-6105-437c-9580-bab26891b059"
+migrations_dir = "migrations"

@@ -1,29 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CreateAgentInput, CreateSubagentInput } from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 
-const MIGRATIONS_DIR = join(__dirname, "../../apps/web/migrations");
-const TEST_SESSION_ENCRYPTION_KEY = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=";
-
+const MIGRATIONS_DIR = join(__dirname, "../../migrations");
 export function createTestEnv() {
   return {
     DB: null as any as D1Database,
-    AE: { writeDataPoint: () => {} } as unknown as AnalyticsEngineDataset,
     EMAIL: { send: async () => ({ messageId: "test-message" }) } as SendEmail,
     AUTH_SECRET: "test-secret-32-chars-minimum-ok!!",
     ALLOWED_HOSTS: "localhost:8788",
     GITHUB_CLIENT_ID: "x",
     GITHUB_CLIENT_SECRET: "x",
-    MAILS_ADMIN_TOKEN: "",
-    REALMROOT_ISSUER: "https://id.realmroot.dev/api/auth",
-    REALMROOT_WEB_CLIENT_ID: "ak-web-test",
-    REALMROOT_WEB_CLIENT_SECRET: "ak-web-secret",
-    REALMROOT_CLI_CLIENT_ID: "ak-cli-test",
-    AK_RESOURCE: "http://localhost:8788/api",
-    AMA_RESOURCE: "https://ama.example.test/api",
-    REALMROOT_SESSION_ENCRYPTION_KEY: TEST_SESSION_ENCRYPTION_KEY,
+    OIDC_ISSUER: "https://id.realmroot.dev/api/auth",
+    OIDC_WEB_CLIENT_ID: "ak-web-test",
+    OIDC_WEB_CLIENT_SECRET: "ak-web-secret",
+    OIDC_SERVICE_CLIENT_ID: "ak-service-test",
+    OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
+    AK_SESSION_ENCRYPTION_KEY: btoa("01234567890123456789012345678901"),
+    AK_PUBLIC_ORIGIN: "http://localhost:8788",
+    AK_SIGNING_KEY: btoa("01234567890123456789012345678901"),
+    AMA_ORIGIN: "https://ama.test",
   };
 }
 
@@ -71,16 +68,78 @@ export async function applyMigrations(db: D1Database) {
     "0040_ama_resource_initialization_claims.sql",
     "0041_drop_realmroot_identity_mappings.sql",
     "0042_realmroot_user_ama_grants.sql",
+    "0043_task_assignee_realmroot_actor.sql",
+    "0044_task_review_decisions.sql",
+    "0045_task_creation_compensation.sql",
+    "0046_task_claim_deletions.sql",
+    "0047_task_event_offsets.sql",
+    "0048_task_session_bindings.sql",
+    "0049_task_actor_display_snapshots.sql",
+    "0050_resource_idempotency.sql",
+    "0051_idempotent_response_snapshots.sql",
+    "0052_realmroot_web_session_grants.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
-    for (const stmt of sql
-      .split(";")
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await db.prepare(stmt).run();
+    await applyMigrationSql(db, sql);
+  }
+}
+
+export async function applyMigrationSql(db: D1Database, sql: string) {
+  const triggerStart = sql.indexOf("CREATE TRIGGER");
+  const ordinarySql = triggerStart === -1 ? sql : sql.slice(0, triggerStart);
+  for (const statement of splitSqlStatements(ordinarySql)) await db.prepare(statement).run();
+  if (triggerStart !== -1) await db.prepare(sql.slice(triggerStart).trim().replace(/;\s*$/, "")).run();
+}
+
+function splitSqlStatements(sql: string): string[] {
+  sql = stripSqlLineComments(sql);
+  const statements: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < sql.length; index++) {
+    const character = sql[index];
+    if (quote) {
+      if (character === quote && sql[index + 1] === quote) index++;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') quote = character;
+    else if (character === ";") {
+      const statement = sql.slice(start, index).trim();
+      if (statement && !/^--[^\n]*$/.test(statement)) statements.push(statement);
+      start = index + 1;
     }
   }
+  const trailing = sql.slice(start).trim();
+  if (trailing && !/^--[^\n]*$/.test(trailing)) statements.push(trailing);
+  return statements;
+}
+
+function stripSqlLineComments(sql: string): string {
+  let result = "";
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < sql.length; index++) {
+    const character = sql[index];
+    if (quote) {
+      result += character;
+      if (character === quote && sql[index + 1] === quote) result += sql[++index];
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === "-" && sql[index + 1] === "-") {
+      while (index < sql.length && sql[index] !== "\n") index++;
+      result += "\n";
+      continue;
+    }
+    result += character;
+  }
+  return result;
 }
 
 export async function seedUser(db: D1Database, id: string, email: string) {
@@ -98,31 +157,6 @@ export async function seedUser(db: D1Database, id: string, email: string) {
     )
     .bind(id, `legacy:${id}`, email)
     .run();
-  const refresh = await encryptTestGrant(`test-refresh:${id}`);
-  const access = await encryptTestGrant(`test-access:${id}`);
-  await db
-    .prepare(
-      `INSERT OR IGNORE INTO realmroot_user_ama_grants
-        (tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce,
-         access_token_ciphertext, access_token_nonce, access_token_expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(id, `legacy:${id}`, refresh.ciphertext, refresh.nonce, access.ciphertext, access.nonce, new Date(Date.now() + 3_600_000).toISOString())
-    .run();
-}
-
-async function encryptTestGrant(value: string): Promise<{ ciphertext: string; nonce: string }> {
-  const raw = Uint8Array.from(atob(TEST_SESSION_ENCRYPTION_KEY), (character) => character.charCodeAt(0));
-  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, new TextEncoder().encode(value)));
-  return { ciphertext: base64Url(encrypted), nonce: base64Url(nonce) };
-}
-
-function base64Url(value: Uint8Array): string {
-  let binary = "";
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export async function createTestWebSession(
@@ -152,36 +186,6 @@ export async function createTestWebSession(
   return { token, csrfToken, cookie: `ak_session=${token}` };
 }
 
-// Sets the agent's ama_agent_id column (the AMA agent is now created eagerly at
-// agent creation; dispatch reads this id). Mirrors what POST /api/agents stores.
-export async function setAgentAmaId(db: D1Database, agentId: string, amaAgentId: string) {
-  await db.prepare("UPDATE agents SET ama_agent_id = ? WHERE id = ?").bind(amaAgentId, agentId).run();
-}
-
-// Inserts a cloud-sandbox machine (no device/daemon) whose environment is a
-// dispatch candidate for the given runtimes.
-export async function addCloudSandboxMachine(db: D1Database, ownerId: string, runtimes: string[], amaEnvironmentId: string) {
-  const now = new Date().toISOString();
-  const id = `cloud-machine-${ownerId}-${amaEnvironmentId}`;
-  await db
-    .prepare(
-      `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, hosting, ama_environment_id, last_heartbeat_at, created_at)
-       VALUES (?, ?, ?, 'Cloud sandbox', 'cloud', 'cloud', ?, 'online', 'cloud', ?, ?, ?)
-       ON CONFLICT(owner_id, device_id) DO UPDATE SET ama_environment_id = excluded.ama_environment_id, runtimes = excluded.runtimes`,
-    )
-    .bind(
-      id,
-      ownerId,
-      `cloud-${id}`,
-      JSON.stringify(runtimes.map((name) => ({ name, status: "ready", checked_at: now }))),
-      amaEnvironmentId,
-      now,
-      now,
-    )
-    .run();
-  return id;
-}
-
 export async function setupMiniflare() {
   const mf = new Miniflare({
     modules: true,
@@ -191,28 +195,4 @@ export async function setupMiniflare() {
   const db = await mf.getD1Database("DB");
   await applyMigrations(db);
   return { mf, db };
-}
-
-/** Ensure the tenant exists and create an Agent with its native Ed25519 identity. */
-export async function createTestAgent(db: D1Database, ownerId: string, input: CreateAgentInput, builtin = false) {
-  // Ensure user row exists (idempotent)
-  const existing = await db.prepare("SELECT 1 FROM user WHERE id = ?").bind(ownerId).first();
-  if (!existing) await seedUser(db, ownerId, `${ownerId}@test.local`);
-
-  const { createAgent, createAgentIdentity } = await import("../../apps/web/server/agentRepo");
-  const identity = await createAgentIdentity();
-  const agent = await createAgent(db, ownerId, input, identity, builtin);
-  // Real agents are created eagerly with a backing AMA agent (POST /api/agents
-  // stores agents.ama_agent_id); dispatch reads it. Mirror that for test agents
-  // so they are dispatchable. Builtin/seed agents may exist without AMA.
-  if (!builtin) await setAgentAmaId(db, agent.id, `ama-agent-${agent.id}`);
-  return agent;
-}
-
-export async function createTestSubagent(db: D1Database, ownerId: string, input: CreateSubagentInput) {
-  const existing = await db.prepare("SELECT 1 FROM user WHERE id = ?").bind(ownerId).first();
-  if (!existing) await seedUser(db, ownerId, `${ownerId}@test.local`);
-
-  const { createSubagent } = await import("../../apps/web/server/subagentRepo");
-  return createSubagent(db, ownerId, input);
 }

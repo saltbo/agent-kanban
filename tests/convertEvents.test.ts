@@ -7,8 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { amaEventToRelayEvent, convertEvents } from "../apps/web/src/components/RelayRuntimeProvider.js";
-import type { RelayEvent } from "../apps/web/src/hooks/useSessionRelay.js";
+import { amaEventToRelayEvent, convertEvents, type RelayEvent } from "../src/components/RelayRuntimeProvider.js";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 

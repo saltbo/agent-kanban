@@ -6,7 +6,7 @@ pre-commit:
       run: pnpm biome check --no-errors-on-unmatched {staged_files}
 
     - name: typecheck
-      run: pnpm -r --parallel run lint
+      run: pnpm run typecheck
 
-    - name: test
-      run: npx vitest run --maxWorkers=1
+    - name: spec-coverage
+      run: pnpm run lint:spec

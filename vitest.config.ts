@@ -1,39 +1,104 @@
-import { createRequire } from "node:module";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
-
-const require = createRequire(import.meta.url);
 
 export default defineConfig({
   resolve: {
     alias: {
-      "@agent-kanban/shared": path.resolve(__dirname, "packages/shared/src"),
-      "@": path.resolve(__dirname, "apps/web/src"),
-      // Frontend deps not hoisted to root — resolve from web app
-      react: path.resolve(__dirname, "apps/web/node_modules/react"),
-      "react-dom": path.resolve(__dirname, "apps/web/node_modules/react-dom"),
-      "react/jsx-runtime": path.resolve(__dirname, "apps/web/node_modules/react/jsx-runtime"),
-      "react-router-dom": require.resolve("react-router-dom"),
-      dompurify: require.resolve("dompurify"),
-      "lucide-react": path.resolve(__dirname, "apps/web/node_modules/lucide-react"),
-      "@base-ui/react": path.resolve(__dirname, "apps/web/node_modules/@base-ui/react"),
-      "@assistant-ui/react": path.resolve(__dirname, "apps/web/node_modules/@assistant-ui/react"),
-      "@tanstack/react-query": path.resolve(__dirname, "apps/web/node_modules/@tanstack/react-query"),
-      "prism-react-renderer": path.resolve(__dirname, "apps/web/node_modules/prism-react-renderer"),
-      "react-diff-viewer-continued": path.resolve(__dirname, "apps/web/node_modules/react-diff-viewer-continued"),
-      "react-markdown": path.resolve(__dirname, "apps/web/node_modules/react-markdown"),
-      "remark-gfm": path.resolve(__dirname, "apps/web/node_modules/remark-gfm"),
-      clsx: path.resolve(__dirname, "apps/web/node_modules/clsx"),
-      "tailwind-merge": path.resolve(__dirname, "apps/web/node_modules/tailwind-merge"),
+      "@shared": path.resolve(__dirname, "shared"),
+      "@server": path.resolve(__dirname, "server"),
+      "@": path.resolve(__dirname, "src"),
     },
   },
   test: {
     globals: true,
-    environment: "jsdom",
-    include: ["**/*.test.{ts,tsx}"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit-domain",
+          environment: "node",
+          include: ["tests/unit/domain/**/*.test.{ts,tsx}"],
+          sequence: { groupOrder: 0 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "unit-application",
+          environment: "node",
+          include: ["tests/unit/application/**/*.test.{ts,tsx}"],
+          sequence: { groupOrder: 0 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "unit-component",
+          environment: "jsdom",
+          include: ["tests/unit/component/**/*.test.{ts,tsx}"],
+          sequence: { groupOrder: 0 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "integration-adapters",
+          environment: "node",
+          include: ["tests/integration/adapters/**/*.test.{ts,tsx}"],
+          sequence: { groupOrder: 1 },
+          pool: "forks",
+          maxWorkers: 1,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "integration-migrations",
+          environment: "node",
+          include: ["tests/integration/migrations/**/*.test.{ts,tsx}"],
+          sequence: { groupOrder: 2 },
+          pool: "forks",
+          maxWorkers: 1,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "integration-http",
+          environment: "node",
+          include: ["tests/integration/http/**/*.test.{ts,tsx}"],
+          sequence: { groupOrder: 3 },
+          pool: "forks",
+          maxWorkers: 1,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "contract-http",
+          environment: "node",
+          include: ["tests/contract/http/**/*.test.{ts,tsx}"],
+          sequence: { groupOrder: 4 },
+          pool: "forks",
+          maxWorkers: 1,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "legacy",
+          environment: "jsdom",
+          include: ["tests/**/*.test.{ts,tsx}"],
+          exclude: ["tests/unit/**", "tests/integration/**", "tests/contract/**", "tests/acceptance/**", "tests/e2e/**"],
+          sequence: { groupOrder: 5 },
+          pool: "forks",
+          maxWorkers: 1,
+        },
+      },
+    ],
     coverage: {
       provider: "v8",
-      include: ["apps/web/server/**/*.ts", "packages/shared/src/**/*.ts", "packages/cli/src/**/*.ts"],
+      include: ["server/**/*.ts", "shared/**/*.ts"],
       exclude: ["**/*.d.ts", "**/types.ts"],
     },
     server: {

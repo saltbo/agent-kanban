@@ -20,13 +20,13 @@ describe("scheduled_at field — taskRepo", () => {
   let boardId: string;
 
   beforeAll(async () => {
-    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createBoard } = await import("../server/adapters/d1/boardRepo");
     const board = await createBoard(env.DB, "sched-test-user", "Scheduled Task Board", "ops");
     boardId = board.id;
   });
 
   it("createTask stores scheduled_at when provided", async () => {
-    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { createTask } = await import("../server/adapters/d1/taskRepo");
     const scheduledAt = "2099-01-01T00:00:00.000Z";
     const task = await createTask(env.DB, "sched-test-user", {
       title: "Future task",
@@ -38,7 +38,7 @@ describe("scheduled_at field — taskRepo", () => {
   });
 
   it("createTask stores null scheduled_at when not provided", async () => {
-    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { createTask } = await import("../server/adapters/d1/taskRepo");
     const task = await createTask(env.DB, "sched-test-user", {
       title: "Immediate task",
       board_id: boardId,
@@ -48,7 +48,7 @@ describe("scheduled_at field — taskRepo", () => {
   });
 
   it("updateTask can set scheduled_at on an existing task", async () => {
-    const { createTask, updateTask } = await import("../apps/web/server/taskRepo");
+    const { createTask, updateTask } = await import("../server/adapters/d1/taskRepo");
     const task = await createTask(env.DB, "sched-test-user", {
       title: "Task to schedule later",
       board_id: boardId,
@@ -62,7 +62,7 @@ describe("scheduled_at field — taskRepo", () => {
   });
 
   it("updateTask persists scheduled_at to DB readable via getTask", async () => {
-    const { createTask, updateTask, getTask } = await import("../apps/web/server/taskRepo");
+    const { createTask, updateTask, getTask } = await import("../server/adapters/d1/taskRepo");
     const task = await createTask(env.DB, "sched-test-user", {
       title: "Persist scheduled_at",
       board_id: boardId,
@@ -77,7 +77,7 @@ describe("scheduled_at field — taskRepo", () => {
   });
 
   it("updateTask preserves other fields when only scheduled_at is updated", async () => {
-    const { createTask, updateTask } = await import("../apps/web/server/taskRepo");
+    const { createTask, updateTask } = await import("../server/adapters/d1/taskRepo");
     const task = await createTask(env.DB, "sched-test-user", {
       title: "Preserve Fields",
       board_id: boardId,
@@ -90,7 +90,7 @@ describe("scheduled_at field — taskRepo", () => {
   });
 
   it("listTasks returns scheduled_at in task results", async () => {
-    const { createTask, listTasks } = await import("../apps/web/server/taskRepo");
+    const { createTask, listTasks } = await import("../server/adapters/d1/taskRepo");
     const scheduledAt = "2099-07-04T00:00:00.000Z";
     const task = await createTask(env.DB, "sched-test-user", {
       title: "Listing test task",
@@ -106,7 +106,7 @@ describe("scheduled_at field — taskRepo", () => {
   });
 
   it("listTasks returns null scheduled_at for tasks created without it", async () => {
-    const { createTask, listTasks } = await import("../apps/web/server/taskRepo");
+    const { createTask, listTasks } = await import("../server/adapters/d1/taskRepo");
     const task = await createTask(env.DB, "sched-test-user", {
       title: "No schedule listing test",
       board_id: boardId,

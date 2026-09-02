@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, Page } from "@playwright/test";
 
-const d1Dir = join(process.cwd(), "apps/web/.wrangler/state/v3/d1/miniflare-D1DatabaseObject");
+const d1Dir = join(process.cwd(), ".wrangler/state/v3/d1/miniflare-D1DatabaseObject");
 
 /**
  * Creates an AK Realmroot-backed web session and completes the onboarding flow,
@@ -62,51 +62,11 @@ export function seedTask(boardId: string, title: string, status: "todo" | "in_pr
     ".timeout 10000",
     d1DatabasePath(),
     `INSERT INTO tasks (id, board_id, seq, status, title, position, created_at, updated_at)
-     VALUES ('${taskId}', '${sqlString(boardId)}', 999999, '${status}', '${sqlString(title)}', 0, '${now}', '${now}');`,
+     SELECT '${taskId}', '${sqlString(boardId)}', COALESCE(MAX(seq), 0) + 1, '${status}', '${sqlString(title)}', 0, '${now}', '${now}'
+     FROM tasks
+     WHERE board_id = '${sqlString(boardId)}';`,
   ]);
   return taskId;
-}
-
-export async function seedRealmrootAgent(
-  page: Page,
-  options: { name?: string; username?: string; bio?: string; soul?: string; role?: string } = {},
-): Promise<string> {
-  const session = await page.evaluate(async () => {
-    const response = await fetch("/api/auth/session", { credentials: "include" });
-    if (!response.ok) throw new Error(`Session request failed with ${response.status}`);
-    return response.json() as Promise<{ user: { tenantId: string } }>;
-  });
-  const id = randomUUID();
-  const username = options.username ?? `realmroot-agent-${id.slice(0, 8)}`;
-  const now = new Date().toISOString();
-  execFileSync("sqlite3", [
-    "-cmd",
-    ".timeout 10000",
-    d1DatabasePath(),
-    `INSERT INTO agents (
-       id, owner_id, name, username, bio, soul, role, kind, runtime, model,
-       public_key, private_key, fingerprint, builtin, ama_agent_id, created_at, updated_at
-     ) VALUES (
-       '${id}',
-       '${sqlString(session.user.tenantId)}',
-       '${sqlString(options.name ?? "Quality Goalkeeper")}',
-       '${sqlString(username)}',
-       '${sqlString(options.bio ?? "Establishes quality standards")}',
-       '${sqlString(options.soul ?? "Protect quality and report actionable findings.")}',
-       '${sqlString(options.role ?? "Reviewer")}',
-       'worker',
-       'claude',
-       'claude-opus-4-6',
-       'dGVzdC1yZWFsbXJvb3QtYWdlbnQta2V5',
-       '{"kty":"OKP","crv":"Ed25519","x":"dGVzdC1yZWFsbXJvb3QtYWdlbnQta2V5","d":"dGVzdC1wcml2YXRlLWtleQ"}',
-       '0123456789abcdef0123456789abcdef01234567',
-       0,
-       'ama-agent-${id}',
-       '${now}',
-       '${now}'
-     );`,
-  ]);
-  return id;
 }
 
 async function firstBoardId(page: Page): Promise<string | null> {

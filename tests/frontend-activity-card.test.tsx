@@ -2,8 +2,8 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ActivityLog } from "../apps/web/src/components/ActivityLog.js";
-import { TaskCard } from "../apps/web/src/components/TaskCard.js";
+import { ActivityLog } from "../src/components/ActivityLog.js";
+import { TaskCard } from "../src/components/TaskCard.js";
 
 describe("TaskCard agent click", () => {
   it("opens agent task chat without opening the card detail", () => {
@@ -14,8 +14,7 @@ describe("TaskCard agent click", () => {
       status: "in_progress",
       labels: ["frontend"],
       assigned_to: "agent-1",
-      agent_name: "flint",
-      agent_public_key: "agent-public-key",
+      assignee_name: "flint",
       glow_suppressed: false,
     };
     const onClick = vi.fn();
@@ -37,7 +36,7 @@ describe("TaskCard agent click", () => {
       status: "todo",
       labels: [],
       assigned_to: "agent-2",
-      agent_name: "worker",
+      assignee_name: "worker",
     };
     const onClick = vi.fn();
 
@@ -136,7 +135,6 @@ function note(overrides: Record<string, unknown>) {
     detail: null,
     actor_type: "user",
     actor_name: "Lead",
-    actor_public_key: null,
     created_at: "2026-05-04T10:00:00.000Z",
     ...overrides,
   };
