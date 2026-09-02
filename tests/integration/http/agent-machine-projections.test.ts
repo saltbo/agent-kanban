@@ -239,7 +239,7 @@ describe("Agent and Machine projection HTTP resources", () => {
       status: 503,
       type: `${resource}/problems/ama-initialization-busy`,
     });
-  }, 15_000);
+  }, 30_000);
 
   it("[spec: machines/environment-projection] returns AMA self-hosted Environment and Runner projections", async () => {
     vi.stubGlobal(

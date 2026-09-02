@@ -32,8 +32,10 @@ jobs:
             command: pnpm exec vitest run --project integration-http tests/integration/http/toolbox-generic-agent-operations.test.ts
           - suite: other-http
             command: pnpm exec vitest run --project integration-http --exclude tests/integration/http/toolbox-generic-agent-operations.test.ts
+          - suite: migrations
+            command: pnpm exec vitest run --project integration-migrations
           - suite: core
-            command: pnpm exec vitest run --project unit-domain --project unit-application --project unit-component --project integration-adapters --project integration-migrations --project contract-http --project legacy
+            command: pnpm exec vitest run --project unit-domain --project unit-application --project unit-component --project integration-adapters --project contract-http --project legacy
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

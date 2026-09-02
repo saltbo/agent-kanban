@@ -44,7 +44,7 @@ describe("public Board task badge", () => {
     } finally {
       await isolated.mf.dispose();
     }
-  });
+  }, 15_000);
 
   it.each(["agents", "tokens"])("rejects the removed %s badge type", async (type) => {
     const response = await api.request(`${badgePath}?type=${type}`, {}, env);

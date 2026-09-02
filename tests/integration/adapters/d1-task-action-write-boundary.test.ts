@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { addTaskAction, createTask, getTaskActions } from "../../../server/adapters/d1/taskRepo";
+import { ApplicationError } from "../../../server/usecases/applicationError";
 import { seedUser, setupMiniflare } from "../../helpers/db";
 
 const resources: Array<Awaited<ReturnType<typeof setupMiniflare>>["mf"]> = [];
@@ -20,7 +21,10 @@ describe("D1 current Task action actor writes", () => {
       Array.from({ length: 12 }, (_, index) => createTask(db, ownerId, { title: `Concurrent Task ${index + 1}`, board_id: boardId })),
     );
     const rejected = attempts.filter((attempt): attempt is PromiseRejectedResult => attempt.status === "rejected");
-    expect(rejected.every((attempt) => attempt.reason?.status === 409)).toBe(true);
+    for (const attempt of rejected) {
+      expect(attempt.reason).toBeInstanceOf(ApplicationError);
+      expect(attempt.reason).toMatchObject({ name: "ApplicationError", kind: "conflict" });
+    }
 
     const rows = await db
       .prepare("SELECT id, seq, position FROM tasks WHERE board_id = ? ORDER BY seq")
