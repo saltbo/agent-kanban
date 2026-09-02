@@ -10,8 +10,8 @@ import { computeBlocked, detectCycle, getDependencies, setDependencies } from "@
 import { mapTaskRow as parseTask } from "@server/adapters/d1/tasks/taskRow";
 import { type D1, MAX_TASK_PARTITION_ROWS, newLongId } from "@server/db";
 import type { PageWindow } from "@server/domain/pagination";
+import { ApplicationError } from "@server/usecases/applicationError";
 import type { BoardAction, CreateTaskInput, Task, TaskAction, TaskActionType, TaskActionWriteActorType, TaskWithNotes } from "@shared";
-import { HTTPException } from "hono/http-exception";
 
 const TASK_ACTION_WRITE_ACTOR_TYPES = new Set<TaskActionWriteActorType>(["user", "realmroot:agent", "system"]);
 
@@ -24,10 +24,10 @@ function assertTaskActionWriteActorType(actorType: TaskActionWriteActorType): vo
 async function assertKnownLabels(db: D1, boardId: string, labels: string[] | null | undefined): Promise<void> {
   if (!labels?.length) return;
   const board = await db.prepare("SELECT labels FROM boards WHERE id = ?").bind(boardId).first<{ labels: string }>();
-  if (!board) throw new HTTPException(400, { message: "Board not found" });
+  if (!board) throw new ApplicationError("invalid-request", "Board not found");
   const knownLabels = new Set((JSON.parse(board.labels) as { name: string }[]).map((label) => label.name));
   const unknown = labels.find((label) => !knownLabels.has(label));
-  if (unknown) throw new HTTPException(400, { message: `Label not found: ${unknown}` });
+  if (unknown) throw new ApplicationError("invalid-request", `Label not found: ${unknown}`);
 }
 
 async function assertRepositoryBelongsToBoardOwner(db: D1, boardId: string, repositoryId: string): Promise<void> {
@@ -42,7 +42,7 @@ async function assertRepositoryBelongsToBoardOwner(db: D1, boardId: string, repo
     )
     .bind(boardId, repositoryId)
     .first();
-  if (!row) throw new HTTPException(404, { message: "Repository not found" });
+  if (!row) throw new ApplicationError("not-found", "Repository not found");
 }
 
 async function assertOwnedTaskIds(db: D1, ownerId: string, taskIds: string[], message: string): Promise<void> {
@@ -57,7 +57,7 @@ async function assertOwnedTaskIds(db: D1, ownerId: string, taskIds: string[], me
     )
     .bind(...ids, ownerId)
     .first<{ count: number }>();
-  if (row?.count !== ids.length) throw new HTTPException(400, { message });
+  if (row?.count !== ids.length) throw new ApplicationError("invalid-request", message);
 }
 
 export async function createTask(
@@ -80,13 +80,13 @@ export async function createTask(
         .first<{ id: string; type: string }>()
     : await getDefaultBoard(db, ownerId);
 
-  if (!board) throw new HTTPException(400, { message: input.board_id ? "Board not found" : "No board exists. Create a board first." });
+  if (!board) throw new ApplicationError("invalid-request", input.board_id ? "Board not found" : "No board exists. Create a board first.");
 
   if (board.type === "dev" && !input.repository_id) {
-    throw new HTTPException(400, { message: "repository_id is required for dev board tasks" });
+    throw new ApplicationError("invalid-request", "repository_id is required for dev board tasks");
   }
   if (board.type === "ops" && input.repository_id) {
-    throw new HTTPException(400, { message: "repository_id is not allowed for ops board tasks" });
+    throw new ApplicationError("invalid-request", "repository_id is not allowed for ops board tasks");
   }
   if (input.repository_id) await assertRepositoryBelongsToBoardOwner(db, board.id, input.repository_id);
 
@@ -101,7 +101,7 @@ export async function createTask(
   if (input.depends_on?.length) {
     await assertOwnedTaskIds(db, ownerId, input.depends_on, "Dependency task not found");
     const hasCycle = await detectCycle(db, taskId, input.depends_on);
-    if (hasCycle) throw new HTTPException(400, { message: "Circular dependency detected" });
+    if (hasCycle) throw new ApplicationError("invalid-request", "Circular dependency detected");
   }
 
   if (input.created_from) {
@@ -122,7 +122,7 @@ export async function createTask(
     )
     .bind(board.id, ownerId)
     .first<{ seq: number; position: number; expected_task_seq: number }>();
-  if (!allocation) throw new HTTPException(400, { message: "Board not found" });
+  if (!allocation) throw new ApplicationError("invalid-request", "Board not found");
 
   const blocked = input.depends_on?.length
     ? ((
@@ -205,7 +205,7 @@ export async function createTask(
     }
     const sequenceRace = error instanceof Error && error.message.includes("tasks.board_id, tasks.seq");
     if (sequenceRace && sequenceAttempt < 4) return createTask(db, ownerId, input, idempotency, sequenceAttempt + 1);
-    if (sequenceRace) throw new HTTPException(409, { message: "Task sequence allocation conflicted; retry the request" });
+    if (sequenceRace) throw new ApplicationError("conflict", "Task sequence allocation conflicted; retry the request");
     throw error;
   }
   if (idempotency) return createdTask;
@@ -219,7 +219,7 @@ export async function assertTaskOwner(db: D1, taskId: string, ownerId: string): 
     .prepare("SELECT 1 FROM tasks t JOIN boards b ON t.board_id = b.id WHERE t.id = ? AND b.owner_id = ?")
     .bind(taskId, ownerId)
     .first();
-  if (!row) throw new HTTPException(404, { message: "Task not found" });
+  if (!row) throw new ApplicationError("not-found", "Task not found");
 }
 
 export async function listTasks(
@@ -422,7 +422,7 @@ export async function updateTask(
       if (!taskOwner) return null;
       await assertOwnedTaskIds(db, taskOwner, updates.depends_on, "Dependency task not found");
       const hasCycle = await detectCycle(db, taskId, updates.depends_on);
-      if (hasCycle) throw new HTTPException(400, { message: "Circular dependency detected" });
+      if (hasCycle) throw new ApplicationError("invalid-request", "Circular dependency detected");
     }
     await setDependencies(db, taskId, updates.depends_on);
   }
@@ -474,7 +474,7 @@ export async function deleteTask(db: D1, taskId: string, ownerId: string): Promi
 
   const canDelete = task.status === "todo" || task.status === "cancelled";
   if (!canDelete) {
-    throw new HTTPException(409, { message: `Cannot delete task in ${task.status}${task.assigned_to ? " (assigned)" : ""} status` });
+    throw new ApplicationError("conflict", `Cannot delete task in ${task.status}${task.assigned_to ? " (assigned)" : ""} status`);
   }
 
   const result = await db
@@ -493,7 +493,7 @@ export async function deleteTask(db: D1, taskId: string, ownerId: string): Promi
     .bind(taskId, ownerId)
     .first<{ status: string }>();
   if (!current) return false;
-  throw new HTTPException(409, { message: `Cannot delete task in ${current.status} status` });
+  throw new ApplicationError("conflict", `Cannot delete task in ${current.status} status`);
 }
 
 export async function addTaskAction(

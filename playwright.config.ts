@@ -4,18 +4,18 @@ const port = Number(process.env.VITE_DEV_PORT) || 6265;
 const baseURL = `http://localhost:${port}`;
 
 export default defineConfig({
-  testDir: "./tests",
+  testDir: "./tests/e2e",
   testMatch: "**/*.spec.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  retries: 0,
   // E2E fixtures seed the single local Miniflare D1 database directly. Keep one
   // worker so the app and sqlite fixture writes never contend for that file.
   workers: 1,
   reporter: "html",
   use: {
     baseURL,
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
   },
   projects: [
     {

@@ -1,9 +1,11 @@
 // @vitest-environment node
 
+import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AmaProjectCatalogAdapter } from "../../../server/adapters/agency/projectCatalog";
-import { AmaResourceProjectionAdapter } from "../../../server/adapters/agency/resourceProjections";
+import { AmaProjectionError, AmaResourceProjectionAdapter } from "../../../server/adapters/agency/resourceProjections";
 import type { Env } from "../../../server/env";
+import { apiErrorHandler } from "../../../server/http/middleware/errorHandler";
 
 const env = { AMA_ORIGIN: "https://ama.test" } as Env;
 afterEach(() => vi.unstubAllGlobals());
@@ -26,6 +28,72 @@ const project = (id = "project-1", name = "Agent Kanban tenant-1") => ({
 });
 
 describe("Agency Agent and Machine projection adapter", () => {
+  it("redacts AMA response and network error details from projection failures and API Problems", async () => {
+    const credentialSentinel = "ama-upstream-credential-sentinel";
+    const failures = [
+      {
+        invoke: () =>
+          new AmaResourceProjectionAdapter(env, "ama-token").listAgentsPage({
+            projectId: "project-1",
+            limit: 20,
+            cursor: null,
+            filters: {},
+          }),
+        response: () => Response.json({ error: { message: credentialSentinel } }, { status: 400 }),
+        expected: { kind: "rejected", message: "AMA request was rejected" },
+      },
+      {
+        invoke: () => new AmaProjectCatalogAdapter(env, "ama-token").listProjects(vi.fn()),
+        response: () => Response.json({ error: { message: credentialSentinel } }, { status: 500 }),
+        expected: { kind: "unavailable", message: "AMA is unavailable" },
+      },
+    ];
+
+    for (const failure of failures) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => failure.response()),
+      );
+      const error = await failure.invoke().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AmaProjectionError);
+      expect(error).toMatchObject(failure.expected);
+      expect(String(error)).not.toContain(credentialSentinel);
+    }
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new Error(credentialSentinel))),
+    );
+    const networkError = await new AmaResourceProjectionAdapter(env, "ama-token")
+      .listAgentsPage({ projectId: "project-1", limit: 20, cursor: null, filters: {} })
+      .catch((caught: unknown) => caught);
+    expect(networkError).toMatchObject({ kind: "unavailable", message: "AMA is unavailable" });
+    expect(String(networkError)).not.toContain(credentialSentinel);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { message: credentialSentinel } }, { status: 400 })),
+    );
+    const app = new Hono<{ Bindings: Env }>();
+    app.get("/api/agents", async (c) =>
+      c.json(
+        await new AmaResourceProjectionAdapter(c.env, "ama-token").listAgentsPage({
+          projectId: "project-1",
+          limit: 20,
+          cursor: null,
+          filters: {},
+        }),
+      ),
+    );
+    app.onError(apiErrorHandler);
+
+    const response = await app.fetch(new Request("https://ak.test/api/agents"), env);
+    expect(response.status).toBe(409);
+    const problem = (await response.json()) as { detail: string };
+    expect(problem.detail).toBe("AMA request was rejected");
+    expect(JSON.stringify(problem)).not.toContain(credentialSentinel);
+  });
+
   it.each([
     { name: "non-array data", value: { data: "not-an-array", pagination: {} }, message: "AMA returned an invalid Project page" },
     {
@@ -74,7 +142,7 @@ describe("Agency Agent and Machine projection adapter", () => {
       vi.fn(async () => Response.json(value)),
     );
 
-    await expect(new AmaProjectCatalogAdapter(env, "ama-token").listProjects(vi.fn())).rejects.toMatchObject({ status: 502, message });
+    await expect(new AmaProjectCatalogAdapter(env, "ama-token").listProjects(vi.fn())).rejects.toMatchObject({ kind: "invalid-response", message });
   });
 
   it("[spec: agents/transparent-ama-project] renews the claim at every AMA Project page boundary", async () => {
@@ -106,7 +174,7 @@ describe("Agency Agent and Machine projection adapter", () => {
     );
 
     await expect(new AmaProjectCatalogAdapter(env, "ama-token").listProjects(vi.fn())).rejects.toMatchObject({
-      status: 502,
+      kind: "invalid-response",
       message: "AMA Project pagination did not advance",
     });
   });
@@ -325,7 +393,7 @@ describe("Agency Agent and Machine projection adapter", () => {
     );
     await expect(
       new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
-    ).rejects.toMatchObject({ status: 502, message: "AMA returned more resources than requested" });
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned more resources than requested" });
     expect(resultBoundRequests).toBe(1);
 
     let pageBoundRequests = 0;
@@ -345,7 +413,7 @@ describe("Agency Agent and Machine projection adapter", () => {
     );
     await expect(
       new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
-    ).rejects.toMatchObject({ status: 502, message: "AMA Runner pagination exceeded the safety bound" });
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA Runner pagination exceeded the safety bound" });
     expect(pageBoundRequests).toBe(100);
   });
 
@@ -355,7 +423,7 @@ describe("Agency Agent and Machine projection adapter", () => {
       "fetch",
       vi.fn(async () => new Response("not-json", { status: 200 })),
     );
-    await expect(adapter.getAgent("project-1", "agent-1")).rejects.toMatchObject({ status: 502, message: "AMA returned invalid JSON" });
+    await expect(adapter.getAgent("project-1", "agent-1")).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned invalid JSON" });
 
     vi.stubGlobal(
       "fetch",
@@ -364,7 +432,7 @@ describe("Agency Agent and Machine projection adapter", () => {
       ),
     );
     await expect(adapter.archiveMachine("project-1", "environment-1")).rejects.toMatchObject({
-      status: 502,
+      kind: "invalid-response",
       message: "AMA did not confirm Machine archival",
     });
   });
@@ -398,6 +466,6 @@ describe("Agency Agent and Machine projection adapter", () => {
         cursor: null,
         filters: {},
       }),
-    ).rejects.toMatchObject({ status: 502, message: "AMA returned more resources than requested" });
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned more resources than requested" });
   });
 });

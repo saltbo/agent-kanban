@@ -6,8 +6,8 @@ import {
 } from "@server/adapters/d1/resourceIdempotency";
 import { type D1, newId } from "@server/db";
 import type { PageWindow } from "@server/domain/pagination";
+import { ApplicationError } from "@server/usecases/applicationError";
 import type { CreateRepositoryInput, Repository } from "@shared";
-import { HTTPException } from "hono/http-exception";
 
 /**
  * Normalize git URL to canonical HTTPS form without .git suffix or trailing slash.
@@ -22,18 +22,20 @@ export function normalizeGitUrl(url: string): string {
   if (/^https?:\/\/[^/]+\/[^/]+\/.+/.test(url)) {
     return url.replace(/(?:\.git|\/)+$/, "");
   }
-  throw new HTTPException(400, {
-    message: `Invalid repository URL "${url}": only https://host/owner/repo, http://host/owner/repo, or git@host:owner/repo are accepted`,
-  });
+  throw new ApplicationError(
+    "invalid-request",
+    `Invalid repository URL "${url}": only https://host/owner/repo, http://host/owner/repo, or git@host:owner/repo are accepted`,
+  );
 }
 
 /** Extract owner/repo from a canonicalized URL. Invariant: the URL has already passed normalizeGitUrl. */
 function extractFullName(canonicalUrl: string): string {
   const match = canonicalUrl.match(/^https?:\/\/[^/]+\/(.+)$/);
   if (!match) {
-    throw new HTTPException(500, {
-      message: `Repository URL "${canonicalUrl}" has no owner/repo — data invariant broken (bypassed normalizeGitUrl)`,
-    });
+    throw new ApplicationError(
+      "invariant-failed",
+      `Repository URL "${canonicalUrl}" has no owner/repo — data invariant broken (bypassed normalizeGitUrl)`,
+    );
   }
   return match[1];
 }

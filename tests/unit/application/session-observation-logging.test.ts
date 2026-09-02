@@ -108,6 +108,28 @@ describe("Agency Session observation failure logging", () => {
     });
   });
 
+  it("redacts Inbox network error details from the lifecycle notification failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new Error(`network failed: ${upstreamCredential}`))),
+    );
+
+    const error = await inboxTaskLifecycleNotifier(env())
+      .notify({
+        taskId: "task_1",
+        assigneeActorId: "agent_1",
+        event: "assigned",
+        version: "version_1",
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      name: "TaskLifecycleNotificationFailure",
+      message: "Inbox task notification is unavailable",
+    });
+    expect(String(error)).not.toContain(upstreamCredential);
+  });
+
   it("logs structured Agency token failure operation and scope without credentials", async () => {
     clientCredentialsToken.mockRejectedValueOnce(new ClientCredentialsFailure("token endpoint unavailable"));
 

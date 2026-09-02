@@ -48,7 +48,7 @@ describe("normalizeGitUrl", () => {
     expect(normalizeGitUrl("http://github.example.com/owner/repo")).toBe("http://github.example.com/owner/repo");
   });
 
-  it("rejects file:// URL with HTTPException 400", async () => {
+  it("rejects file:// URL with ApplicationError kind invalid-request", async () => {
     const { normalizeGitUrl } = await import("../server/adapters/d1/repositoryRepo");
     let thrown: unknown;
     try {
@@ -56,10 +56,14 @@ describe("normalizeGitUrl", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({
+      kind: "invalid-request",
+      message:
+        'Invalid repository URL "file:///Users/alice/proj": only https://host/owner/repo, http://host/owner/repo, or git@host:owner/repo are accepted',
+    });
   });
 
-  it("rejects bare local path with HTTPException 400", async () => {
+  it("rejects bare local path with ApplicationError kind invalid-request", async () => {
     const { normalizeGitUrl } = await import("../server/adapters/d1/repositoryRepo");
     let thrown: unknown;
     try {
@@ -67,10 +71,10 @@ describe("normalizeGitUrl", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({ kind: "invalid-request", message: expect.stringContaining('Invalid repository URL "/Users/alice/proj"') });
   });
 
-  it("rejects plain string with no scheme with HTTPException 400", async () => {
+  it("rejects plain string with no scheme with ApplicationError kind invalid-request", async () => {
     const { normalizeGitUrl } = await import("../server/adapters/d1/repositoryRepo");
     let thrown: unknown;
     try {
@@ -78,10 +82,10 @@ describe("normalizeGitUrl", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({ kind: "invalid-request", message: expect.stringContaining('Invalid repository URL "my-repo"') });
   });
 
-  it("rejects https:// URL with no owner/repo path with HTTPException 400", async () => {
+  it("rejects https:// URL with no owner/repo path with ApplicationError kind invalid-request", async () => {
     const { normalizeGitUrl } = await import("../server/adapters/d1/repositoryRepo");
     let thrown: unknown;
     try {
@@ -89,10 +93,10 @@ describe("normalizeGitUrl", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({ kind: "invalid-request", message: expect.stringContaining('Invalid repository URL "https://github.com"') });
   });
 
-  it("rejects single-segment HTTPS path with HTTPException 400", async () => {
+  it("rejects single-segment HTTPS path with ApplicationError kind invalid-request", async () => {
     const { normalizeGitUrl } = await import("../server/adapters/d1/repositoryRepo");
     let thrown: unknown;
     try {
@@ -100,7 +104,10 @@ describe("normalizeGitUrl", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({
+      kind: "invalid-request",
+      message: expect.stringContaining('Invalid repository URL "https://github.com/single-segment"'),
+    });
   });
 
   it("strips .git and then trailing slash from https://github.com/org/repo/.git", async () => {
@@ -195,7 +202,7 @@ describe("repositoryRepo", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({ kind: "invalid-request", message: expect.stringContaining("Invalid repository URL") });
   });
 
   it("findOrCreateRepository rejects a file:// URL with 400", async () => {
@@ -206,7 +213,7 @@ describe("repositoryRepo", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({ kind: "invalid-request", message: expect.stringContaining("Invalid repository URL") });
   });
 
   it("listRepositories rejects a file:// url filter with 400", async () => {
@@ -217,7 +224,7 @@ describe("repositoryRepo", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(400);
+    expect(thrown).toMatchObject({ kind: "invalid-request", message: expect.stringContaining("Invalid repository URL") });
   });
 
   it("getRepository returns null for unknown id", async () => {
@@ -255,7 +262,10 @@ describe("repositoryRepo", () => {
     } catch (err) {
       thrown = err;
     }
-    expect((thrown as any).status).toBe(500);
+    expect(thrown).toMatchObject({
+      kind: "invariant-failed",
+      message: 'Repository URL "file:///bad/path" has no owner/repo — data invariant broken (bypassed normalizeGitUrl)',
+    });
     // Clean up the corrupt row so it doesn't affect other tests
     await env.DB.prepare("DELETE FROM repositories WHERE id = ?").bind("corrupt-id-1").run();
   });

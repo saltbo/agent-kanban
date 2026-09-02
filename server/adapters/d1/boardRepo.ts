@@ -1,8 +1,8 @@
 import { mapTaskRow } from "@server/adapters/d1/tasks/taskRow";
 import { type D1, newId, parseJsonFields } from "@server/db";
 import type { PageWindow } from "@server/domain/pagination";
+import { ApplicationError } from "@server/usecases/applicationError";
 import type { Board, BoardLabel, BoardType, BoardWithTasks, Task } from "@shared";
-import { HTTPException } from "hono/http-exception";
 import { customAlphabet } from "nanoid";
 
 const nanoidSlug = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
@@ -23,19 +23,19 @@ function parseBoard<T extends Board | BoardWithTasks>(board: T): T {
 
 function normalizeLabel(label: BoardLabel): BoardLabel {
   if (!label || typeof label.name !== "string" || typeof label.color !== "string") {
-    throw new HTTPException(400, { message: "Label name and color are required" });
+    throw new ApplicationError("invalid-request", "Label name and color are required");
   }
   const name = label.name.trim();
   const color = label.color.trim();
-  if (!name) throw new HTTPException(400, { message: "Label name is required" });
-  if (!HEX_COLOR.test(color)) throw new HTTPException(400, { message: "Label color must be a hex color like #22D3EE" });
+  if (!name) throw new ApplicationError("invalid-request", "Label name is required");
+  if (!HEX_COLOR.test(color)) throw new ApplicationError("invalid-request", "Label color must be a hex color like #22D3EE");
   return { name, color, description: label.description?.trim() || "" };
 }
 
 function normalizeLabels(labels: BoardLabel[]): BoardLabel[] {
   const seen = new Set<string>();
   return labels.map(normalizeLabel).map((label) => {
-    if (seen.has(label.name)) throw new HTTPException(400, { message: `Duplicate label: ${label.name}` });
+    if (seen.has(label.name)) throw new ApplicationError("invalid-request", `Duplicate label: ${label.name}`);
     seen.add(label.name);
     return label;
   });
@@ -198,7 +198,7 @@ export async function createBoardLabel(db: D1, boardId: string, ownerId: string,
   if (!board) return null;
   const labels = parseBoard(board).labels;
   const label = normalizeLabel(input);
-  if (labels.some((existing) => existing.name === label.name)) throw new HTTPException(409, { message: `Label already exists: ${label.name}` });
+  if (labels.some((existing) => existing.name === label.name)) throw new ApplicationError("conflict", `Label already exists: ${label.name}`);
   return updateBoard(db, boardId, ownerId, { labels: [...labels, label] });
 }
 
@@ -207,14 +207,14 @@ export async function updateBoardLabel(db: D1, boardId: string, ownerId: string,
   if (!board) return null;
   const labels = parseBoard(board).labels;
   const current = labels.find((label) => label.name === name);
-  if (!current) throw new HTTPException(404, { message: `Label not found: ${name}` });
+  if (!current) throw new ApplicationError("not-found", `Label not found: ${name}`);
   const next = normalizeLabel({
     name: input.name ?? current.name,
     color: input.color ?? current.color,
     description: input.description ?? current.description,
   });
   if (next.name !== name && labels.some((label) => label.name === next.name)) {
-    throw new HTTPException(409, { message: `Label already exists: ${next.name}` });
+    throw new ApplicationError("conflict", `Label already exists: ${next.name}`);
   }
 
   const updatedLabels = labels.map((label) => (label.name === name ? next : label));
@@ -244,7 +244,7 @@ export async function deleteBoardLabel(db: D1, boardId: string, ownerId: string,
   const board = await db.prepare("SELECT * FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<Board>();
   if (!board) return null;
   const labels = parseBoard(board).labels;
-  if (!labels.some((label) => label.name === name)) throw new HTTPException(404, { message: `Label not found: ${name}` });
+  if (!labels.some((label) => label.name === name)) throw new ApplicationError("not-found", `Label not found: ${name}`);
 
   const tasks = await db
     .prepare("SELECT id, labels FROM tasks WHERE board_id = ? AND labels IS NOT NULL")

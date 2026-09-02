@@ -21,11 +21,17 @@ realmroot toolbox get agent-kanban/repositories --json
 realmroot toolbox get 'agent-kanban/tasks?boardId=<board-id>' --json
 ```
 
-Agent discovery, creation, schedulability, and execution belong to Realmroot
-Remote and Agency, not AK. Obtain the selected Agent's stable Realmroot actor
-ID from that workflow; never use an Agency object ID as the assignee. If no
-Agent actor is available, report the blocker instead of creating an AK-local
-Agent or calling an unpublished AK resource.
+Discover assignment candidates through AK's Agency-backed Agent projection:
+
+```bash
+realmroot toolbox get 'agent-kanban/agents?schedulable=true' --json
+```
+
+Use the selected Agent's `subject` as the Assignment actor ID; never use its
+AK projection ID or an Agency object ID. If no suitable Agent exists and the
+caller is authorized to provision one, create it through AK's generic
+`/agents` collection operation. AK orchestrates the upstream Identity and
+Agent creation; execution remains owned by Realmroot Remote and Agency.
 
 Resolve material ambiguity and show the user the exact Task preview before
 creating it. The preview must include title, Board, Repository, assignee,

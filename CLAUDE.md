@@ -24,7 +24,7 @@ In QA mode, flag any code that doesn't match DESIGN.md.
 - **No status transition buttons** — no claim/cancel/release/assign in the UI
 - **No drag-and-drop** — card ordering is managed by agents
 - **Only two review actions in UI**: reject (send back to agent) and complete (accept) — can be performed by humans or lead agents via API
-- Board switcher and task detail (logs, PR, chat) are the only navigation interactions
+- Board switcher, task detail (logs, PR, chat), and Agent/Machine list/detail pages are the primary navigation interactions
 
 ## Patterns
 - Data access: feature-owned repositories for v2 workflows. Legacy Agent,
@@ -33,13 +33,13 @@ In QA mode, flag any code that doesn't match DESIGN.md.
 - Error handling: v2 Resource operations use RFC 9457 `application/problem+json`; browser-internal legacy routes retain the centralized `{ error: { code, message } }` envelope.
 - Claim atomicity: db.batch() for race-condition-free task claims
 - Auth: Realmroot authenticates humans and Agency Agents using AK as a native Resource Server. Resource tokens require DPoP; browser users use AK's opaque server Session Cookie. Business data is scoped by the canonical Realmroot tenant ID in `owner_id`.
-- Realmroot Remote owns Agent and Session execution. AK does not request or store an Agency grant, provision or project Agents/Machines, or create, message, or close Agency Sessions.
+- Realmroot Remote owns Agent and Session execution; Agency owns the authoritative Agent, Project, Environment, Runner, and Session resources. AK may hold a server-side Agency grant and translate Project, Agent, and Environment lifecycle for its public projections, but it stores no local Agent/Machine entity and never creates, messages, or closes Agency Sessions.
 - Task lifecycle: Todo → Todo+assigned → In Progress (Agent Claim) → In Review (Review Submission) → Done (Review Completion) or Cancelled. Assignment does not dispatch runtime work. The assignee cannot complete or reject its own Review Submission.
 - Task Claim stores the verified `runtime` and `session_id` supplied by Remote's signed Agent binding. Never accept a caller-authored Session id/socket URL or infer a latest Session by Agent.
 - Task dependencies: `depends_on` JSON array, cycle detection via recursive CTE (taskDeps.ts), `blocked` computed on read
 - Task origin: `created_from` for single-level subtask tracking
 - SSE: TransformStream-based, 2s poll for 25s (CF Workers limit), Last-Event-ID resume via Task Note ID → timestamp resolution. Task streams emit Task Notes only.
-- Agency is the source of truth for runtime work. Remote's signed binding supplies claim provenance; exact Agency Session observation remains unavailable until Agency can resolve runtime plus raw Session ID.
+- Agency is the source of truth for runtime work. Remote's signed binding supplies claim provenance; AK resolves that exact binding through Agency and relays Session events read-only without forwarding runtime commands.
 - The v2 `ak` CLI is removed. Do not add new CLI commands or runtime behavior; expose Agent operations through the Resource Server and Realmroot Toolbox.
 - v1-to-v2 data migration is a separate deliverable. Do not add compatibility
   readers, verifiers, cleanup ledgers, destructive cutover jobs, or legacy

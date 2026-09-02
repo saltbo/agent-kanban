@@ -2,6 +2,8 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { AmaProjectionError, RealmrootDelegationFailure } from "@server/usecases/ama/failures";
+import { ApplicationError } from "@server/usecases/applicationError";
 import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "../..");
@@ -65,6 +67,49 @@ describe("HTTP route module structure", () => {
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it("keeps production adapters independent of Hono HTTP modules", async () => {
+    const adaptersRoot = path.join(root, "server/adapters");
+    const violations: string[] = [];
+
+    for (const file of (await filesBelow(adaptersRoot)).filter((candidate) => candidate.endsWith(".ts"))) {
+      const source = await readFile(path.join(adaptersRoot, file), "utf8");
+      const analyzed = analyzeSource(source);
+      for (const match of analyzed.commentless.matchAll(/^\s*import\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["'];?/gm)) {
+        if (/^hono(?:\/|$)/.test(match[1])) {
+          violations.push(location(`server/adapters/${file}`, source, match.index, `forbidden import ${match[1]}`));
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps the HTTP error handler independent of concrete adapters", async () => {
+    const file = "middleware/errorHandler.ts";
+    const source = await readFile(path.join(httpRoot, file), "utf8");
+    const analyzed = analyzeSource(source);
+    const violations = [...analyzed.commentless.matchAll(/^\s*import\s+(?:[\s\S]*?\s+from\s+)?["'](@server\/adapters(?:\/[^"']*)?)["'];?/gm)].map(
+      (match) => location(file, source, match.index, `forbidden import ${match[1]}`),
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps use-case errors transport-neutral without numeric status or HTTP response fields", () => {
+    const errors = [
+      new ApplicationError("invalid-request", "application failure"),
+      new AmaProjectionError("invalid-response", "projection failure"),
+      new RealmrootDelegationFailure("denied", "delegation failure"),
+    ];
+
+    expect(errors.map(({ kind }) => kind)).toEqual(["invalid-request", "invalid-response", "denied"]);
+    for (const error of errors) {
+      expect(error).not.toHaveProperty("status");
+      expect(error).not.toHaveProperty("statusCode");
+      expect(error).not.toHaveProperty("response");
+    }
   });
 
   it("keeps the Task workflow entry as a registration-only split-module aggregator", async () => {

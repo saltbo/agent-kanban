@@ -1,5 +1,6 @@
 import { akResource, amaResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
+import { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
 
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -14,19 +15,11 @@ type StoredGrant = {
   access_token_expires_at: string;
 };
 
-export class RealmrootDelegationFailure extends Error {
-  constructor(
-    message: string,
-    readonly status = 403,
-  ) {
-    super(message);
-    this.name = "RealmrootDelegationFailure";
-  }
-}
+export { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
 
 export async function storeWebSessionGrant(env: Env, sessionId: string, value: unknown): Promise<void> {
   const tokens = decodeTokenResponse(value);
-  if (!tokens.refresh_token) throw new RealmrootDelegationFailure("Realmroot did not issue the AK browser grant.", 502);
+  if (!tokens.refresh_token) throw new RealmrootDelegationFailure("invalid-response", "Realmroot did not issue the AK browser grant.");
   const access = await encrypt(env, tokens.access_token);
   const refresh = await encrypt(env, tokens.refresh_token);
   await env.DB.prepare(
@@ -51,7 +44,7 @@ export async function delegatedAmaToken(
   input: { sourceAccessToken?: string; webSessionId?: string; scopes: readonly string[] },
 ): Promise<string> {
   const subjectToken = input.sourceAccessToken ?? (input.webSessionId ? await webSessionAccessToken(env, input.webSessionId) : null);
-  if (!subjectToken) throw new RealmrootDelegationFailure("A current Realmroot authority is required.");
+  if (!subjectToken) throw new RealmrootDelegationFailure("authority-required", "A current Realmroot authority is required.");
   const endpoint = await tokenEndpoint(env.OIDC_ISSUER);
   try {
     const response = await fetch(endpoint, {
@@ -71,14 +64,15 @@ export async function delegatedAmaToken(
       }),
       signal: AbortSignal.timeout(10_000),
     });
-    const value = response.ok ? await responseValue(response) : await response.json().catch(() => null);
+    const value = response.ok ? await responseValue(response) : null;
     if (!response.ok) {
-      throw new RealmrootDelegationFailure(errorDescription(value, response.status), delegationStatus(response.status));
+      const kind = delegationFailureKind(response.status);
+      throw new RealmrootDelegationFailure(kind, exchangeFailureMessage(kind));
     }
     return decodeTokenResponse(value).access_token;
   } catch (error) {
     if (error instanceof RealmrootDelegationFailure) throw error;
-    throw new RealmrootDelegationFailure("Realmroot token exchange is unavailable.", 503);
+    throw new RealmrootDelegationFailure("unavailable", "Realmroot token exchange is unavailable.");
   }
 }
 
@@ -105,14 +99,14 @@ async function webSessionAccessToken(env: Env, sessionId: string): Promise<strin
       signal: AbortSignal.timeout(10_000),
     });
   } catch {
-    throw new RealmrootDelegationFailure("Realmroot token refresh is unavailable.", 503);
+    throw new RealmrootDelegationFailure("unavailable", "Realmroot token refresh is unavailable.");
   }
-  const value = response.ok ? await responseValue(response) : await response.json().catch(() => null);
+  const value = response.ok ? await responseValue(response) : null;
   if (!response.ok) {
     if (response.status >= 500 || response.status === 429) {
-      throw new RealmrootDelegationFailure(errorDescription(value, response.status), 503);
+      throw new RealmrootDelegationFailure("unavailable", "Realmroot token refresh is unavailable.");
     }
-    throw new RealmrootDelegationFailure("The Realmroot web grant expired. Sign in again.", 401);
+    throw new RealmrootDelegationFailure("reauthenticate", "The Realmroot web grant expired. Sign in again.");
   }
   const tokens = decodeTokenResponse(value);
   const nextRefreshToken = tokens.refresh_token ?? refreshToken;
@@ -140,19 +134,19 @@ async function responseValue(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
-    throw new RealmrootDelegationFailure("Realmroot returned an invalid token response.", 502);
+    throw new RealmrootDelegationFailure("invalid-response", "Realmroot returned an invalid token response.");
   }
 }
 
 function decodeTokenResponse(value: unknown): TokenResponse {
   if (!isRecord(value) || typeof value.access_token !== "string" || value.access_token.length === 0) {
-    throw new RealmrootDelegationFailure("Realmroot returned an invalid token response.", 502);
+    throw new RealmrootDelegationFailure("invalid-response", "Realmroot returned an invalid token response.");
   }
   if (value.refresh_token !== undefined && (typeof value.refresh_token !== "string" || value.refresh_token.length === 0)) {
-    throw new RealmrootDelegationFailure("Realmroot returned an invalid token response.", 502);
+    throw new RealmrootDelegationFailure("invalid-response", "Realmroot returned an invalid token response.");
   }
   if (value.expires_in !== undefined && (typeof value.expires_in !== "number" || !Number.isFinite(value.expires_in) || value.expires_in <= 0)) {
-    throw new RealmrootDelegationFailure("Realmroot returned an invalid token response.", 502);
+    throw new RealmrootDelegationFailure("invalid-response", "Realmroot returned an invalid token response.");
   }
   return {
     access_token: value.access_token,
@@ -161,15 +155,14 @@ function decodeTokenResponse(value: unknown): TokenResponse {
   };
 }
 
-function errorDescription(value: unknown, status: number): string {
-  if (isRecord(value) && typeof value.error_description === "string" && value.error_description.length > 0) return value.error_description;
-  return `Realmroot token exchange failed with HTTP ${status}`;
+function exchangeFailureMessage(kind: "denied" | "invalid-response" | "unavailable"): string {
+  if (kind === "unavailable") return "Realmroot token exchange is unavailable.";
+  return kind === "denied" ? "Realmroot token exchange was denied." : "Realmroot token exchange failed.";
 }
 
-function delegationStatus(status: number): number {
-  if (status === 429 || status >= 500) return 503;
-  if (status === 401) return 502;
-  return 403;
+function delegationFailureKind(status: number): "denied" | "invalid-response" | "unavailable" {
+  if (status === 429 || status >= 500) return "unavailable";
+  return status === 401 ? "invalid-response" : "denied";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -184,14 +177,17 @@ async function tokenEndpoint(issuer: string): Promise<string> {
       signal: AbortSignal.timeout(10_000),
     });
   } catch {
-    throw new RealmrootDelegationFailure("Realmroot discovery is unavailable.", 503);
+    throw new RealmrootDelegationFailure("unavailable", "Realmroot discovery is unavailable.");
   }
   const body = (await response.json().catch(() => null)) as { issuer?: unknown; token_endpoint?: unknown } | null;
   if (!response.ok) {
-    throw new RealmrootDelegationFailure("Realmroot discovery failed.", response.status === 429 || response.status >= 500 ? 503 : 502);
+    throw new RealmrootDelegationFailure(
+      response.status === 429 || response.status >= 500 ? "unavailable" : "invalid-response",
+      "Realmroot discovery failed.",
+    );
   }
   if (body?.issuer !== issuer || typeof body.token_endpoint !== "string") {
-    throw new RealmrootDelegationFailure("Realmroot discovery failed.", 502);
+    throw new RealmrootDelegationFailure("invalid-response", "Realmroot discovery failed.");
   }
   return body.token_endpoint;
 }

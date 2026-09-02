@@ -7,8 +7,9 @@ description: Plan and execute a multi-Task project through Agent Kanban v2 resou
 
 Model the project as Boards, Tasks, dependencies, Repositories, Assignments,
 Review Submissions, and Review Decisions. Realmroot grants provide authority;
-there are no Agent role classes, maintainer, mailbox, handoff-routing, or AK
-Machine concepts.
+there are no Agent role classes, maintainer, mailbox, handoff-routing, or
+AK-owned Agent/Machine runtime entities. AK exposes Agency-backed Agent and
+Machine projections as product resources.
 
 ## Plan before creating
 
@@ -39,10 +40,17 @@ realmroot toolbox post agent-kanban/boards --content-type application/json --hea
 realmroot toolbox post agent-kanban/repositories --content-type application/json --header 'Idempotency-Key: <unique-repository-key>' @repository.json --json
 ```
 
-Resolve or create executable Agents through Realmroot Remote and Agency. AK
-does not expose Agent resources. Use each selected Agent's stable Realmroot
-actor ID for Assignment; if that workflow cannot provide one, report the
-blocker instead of creating an AK-local Agent.
+Discover executable Agents through AK's Agency-backed projection and select
+only an Agent that currently reports `schedulable: true`:
+
+```bash
+realmroot toolbox get 'agent-kanban/agents?schedulable=true' --json
+```
+
+Use the selected Agent's `subject` as the Assignment actor ID. If no suitable
+Agent exists and the caller is authorized to provision one, create it through
+AK's generic `/agents` collection operation; AK owns the Identity-plus-Agent
+orchestration. Do not call Agency directly or create an AK-local Agent row.
 
 For each approved work item, create an unassigned Task, then its Assignment:
 
@@ -55,8 +63,7 @@ realmroot toolbox put agent-kanban/task-assignments/<task-id> \
 
 Encode real prerequisites in `dependsOn`. Tasks with overlapping files or
 contracts should be combined or ordered; only independent Tasks should run in
-parallel. Do not create AK-local Agents, Machines, Sessions, or subagent
-profiles.
+parallel. Do not create AK-local Agent, Machine, Session, or subagent rows.
 
 ## Execute and review
 

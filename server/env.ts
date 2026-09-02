@@ -1,8 +1,6 @@
 export interface Env {
   DB: D1Database;
-  EMAIL: SendEmail;
   ASSETS: Fetcher;
-  ALLOWED_HOSTS: string;
   AK_PUBLIC_ORIGIN: string;
   AK_SIGNING_KEY: string;
   OIDC_ISSUER: string;
@@ -30,9 +28,6 @@ declare module "hono" {
     traceparent: string;
     requestError?: {
       error_name: string;
-      error_message: string;
-      error_stack?: string;
-      error_cause?: string;
     };
     ownerId: string;
     identityType: "user" | "machine" | "realmroot:agent" | "service";

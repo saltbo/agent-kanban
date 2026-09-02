@@ -152,6 +152,7 @@ export async function finishRealmrootLogin(c: Context<{ Bindings: Env }>): Promi
       code_verifier: attempt.pkce_verifier,
       resource: akResource(c.env),
     }),
+    signal: AbortSignal.timeout(10_000),
   });
   const tokenBody = (await tokenResponse.json().catch(() => null)) as TokenResponse | null;
   if (!tokenResponse.ok || !tokenBody?.id_token || !tokenBody.access_token || !tokenBody.refresh_token) {
@@ -224,8 +225,8 @@ export async function endRealmrootWebSession(c: Context<{ Bindings: Env }>): Pro
   }
   await c.env.DB.prepare("DELETE FROM realmroot_web_sessions WHERE id = ?").bind(stored.id).run();
 
-  const metadata = await discover(c.env.OIDC_ISSUER).catch((error) => {
-    logger.warn(`Realmroot logout discovery failed after local session deletion: ${error instanceof Error ? error.message : String(error)}`);
+  const metadata = await discover(c.env.OIDC_ISSUER).catch(() => {
+    logger.warn("Realmroot logout discovery failed after local session deletion", { result: "unavailable" });
     return null;
   });
   const logoutUrl = metadata?.end_session_endpoint ? new URL(metadata.end_session_endpoint) : null;
@@ -401,7 +402,10 @@ async function discover(issuer: string): Promise<OidcMetadata> {
   const normalized = required(issuer, "OIDC_ISSUER").replace(/\/$/, "");
   const cached = discoveryCache.get(normalized);
   if (cached && cached.expiresAt > Date.now()) return cached.metadata;
-  const response = await fetch(`${normalized}/.well-known/openid-configuration`, { headers: { accept: "application/json" } });
+  const response = await fetch(`${normalized}/.well-known/openid-configuration`, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
   if (!response.ok) throw new AuthError(`Realmroot discovery failed with HTTP ${response.status}`);
   const metadata = (await response.json()) as OidcMetadata;
   if (metadata.issuer !== normalized || !metadata.authorization_endpoint || !metadata.token_endpoint || !metadata.jwks_uri) {

@@ -36,13 +36,11 @@ export function inboxTaskLifecycleNotifier(env: Env): TaskLifecycleNotifier {
           signal: AbortSignal.timeout(10_000),
         });
         if (!response.ok) {
-          throw new TaskLifecycleNotificationFailure(`Inbox rejected the ${notification.event} notification with HTTP ${response.status}`);
+          throw new TaskLifecycleNotificationFailure("Inbox rejected the task notification");
         }
       } catch (error) {
         if (error instanceof TaskLifecycleNotificationFailure) throw error;
-        throw new TaskLifecycleNotificationFailure(
-          `Inbox ${notification.event} notification failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        throw new TaskLifecycleNotificationFailure("Inbox task notification is unavailable");
       }
     },
   };

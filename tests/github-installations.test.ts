@@ -1330,14 +1330,20 @@ describe("recordInstallationFromSetup", () => {
   it("throws when GitHub API returns non-ok for getInstallation", async () => {
     const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_200_000;
+    const credentialSentinel = "github-upstream-credential-sentinel";
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("Not Found", { status: 404 })),
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        return new Response(credentialSentinel, { status: 404 });
+      }),
     );
 
     const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey, GITHUB_APP_SLUG: "agent-kanban" });
-    await expect(recordInstallationFromSetup(db, env, OWNER, installId)).rejects.toThrow(/404/);
+    const error = await recordInstallationFromSetup(db, env, OWNER, installId).catch((caught: unknown) => caught);
+    expect(error).toEqual(new Error(`GitHub get installation ${installId} failed (HTTP 404)`));
+    expect(String(error)).not.toContain(credentialSentinel);
   });
 
   it("throws when mintInstallationWideToken fails (access_tokens returns non-ok)", async () => {

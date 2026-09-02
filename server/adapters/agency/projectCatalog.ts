@@ -1,6 +1,6 @@
-import { AmaProjectionError } from "@server/adapters/agency/resourceProjections";
 import type { Env } from "@server/env";
 import type { AmaProject, AmaProjectCatalogPort } from "@server/usecases/ama/ensureAmaProject";
+import { AmaProjectionError } from "@server/usecases/ama/failures";
 
 export class AmaProjectCatalogAdapter implements AmaProjectCatalogPort {
   constructor(
@@ -44,18 +44,14 @@ export class AmaProjectCatalogAdapter implements AmaProjectCatalogPort {
         body: options.body,
         signal: AbortSignal.timeout(10_000),
       });
-    } catch (error) {
-      throw new AmaProjectionError(error instanceof Error ? error.message : "AMA Project request failed", 503);
+    } catch {
+      throw new AmaProjectionError("unavailable", "AMA is unavailable");
     }
-    const value = await response.json().catch(() => null);
     if (!response.ok) {
-      const message =
-        isRecord(value) && isRecord(value.error) && typeof value.error.message === "string"
-          ? value.error.message
-          : `AMA returned HTTP ${response.status}`;
-      throw new AmaProjectionError(message, response.status);
+      const kind = amaFailureKind(response.status);
+      throw new AmaProjectionError(kind, kind === "unavailable" ? "AMA is unavailable" : "AMA request was rejected");
     }
-    return value;
+    return response.json().catch(() => null);
   }
 }
 
@@ -93,12 +89,19 @@ function isDateTime(value: unknown): value is string {
 }
 
 function invalidResponse(message: string): AmaProjectionError {
-  return new AmaProjectionError(message, 502);
+  return new AmaProjectionError("invalid-response", message);
 }
 
 function required(value: string | undefined): string {
-  if (!value) throw new AmaProjectionError("AMA_ORIGIN is required", 503);
+  if (!value) throw new AmaProjectionError("unavailable", "AMA_ORIGIN is required");
   return value.replace(/\/$/, "");
+}
+
+function amaFailureKind(status: number): "not-found" | "denied" | "rejected" | "invalid-response" | "unavailable" {
+  if (status === 404) return "not-found";
+  if (status === 401 || status === 403) return "denied";
+  if (status === 408 || status === 429 || (status >= 500 && status !== 502)) return "unavailable";
+  return status === 502 ? "invalid-response" : "rejected";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

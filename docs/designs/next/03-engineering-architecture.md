@@ -1,6 +1,6 @@
 # v2 engineering architecture
 
-Status: implemented baseline; Agent/Machine projection extension pending
+Status: implemented
 
 ## Ownership boundary
 

@@ -3,6 +3,7 @@ import {
   type IdempotentHttpResponse,
   type ResourceIdempotency,
   ResourceIdempotencyConflict,
+  ResourceIdempotencyReplay,
   resolveIdempotentResponse,
 } from "@server/adapters/d1/resourceIdempotency";
 import type { Env } from "@server/env";
@@ -60,8 +61,16 @@ export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next:
     throw error;
   }
   c.set("resourceIdempotency", idempotency);
-  await next();
-  return undefined;
+  try {
+    await next();
+    return undefined;
+  } catch (error) {
+    if (error instanceof ResourceIdempotencyReplay) return replayResponse(error.response);
+    if (error instanceof ResourceIdempotencyConflict) {
+      return v2Problem(c, 409, "idempotency-key-conflict", "Idempotency key conflict", error.message);
+    }
+    throw error;
+  }
 }
 
 async function hashUpstreamKey(ownerId: string, actorId: string, apiVersion: string, method: string, path: string, key: string): Promise<string> {

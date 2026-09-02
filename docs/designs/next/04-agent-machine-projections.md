@@ -1,6 +1,6 @@
 # Agent and Machine projections
 
-Status: accepted direction; implementation pending AMA prerequisites
+Status: implemented in AK; upstream limitations remain documented below
 
 ## Decision
 

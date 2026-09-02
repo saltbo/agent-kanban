@@ -1,5 +1,6 @@
 import type { Env } from "@server/env";
 import type { AgentProjectionPort } from "@server/usecases/agents/projectAgents";
+import { AmaProjectionError } from "@server/usecases/ama/failures";
 import type { MachineProjectionPort } from "@server/usecases/machines/projectMachines";
 import type { MachineRuntime, ProjectedAgent, ProjectedMachine } from "@shared";
 
@@ -44,15 +45,7 @@ type AmaRunner = {
 
 type AmaIdentity = { metadata: AmaMetadata };
 
-export class AmaProjectionError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = "AmaProjectionError";
-  }
-}
+export { AmaProjectionError } from "@server/usecases/ama/failures";
 
 export class AmaResourceProjectionAdapter implements AgentProjectionPort, MachineProjectionPort {
   constructor(
@@ -107,7 +100,7 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
   }
 
   isPermanentFailure(error: unknown): boolean {
-    return error instanceof AmaProjectionError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429;
+    return error instanceof AmaProjectionError && error.kind !== "unavailable" && error.kind !== "invalid-response";
   }
 
   async createAgent(
@@ -140,7 +133,7 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
       }),
     );
     const projected = projectAgent(agent);
-    if (!projected) throw new AmaProjectionError("AMA created an Agent without a bound identity", 502);
+    if (!projected) throw new AmaProjectionError("invalid-response", "AMA created an Agent without a bound identity");
     return projected;
   }
 
@@ -244,8 +237,8 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
       });
       if (response.status === 404 && options.allowNotFound) return null;
       if (!response.ok) {
-        const problem = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
-        throw new AmaProjectionError(problem?.error?.message ?? `AMA returned HTTP ${response.status}`, response.status);
+        const kind = amaFailureKind(response.status);
+        throw new AmaProjectionError(kind, kind === "unavailable" ? "AMA is unavailable" : "AMA request was rejected");
       }
       let value: unknown;
       try {
@@ -256,11 +249,18 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
       return value as T;
     } catch (error) {
       if (error instanceof AmaProjectionError) throw error;
-      throw new AmaProjectionError(error instanceof Error ? error.message : "AMA request failed", 503);
+      throw new AmaProjectionError("unavailable", "AMA is unavailable");
     } finally {
       clearTimeout(timeout);
     }
   }
+}
+
+function amaFailureKind(status: number): "not-found" | "denied" | "rejected" | "invalid-response" | "unavailable" {
+  if (status === 404) return "not-found";
+  if (status === 401 || status === 403) return "denied";
+  if (status === 408 || status === 429 || (status >= 500 && status !== 502)) return "unavailable";
+  return status === 502 ? "invalid-response" : "rejected";
 }
 
 function projectAgent(agent: AmaAgent): ProjectedAgent | null {
@@ -332,7 +332,7 @@ function isString(value: string | null): value is string {
 }
 
 function required(value: string | undefined, name: string): string {
-  if (!value) throw new AmaProjectionError(`${name} is required`, 503);
+  if (!value) throw new AmaProjectionError("unavailable", `${name} is required`);
   return value;
 }
 
@@ -444,5 +444,5 @@ function stringArray(value: unknown): value is string[] {
 }
 
 function invalidResponse(message = "AMA returned an invalid resource representation"): AmaProjectionError {
-  return new AmaProjectionError(message, 502);
+  return new AmaProjectionError("invalid-response", message);
 }

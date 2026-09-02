@@ -22,10 +22,10 @@ export async function getInstallation(env: Env, installationId: number): Promise
   const jwt = await githubAppJwt(env);
   const res = await fetch(`${GITHUB_API}/app/installations/${installationId}`, {
     headers: { authorization: `Bearer ${jwt}`, "user-agent": USER_AGENT, accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`GitHub get installation ${installationId} failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+    throw new Error(`GitHub get installation ${installationId} failed (HTTP ${res.status})`);
   }
   const data = (await res.json()) as {
     id: number;
@@ -58,10 +58,10 @@ export async function listInstallationRepositories(env: Env, installationId: num
   for (let page = 1; ; page++) {
     const res = await fetch(`${GITHUB_API}/installation/repositories?per_page=100&page=${page}`, {
       headers: { authorization: `Bearer ${token}`, "user-agent": USER_AGENT, accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`GitHub list installation repositories failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+      throw new Error(`GitHub list installation repositories failed (HTTP ${res.status})`);
     }
     const data = (await res.json()) as { repositories: InstallationRepository[] };
     repos.push(...data.repositories);
@@ -100,10 +100,10 @@ async function mintInstallationWideToken(env: Env, installationId: number): Prom
   const res = await fetch(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
     method: "POST",
     headers: { authorization: `Bearer ${jwt}`, "user-agent": USER_AGENT, accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`GitHub App installation-wide token request failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+    throw new Error(`GitHub App installation-wide token request failed (HTTP ${res.status})`);
   }
   const data = (await res.json()) as { token: string };
   return data.token;

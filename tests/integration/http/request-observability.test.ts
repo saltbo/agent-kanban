@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../../server/env";
 import { api } from "../../../server/http/app";
 import { createAccessLogMiddleware } from "../../../server/http/middleware/accessLog";
-import { applyRequestIdHeader, requestContextMiddleware } from "../../../server/http/middleware/requestContext";
+import { apiErrorHandler } from "../../../server/http/middleware/errorHandler";
+import { requestContextMiddleware } from "../../../server/http/middleware/requestContext";
 import { createLogger } from "../../../server/observability/logger";
 import { createTestEnv } from "../../helpers/db";
 
@@ -22,17 +23,13 @@ function createTestApp(logger: ReturnType<typeof createTestLogger>) {
 
   app.use("*", requestContextMiddleware);
   app.use("*", createAccessLogMiddleware(logger));
-  app.onError((error, c) => {
-    c.set("requestError", { error_name: error.name, error_message: error.message, error_stack: error.stack });
-    applyRequestIdHeader(c);
-    return c.text("Internal server error", 500);
-  });
+  app.onError(apiErrorHandler);
 
   app.get("/ok", (c) => c.json({ requestId: c.get("requestId") }));
   app.get("/native", () => new Response("native response"));
   app.get("/invalid", (c) => c.json({ error: "invalid" }, 422));
   app.get("/failure", () => {
-    throw new Error("unexpected failure");
+    throw new Error("unexpected failure credential sentinel", { cause: new Error("cause credential sentinel") });
   });
 
   return app;
@@ -124,8 +121,9 @@ describe("HTTP access completion events", () => {
       }),
     );
     expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(logger.error).toHaveBeenCalledWith(
-      "request completed",
+    const [message, fields] = logger.error.mock.calls[0];
+    expect(message).toBe("request completed");
+    expect(fields).toEqual(
       expect.objectContaining({
         method: "GET",
         path: "/failure",
@@ -133,10 +131,12 @@ describe("HTTP access completion events", () => {
         request_id: "00000000-0000-4000-8000-000000000007",
         result: "server_error",
         error_name: "Error",
-        error_message: "unexpected failure",
-        error_stack: expect.any(String),
       }),
     );
+    expect(fields).not.toHaveProperty("error_message");
+    expect(fields).not.toHaveProperty("error_stack");
+    expect(fields).not.toHaveProperty("cause");
+    expect(JSON.stringify(fields)).not.toContain("credential sentinel");
   });
 
   it("wires a server-generated Request-Id through a real API route", async () => {

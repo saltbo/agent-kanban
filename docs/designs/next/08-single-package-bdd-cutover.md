@@ -1,6 +1,6 @@
 # v2 single-package and BDD cutover
 
-Status: implemented baseline; projection restoration pending document 04
+Status: implemented
 
 This decision replaces the workspace and Session-dispatch portions of
 `03-engineering-architecture.md`. The restored, narrower

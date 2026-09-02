@@ -13,7 +13,6 @@ pattern = "agent-kanban.dev"
 custom_domain = true
 
 [vars]
-ALLOWED_HOSTS = "agent-kanban.dev"
 AK_PUBLIC_ORIGIN = "https://agent-kanban.dev"
 OIDC_ISSUER = "https://id.realmroot.dev/api/auth"
 OIDC_WEB_CLIENT_ID = "01a05a6d-17cf-7053-bfe0-8e6238ec16ca"
@@ -51,9 +50,6 @@ new_sqlite_classes = ["TunnelRelay"]
 tag = "v2"
 deleted_classes = ["TunnelRelay"]
 
-[[send_email]]
-name = "EMAIL"
-allowed_sender_addresses = ["noreply@agent-kanban.dev"]
 [[d1_databases]]
 binding = "DB"
 database_name = "agent-kanban-db"
@@ -69,7 +65,6 @@ migrations_dir = "migrations"
 routes = []
 
 [env.staging.vars]
-ALLOWED_HOSTS = "*.workers.dev"
 AK_PUBLIC_ORIGIN = "https://bodev.agent-kanban.dev"
 OIDC_ISSUER = "https://id.realmroot.dev/api/auth"
 OIDC_WEB_CLIENT_ID = "01a05a6d-17cf-7053-bfe0-8e6238ec16ca"
@@ -82,11 +77,6 @@ GITHUB_APP_SLUG = "agent-kanban-staging"
 
 [env.staging.limits]
 cpu_ms = 1000
-
-[[env.staging.send_email]]
-name = "EMAIL"
-allowed_sender_addresses = ["noreply@agent-kanban.dev"]
-remote = true
 
 [[env.staging.d1_databases]]
 binding = "DB"
