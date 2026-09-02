@@ -1,4 +1,4 @@
-import { agencySessionObservationClient } from "@server/adapters/agency/sessionObservation";
+import { agencySessionObservationClient, assertAgencySessionObservationConfigured } from "@server/adapters/agency/sessionObservation";
 import {
   addTaskAction,
   assertTaskOwner,
@@ -225,6 +225,7 @@ async function resolveAgencySession(c: TaskContext, binding: NonNullable<Task["s
 }
 
 async function taskSessionClient(c: TaskContext, scopes: readonly string[]) {
+  assertAgencySessionObservationConfigured(c.env);
   const { projectId, token } = await amaAuthorization(c, scopes);
   return {
     projectId,

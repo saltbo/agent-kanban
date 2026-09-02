@@ -105,6 +105,7 @@ describe("verified Task runtime provenance", () => {
   });
 
   it("[spec: session-observation/exact-session] denies Agent observation and returns unavailable to a human when Agency is not configured", async () => {
+    delete env.AMA_ORIGIN;
     const board = await createBoard(db, tenantId, "Unavailable observation", "ops");
     const task = await createTask(db, tenantId, { title: "Bound Task", board_id: board.id });
     await replaceTaskAssignment(d1TaskAssignmentRepository(db), {

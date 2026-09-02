@@ -7,6 +7,10 @@ export interface AgencySessionObservationClient extends AgencySessionObservation
   connectSessionSocket(sessionId: string): Promise<WebSocket>;
 }
 
+export function assertAgencySessionObservationConfigured(env: Env): void {
+  agencyOrigin(env);
+}
+
 export function agencySessionObservationClient(
   env: Env,
   authorization: { token: string; projectId: string; traceparent?: string },
