@@ -18,14 +18,16 @@ operation initiated from AK's Add Machine guidance.
 
 When an Agency-hosted Agent invokes AK through Realmroot Toolbox, Remote adds the
 signed `runtime` and `session_id` fields to the Realmroot Agent binding claim.
-A successful Task Claim persists that exact runtime resume token from the
+A successful Task Claim persists that exact canonical Agency Session ID from the
 verified principal. AK never accepts a caller-authored socket URL or Session id
 in the request body and never guesses the latest Session for an Agent.
 
-The board resolves the exact Agency Session through the stored binding and an
-authorized Agency Session collection query. AK exposes the Session and relays
-its canonical event socket read-only. Only backfill requests cross from the
-browser to Agency; runtime commands are rejected at the AK boundary.
+The board uses the current caller's delegated Agency authority and the tenant's
+mapped Agency Project to read that Session through the standard Session resource.
+AK exposes the Session and relays its canonical event socket read-only. Only
+backfill requests cross from the browser to Agency; runtime commands are rejected
+at the AK boundary. Agency contains no AK-specific client, configuration, route,
+query, or authorization branch.
 
 ## Target repository
 

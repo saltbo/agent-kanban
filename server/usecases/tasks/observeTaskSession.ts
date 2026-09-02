@@ -11,14 +11,8 @@ export interface AgencySession {
   status: Record<string, unknown>;
 }
 
-export interface TaskSessionBindingLookup {
-  agentActorId: string;
-  runtime: string;
-  runtimeSessionId: string;
-}
-
 export interface AgencySessionObservationPort {
-  findByRuntimeBinding(binding: TaskSessionBindingLookup): Promise<AgencySession[]>;
+  getSession(sessionId: string): Promise<AgencySession | null>;
 }
 
 export type AgencySessionObservationFailureCode = "UNAVAILABLE" | "INVALID_RESPONSE";
@@ -34,7 +28,7 @@ export class AgencySessionObservationFailure extends Error {
   }
 }
 
-export type TaskSessionObservationFailureCode = "SESSION_NOT_FOUND" | "SESSION_AMBIGUOUS";
+export type TaskSessionObservationFailureCode = "SESSION_NOT_FOUND";
 
 export class TaskSessionObservationFailure extends Error {
   constructor(
@@ -46,13 +40,16 @@ export class TaskSessionObservationFailure extends Error {
   }
 }
 
-export async function observeTaskSession(agency: AgencySessionObservationPort, binding: TaskSessionBindingLookup): Promise<AgencySession> {
-  const sessions = await agency.findByRuntimeBinding(binding);
-  if (sessions.length === 0) {
-    throw new TaskSessionObservationFailure("SESSION_NOT_FOUND", "Agency Session not found for the verified Task runtime binding");
+export async function observeTaskSession(
+  agency: AgencySessionObservationPort,
+  reference: { sessionId: string; projectId: string },
+): Promise<AgencySession> {
+  const session = await agency.getSession(reference.sessionId);
+  if (!session) {
+    throw new TaskSessionObservationFailure("SESSION_NOT_FOUND", "Agency Session not found for the Task");
   }
-  if (sessions.length !== 1) {
-    throw new TaskSessionObservationFailure("SESSION_AMBIGUOUS", "Multiple Agency Sessions match the verified Task runtime binding");
+  if (session.metadata.uid !== reference.sessionId || session.metadata.projectId !== reference.projectId) {
+    throw new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned a Session outside the requested identity or Project");
   }
-  return sessions[0]!;
+  return session;
 }

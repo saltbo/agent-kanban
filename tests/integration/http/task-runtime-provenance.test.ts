@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { createTask } from "../../../server/adapters/d1/taskRepo";
 import { d1TaskAssignmentRepository } from "../../../server/adapters/d1/tasks/d1TaskAssignments";
+import { storeWebSessionGrant } from "../../../server/adapters/realmroot/delegatedAmaToken";
 import type { Env } from "../../../server/env";
 import { api } from "../../../server/http/app";
 import { replaceTaskAssignment } from "../../../server/usecases/tasks/replaceTaskAssignment";
@@ -133,7 +134,7 @@ describe("verified Task runtime provenance", () => {
     }
   });
 
-  it("[spec: session-observation/exact-session] resolves the stored binding exactly and maps missing, ambiguous, and upstream results", async () => {
+  it("[spec: session-observation/exact-session] resolves the canonical stored Session and maps boundary failures", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const board = await createBoard(db, tenantId, "Exact Session observation", "ops");
     const task = await createTask(db, tenantId, { title: "Observe exact Agency Session", board_id: board.id });
@@ -143,22 +144,35 @@ describe("verified Task runtime provenance", () => {
       assigneeActorId: actorId,
       assignedByActorId: "assigner-a",
     });
-    const runtimeSessionId = "agency-runtime-session-exact";
-    expect((await agentRequest("PUT", `/task-claims/${task.id}`, "task:claim", { runtime: "codex", session_id: runtimeSessionId })).status).toBe(201);
+    const canonicalSessionId = "agency-session-canonical";
+    expect(
+      (
+        await agentRequest("PUT", `/task-claims/${task.id}`, "task:claim", {
+          runtime: "codex",
+          session_id: canonicalSessionId,
+        })
+      ).status,
+    ).toBe(201);
+    await db.prepare("INSERT INTO ama_owner_integrations (tenant_id, ama_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
     const session = await createTestWebSession(db, tenantId);
     env = {
       ...env,
       AMA_ORIGIN: "https://agency.test",
-      OIDC_SERVICE_CLIENT_ID: "ak-observer",
-      OIDC_SERVICE_CLIENT_SECRET: "ak-observer-secret",
+      OIDC_SERVICE_CLIENT_ID: "ak-service",
+      OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
     };
+    await storeWebSessionGrant(env, session.id, {
+      access_token: "browser-ak-token",
+      refresh_token: "browser-refresh-token",
+      expires_in: 300,
+    });
     const issuerFetch = fetch;
     const agencyRequests: Request[] = [];
-    let outcome: "exact" | "missing" | "ambiguous" | "upstream" | "malformed" = "exact";
-    const agencySession = (uid: string) => ({
+    let outcome: "exact" | "missing" | "mismatch" | "upstream" | "malformed" = "exact";
+    const agencySession = (projectId = "agency-project") => ({
       metadata: {
-        uid,
-        projectId: "agency-project",
+        uid: canonicalSessionId,
+        projectId,
         name: "Observed Session",
         createdAt: "2026-08-31T00:00:00.000Z",
         updatedAt: "2026-08-31T00:01:00.000Z",
@@ -172,18 +186,13 @@ describe("verified Task runtime provenance", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const request = input instanceof Request ? input : new Request(input, init);
         const url = new URL(request.url);
-        if (url.href === `${issuer}/oauth2/token`) return Response.json({ access_token: "agency-observer-token" });
+        if (url.href === `${issuer}/oauth2/token`) return Response.json({ access_token: "agency-session-token" });
         if (url.origin !== "https://agency.test") return issuerFetch(input, init);
         agencyRequests.push(request);
+        if (outcome === "missing") return new Response(null, { status: 404 });
         if (outcome === "upstream") return new Response("unavailable", { status: 502 });
-        if (outcome === "malformed") return new Response("{malformed", { status: 200, headers: { "Content-Type": "application/json" } });
-        const data =
-          outcome === "missing"
-            ? []
-            : outcome === "ambiguous"
-              ? [agencySession("session-a"), agencySession("session-b")]
-              : [agencySession("session-exact")];
-        return Response.json({ data, pagination: { limit: 2, nextCursor: null, hasMore: false } });
+        if (outcome === "malformed") return new Response("{malformed", { status: 200 });
+        return Response.json(agencySession(outcome === "mismatch" ? "other-project" : undefined));
       }),
     );
     const observe = () =>
@@ -196,53 +205,48 @@ describe("verified Task runtime provenance", () => {
 
     const exact = await observe();
     expect(exact.status, await exact.clone().text()).toBe(200);
-    await expect(exact.json()).resolves.toMatchObject({ metadata: { uid: "session-exact" }, spec: { runtime: "codex" } });
-    const lookup = new URL(agencyRequests.at(-1)!.url);
-    expect(Object.fromEntries(lookup.searchParams)).toEqual({
-      agentActorId: actorId,
-      runtime: "codex",
-      runtimeSessionId,
-      limit: "2",
+    await expect(exact.json()).resolves.toMatchObject({
+      metadata: { uid: canonicalSessionId, projectId: "agency-project" },
+      spec: { runtime: "codex" },
     });
-    expect(agencyRequests.at(-1)!.headers.get("Authorization")).toBe("Bearer agency-observer-token");
+    const lookup = agencyRequests.at(-1)!;
+    expect(new URL(lookup.url).href).toBe(`https://agency.test/api/v1/sessions/${canonicalSessionId}`);
+    expect([...new URL(lookup.url).searchParams]).toEqual([]);
+    expect(lookup.headers.get("Authorization")).toBe("Bearer agency-session-token");
+    expect(lookup.headers.get("X-AMA-Project-ID")).toBe("agency-project");
+
+    consoleError.mockClear();
+    outcome = "mismatch";
+    const mismatch = await observe();
+    expect(mismatch.status).toBe(503);
+    await expect(mismatch.json()).resolves.toEqual({
+      error: {
+        code: "AMA_SESSION_UNAVAILABLE",
+        message: "Agency Session observation is unavailable",
+      },
+    });
+    const mismatchCompletion = consoleError.mock.calls
+      .map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>)
+      .filter((entry) => entry.msg === "request completed" && entry.status === 503);
+    expect(mismatchCompletion).toEqual([
+      expect.objectContaining({
+        result: "server_error",
+        error_name: "AgencySessionObservationFailure",
+        error_message: "Agency returned a Session outside the requested identity or Project",
+        error_stack: expect.stringContaining("Agency returned a Session outside the requested identity or Project"),
+      }),
+    ]);
 
     for (const [nextOutcome, status, code] of [
       ["missing", 404, "AMA_SESSION_NOT_FOUND"],
-      ["ambiguous", 409, "AMA_SESSION_AMBIGUOUS"],
       ["upstream", 503, "AMA_SESSION_UNAVAILABLE"],
       ["malformed", 503, "AMA_SESSION_UNAVAILABLE"],
     ] as const) {
       outcome = nextOutcome;
       const response = await observe();
       expect(response.status, nextOutcome).toBe(status);
-      const responseBody = await response.json();
-      expect(responseBody).toMatchObject({ error: { code } });
-      if (status === 503) {
-        expect(responseBody).toEqual({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } });
-      }
+      await expect(response.json()).resolves.toMatchObject({ error: { code } });
     }
-
-    const completionEvents = consoleError.mock.calls
-      .map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>)
-      .filter((entry) => entry.name === "api" && entry.msg === "request completed" && entry.status === 503);
-    expect(completionEvents).toHaveLength(2);
-    expect(completionEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          result: "server_error",
-          error_name: "AgencySessionObservationFailure",
-          error_message: "Agency Session lookup failed with HTTP 502",
-          error_stack: expect.stringContaining("Agency Session lookup failed with HTTP 502"),
-        }),
-        expect.objectContaining({
-          result: "server_error",
-          error_name: "AgencySessionObservationFailure",
-          error_message: "Agency returned malformed Session JSON",
-          error_stack: expect.stringContaining("Agency returned malformed Session JSON"),
-          error_cause: expect.objectContaining({ name: "SyntaxError", message: expect.any(String), stack: expect.any(String) }),
-        }),
-      ]),
-    );
   });
 
   it("[spec: session-observation/exact-session] relays only read-only backfill frames to the exact Agency Session socket", async () => {
@@ -256,13 +260,19 @@ describe("verified Task runtime provenance", () => {
     });
     const runtimeSessionId = "agency-runtime-session-socket";
     expect((await agentRequest("PUT", `/task-claims/${task.id}`, "task:claim", { runtime: "codex", session_id: runtimeSessionId })).status).toBe(201);
+    await db.prepare("INSERT INTO ama_owner_integrations (tenant_id, ama_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
     const session = await createTestWebSession(db, tenantId);
     env = {
       ...env,
       AMA_ORIGIN: "https://agency.test",
-      OIDC_SERVICE_CLIENT_ID: "ak-observer",
-      OIDC_SERVICE_CLIENT_SECRET: "ak-observer-secret",
+      OIDC_SERVICE_CLIENT_ID: "ak-service",
+      OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
     };
+    await storeWebSessionGrant(env, session.id, {
+      access_token: "browser-ak-token",
+      refresh_token: "browser-refresh-token",
+      expires_in: 300,
+    });
     const issuerFetch = fetch;
     const upstream = new TestWebSocket();
     installCloudflareWebSocketTestGlobals(vi.stubGlobal);
@@ -271,32 +281,26 @@ describe("verified Task runtime provenance", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const request = input instanceof Request ? input : new Request(input, init);
         const url = new URL(request.url);
-        if (url.href === `${issuer}/oauth2/token`) return Response.json({ access_token: "agency-observer-token" });
+        if (url.href === `${issuer}/oauth2/token`) return Response.json({ access_token: "agency-session-token" });
         if (url.origin !== "https://agency.test") return issuerFetch(input, init);
         if (url.pathname.endsWith("/socket")) {
-          expect(Object.fromEntries(url.searchParams)).toEqual({
-            agentActorId: actorId,
-            runtime: "codex",
-            runtimeSessionId,
-          });
+          expect(url.href).toBe(`https://agency.test/api/v1/sessions/${runtimeSessionId}/socket`);
+          expect([...url.searchParams]).toEqual([]);
+          expect(request.headers.get("Authorization")).toBe("Bearer agency-session-token");
+          expect(request.headers.get("X-AMA-Project-ID")).toBe("agency-project");
           return new Response(null, { status: 101, webSocket: upstream } as ResponseInit & { webSocket: TestWebSocket });
         }
         return Response.json({
-          data: [
-            {
-              metadata: {
-                uid: "session-exact",
-                projectId: "agency-project",
-                name: "Observed Session",
-                createdAt: "2026-08-31T00:00:00.000Z",
-                updatedAt: "2026-08-31T00:01:00.000Z",
-                archivedAt: null,
-              },
-              spec: { runtime: "codex" },
-              status: { phase: "idle" },
-            },
-          ],
-          pagination: { limit: 2, nextCursor: null, hasMore: false },
+          metadata: {
+            uid: runtimeSessionId,
+            projectId: "agency-project",
+            name: "Observed Session",
+            createdAt: "2026-08-31T00:00:00.000Z",
+            updatedAt: "2026-08-31T00:01:00.000Z",
+            archivedAt: null,
+          },
+          spec: { runtime: "codex" },
+          status: { phase: "idle" },
         });
       }),
     );

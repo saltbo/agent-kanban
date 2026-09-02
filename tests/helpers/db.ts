@@ -166,6 +166,7 @@ export async function createTestWebSession(
 ) {
   const token = randomUUID();
   const csrfToken = randomUUID();
+  const id = randomUUID();
   await db
     .prepare(
       `INSERT INTO realmroot_web_sessions
@@ -173,7 +174,7 @@ export async function createTestWebSession(
        VALUES (?, ?, ?, ?, ?, 'Test User', ?, ?, ?)`,
     )
     .bind(
-      randomUUID(),
+      id,
       createHash("sha256").update(token).digest("hex"),
       tenantId,
       options.subjectId ?? `subject:${tenantId}`,
@@ -183,7 +184,7 @@ export async function createTestWebSession(
       new Date(Date.now() + 3_600_000).toISOString(),
     )
     .run();
-  return { token, csrfToken, cookie: `ak_session=${token}` };
+  return { id, token, csrfToken, cookie: `ak_session=${token}` };
 }
 
 export async function setupMiniflare() {

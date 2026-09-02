@@ -31,7 +31,7 @@ describe("production wrangler configuration", () => {
     expect(workerFirst?.filter((pattern) => pattern === "/api")).toHaveLength(1);
   });
 
-  it("keeps both production hostnames routed to the worker", () => {
+  it("deploys only the canonical route without cron", () => {
     const productionConfig = config.split("[env.staging]", 1)[0];
     const routes = [...productionConfig.matchAll(/^\[\[routes\]\]\s*\n([\s\S]*?)(?=^\s*\[|(?![\s\S]))/gm)].map((match) => ({
       pattern: stringValue(match[1], "pattern"),
@@ -39,12 +39,9 @@ describe("production wrangler configuration", () => {
       customDomain: match[1].match(/^custom_domain\s*=\s*(true|false)/m)?.[1] === "true",
     }));
 
-    expect(routes).toEqual(
-      expect.arrayContaining([
-        { pattern: "ak.tftt.cc/*", zoneName: "tftt.cc", customDomain: false },
-        { pattern: "agent-kanban.dev", zoneName: null, customDomain: true },
-      ]),
-    );
+    expect(routes).toEqual([{ pattern: "agent-kanban.dev", zoneName: null, customDomain: true }]);
+    expect(productionConfig).not.toContain("ak.tftt.cc");
+    expect(stringArrayValue(tableBody("[triggers]"), "crons")).toEqual([]);
   });
 
   it("keeps staging routes explicitly empty", () => {

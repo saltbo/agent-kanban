@@ -76,10 +76,12 @@ Task Claim stores Remote's verified `runtime` and `session_id` in a dedicated
 binding row. A Task may expose that value object for the board, but clients
 cannot write it.
 
-The observation adapter resolves the exact binding through Agency using AK's
-dedicated confidential service identity and the bound Realmroot Agent actor,
-canonical runtime, and raw runtime Session identifier. It returns the canonical
-Agency Session and relays its event socket read-only.
+The observation adapter treats the signed `session_id` as the canonical Agency
+Session ID. It uses the current caller's delegated Agency authority and the
+tenant's mapped Agency Project to read the standard Session resource, verifies
+the returned identity and Project, and relays its event socket read-only. Agency
+does not contain an AK-specific client, configuration, endpoint, query, or
+authorization branch.
 The relay accepts only history-backfill requests; it never guesses by Agent,
 accepts a browser-provided URL, forwards runtime commands, or falls back to a
 stored AK runtime.

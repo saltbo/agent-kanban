@@ -4,7 +4,7 @@ import type { Env } from "@server/env";
 import { createLogger } from "@server/observability/logger";
 import { AGENCY_RUNTIMES } from "@shared";
 import type { Context } from "hono";
-import { calculateJwkThumbprint, createRemoteJWKSet, decodeProtectedHeader, importJWK, type JWTPayload, jwtVerify } from "jose";
+import { calculateJwkThumbprint, createRemoteJWKSet, decodeProtectedHeader, importJWK, type JWTPayload, errors as joseErrors, jwtVerify } from "jose";
 
 const SESSION_COOKIE = "ak_session";
 const LOGIN_COOKIE = "ak_login";
@@ -13,6 +13,7 @@ const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const LOGIN_TTL_SECONDS = 10 * 60;
 const DPOP_MAX_AGE_SECONDS = 300;
 const DISCOVERY_CACHE_MS = 10 * 60 * 1000;
+const OIDC_SIGNING_ALGORITHMS = ["ES256", "ES384", "ES512", "EdDSA", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512"] as const;
 const discoveryCache = new Map<string, { metadata: OidcMetadata; expiresAt: number }>();
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const logger = createLogger("realmroot-auth");
@@ -269,6 +270,8 @@ export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>):
   if (credentialMode === "dpop" && !proof) throw new AuthError("DPoP proof required");
   if (credentialMode === "bearer" && proof) throw new AuthError("Bearer access token must not include a DPoP proof");
   const accessToken = authorization!.slice(credentialMode === "dpop" ? 5 : 7);
+  if (!isCompactJwt(accessToken)) throw new AuthError("Invalid OIDC access token");
+  validateJwtHeader(accessToken, "at+jwt");
   const metadata = await discover(c.env.OIDC_ISSUER);
   const claims = await verifyJwt(accessToken, metadata, akResource(c.env), "at+jwt");
   const confirmation = claims.cnf as { jkt?: unknown } | undefined;
@@ -333,29 +336,36 @@ function readAgentRuntimeBinding(claims: JWTPayload): { runtime: string; session
 }
 
 async function verifyDpopProof(c: Context<{ Bindings: Env }>, proof: string, accessToken: string, expectedThumbprint: string): Promise<string> {
-  const header = decodeProtectedHeader(proof);
-  if (header.typ?.toLowerCase() !== "dpop+jwt" || header.alg !== "ES256" || !header.jwk || "d" in header.jwk) {
-    throw new AuthError("Invalid DPoP proof header");
+  if (!isCompactJwt(proof)) throw new AuthError("Invalid DPoP proof");
+  try {
+    const header = decodeProtectedHeader(proof);
+    if (header.typ?.toLowerCase() !== "dpop+jwt" || header.alg !== "ES256" || !header.jwk || "d" in header.jwk) {
+      throw new AuthError("Invalid DPoP proof header");
+    }
+    const key = await importJWK(header.jwk, "ES256");
+    const { payload } = await jwtVerify(proof, key, { algorithms: ["ES256"], typ: "dpop+jwt" });
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      typeof payload.iat !== "number" ||
+      Math.abs(now - payload.iat) >= DPOP_MAX_AGE_SECONDS ||
+      typeof payload.jti !== "string" ||
+      payload.jti.length === 0 ||
+      payload.jti.length > 160
+    ) {
+      throw new AuthError("Stale DPoP proof");
+    }
+    const requestUrl = new URL(c.req.url);
+    const target = new URL(akPublicUrl(c.env, requestUrl.pathname));
+    if (payload.htm !== c.req.method.toUpperCase() || payload.htu !== target.toString()) throw new AuthError("DPoP target mismatch");
+    if (payload.ath !== (await sha256Base64Url(accessToken))) throw new AuthError("DPoP access token hash mismatch");
+    const thumbprint = await calculateJwkThumbprint(header.jwk, "sha256");
+    if (!(await constantTimeEqual(thumbprint, expectedThumbprint))) throw new AuthError("DPoP key binding mismatch");
+    return thumbprint;
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    if (error instanceof joseErrors.JOSEError || error instanceof TypeError) throw new AuthError("Invalid DPoP proof");
+    throw error;
   }
-  const key = await importJWK(header.jwk, "ES256");
-  const { payload } = await jwtVerify(proof, key, { algorithms: ["ES256"], typ: "dpop+jwt" });
-  const now = Math.floor(Date.now() / 1000);
-  if (
-    typeof payload.iat !== "number" ||
-    Math.abs(now - payload.iat) >= DPOP_MAX_AGE_SECONDS ||
-    typeof payload.jti !== "string" ||
-    payload.jti.length === 0 ||
-    payload.jti.length > 160
-  ) {
-    throw new AuthError("Stale DPoP proof");
-  }
-  const requestUrl = new URL(c.req.url);
-  const target = new URL(akPublicUrl(c.env, requestUrl.pathname));
-  if (payload.htm !== c.req.method.toUpperCase() || payload.htu !== target.toString()) throw new AuthError("DPoP target mismatch");
-  if (payload.ath !== (await sha256Base64Url(accessToken))) throw new AuthError("DPoP access token hash mismatch");
-  const thumbprint = await calculateJwkThumbprint(header.jwk, "sha256");
-  if (!(await constantTimeEqual(thumbprint, expectedThumbprint))) throw new AuthError("DPoP key binding mismatch");
-  return thumbprint;
 }
 
 async function rememberDpopProof(db: D1Database, thumbprint: string, proof: string): Promise<void> {
@@ -402,37 +412,123 @@ async function discover(issuer: string): Promise<OidcMetadata> {
   const normalized = required(issuer, "OIDC_ISSUER").replace(/\/$/, "");
   const cached = discoveryCache.get(normalized);
   if (cached && cached.expiresAt > Date.now()) return cached.metadata;
-  const response = await fetch(`${normalized}/.well-known/openid-configuration`, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new AuthError(`Realmroot discovery failed with HTTP ${response.status}`);
-  const metadata = (await response.json()) as OidcMetadata;
-  if (metadata.issuer !== normalized || !metadata.authorization_endpoint || !metadata.token_endpoint || !metadata.jwks_uri) {
-    throw new AuthError("Invalid Realmroot discovery metadata");
+  let response: Response;
+  try {
+    response = await fetch(`${normalized}/.well-known/openid-configuration`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    throw new OidcProviderError("OIDC discovery is unavailable", { cause: error });
   }
+  if (!response.ok) {
+    throw new OidcProviderError(`OIDC discovery failed with HTTP ${response.status}`);
+  }
+  const value: unknown = await response.json().catch((error) => {
+    throw new OidcProviderError("OIDC discovery returned invalid JSON", { cause: error });
+  });
+  const metadata = decodeOidcMetadata(value, normalized);
   discoveryCache.set(normalized, { metadata, expiresAt: Date.now() + DISCOVERY_CACHE_MS });
   return metadata;
 }
 
+function decodeOidcMetadata(value: unknown, expectedIssuer: string): OidcMetadata {
+  const metadata = objectClaim(value);
+  if (!metadata || metadata.issuer !== expectedIssuer) throw invalidOidcMetadata();
+
+  const authorizationEndpoint = oidcHttpsUrl(metadata.authorization_endpoint);
+  const tokenEndpoint = oidcHttpsUrl(metadata.token_endpoint);
+  const jwksUri = oidcHttpsUrl(metadata.jwks_uri);
+  if (!authorizationEndpoint || !tokenEndpoint || !jwksUri) throw invalidOidcMetadata();
+
+  const endSessionEndpoint = metadata.end_session_endpoint;
+  const normalizedEndSessionEndpoint = endSessionEndpoint === undefined ? undefined : oidcHttpsUrl(endSessionEndpoint);
+  if (endSessionEndpoint !== undefined && !normalizedEndSessionEndpoint) throw invalidOidcMetadata();
+  const algorithms = metadata.id_token_signing_alg_values_supported;
+  if (algorithms !== undefined && (!Array.isArray(algorithms) || algorithms.some((algorithm) => typeof algorithm !== "string"))) {
+    throw invalidOidcMetadata();
+  }
+  const signingAlgorithms = Array.isArray(algorithms)
+    ? algorithms.filter((algorithm): algorithm is string => OIDC_SIGNING_ALGORITHMS.includes(algorithm as (typeof OIDC_SIGNING_ALGORITHMS)[number]))
+    : undefined;
+  if (signingAlgorithms?.length === 0) throw invalidOidcMetadata();
+
+  return {
+    issuer: expectedIssuer,
+    authorization_endpoint: authorizationEndpoint,
+    token_endpoint: tokenEndpoint,
+    jwks_uri: jwksUri,
+    ...(normalizedEndSessionEndpoint ? { end_session_endpoint: normalizedEndSessionEndpoint } : {}),
+    ...(signingAlgorithms ? { id_token_signing_alg_values_supported: signingAlgorithms } : {}),
+  };
+}
+
+function oidcHttpsUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function invalidOidcMetadata(): OidcProviderError {
+  return new OidcProviderError("OIDC discovery returned invalid metadata");
+}
+
 async function verifyJwt(token: string, metadata: OidcMetadata, audience: string, typ: string): Promise<JWTPayload> {
-  const header = decodeProtectedHeader(token);
-  if (typ === "at+jwt" && header.typ !== "at+jwt") throw new AuthError("Invalid access token type");
-  const algorithms = (metadata.id_token_signing_alg_values_supported ?? ["ES256", "EdDSA", "RS256"]).filter(
-    (algorithm) => algorithm !== "none" && !algorithm.startsWith("HS"),
-  );
+  validateJwtHeader(token, typ);
+  const algorithms = metadata.id_token_signing_alg_values_supported ?? ["ES256", "EdDSA", "RS256"];
   let jwks = jwksCache.get(metadata.jwks_uri);
   if (!jwks) {
     jwks = createRemoteJWKSet(new URL(metadata.jwks_uri));
     jwksCache.set(metadata.jwks_uri, jwks);
   }
-  const { payload } = await jwtVerify(token, jwks, {
-    issuer: metadata.issuer,
-    audience,
-    algorithms,
-  });
-  if (typ === "at+jwt" && payload.aud !== audience) throw new AuthError("Access token audience must exactly match the AK Resource");
-  return payload;
+  try {
+    const { payload } = await jwtVerify(token, jwks, {
+      issuer: metadata.issuer,
+      audience,
+      algorithms,
+    });
+    if (typ === "at+jwt" && payload.aud !== audience) throw new AuthError("Access token audience must exactly match the AK Resource");
+    return payload;
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    if (isJwksDependencyFailure(error) || error instanceof TypeError) {
+      throw new OidcProviderError("OIDC signing keys are unavailable", { cause: error });
+    }
+    if (error instanceof joseErrors.JOSEError) {
+      throw new AuthError(typ === "at+jwt" ? "Invalid OIDC access token" : "Invalid OIDC ID token");
+    }
+    throw error;
+  }
+}
+
+function validateJwtHeader(token: string, typ: string): void {
+  try {
+    const header = decodeProtectedHeader(token);
+    if (typ === "at+jwt" && header.typ !== "at+jwt") throw new AuthError("Invalid access token type");
+    if (!OIDC_SIGNING_ALGORITHMS.includes(header.alg as (typeof OIDC_SIGNING_ALGORITHMS)[number])) {
+      throw new AuthError(typ === "at+jwt" ? "Invalid access token algorithm" : "Invalid ID token algorithm");
+    }
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    if (error instanceof joseErrors.JOSEError || error instanceof TypeError) {
+      throw new AuthError(typ === "at+jwt" ? "Invalid OIDC access token" : "Invalid OIDC ID token");
+    }
+    throw error;
+  }
+}
+
+function isJwksDependencyFailure(error: unknown): boolean {
+  if (!(error instanceof joseErrors.JOSEError)) return false;
+  return (
+    error.constructor === joseErrors.JOSEError ||
+    error instanceof joseErrors.JWKInvalid ||
+    error instanceof joseErrors.JWKSInvalid ||
+    error instanceof joseErrors.JWKSTimeout
+  );
 }
 
 export function tenantFromClaims(claims: JWTPayload): string {
@@ -449,6 +545,10 @@ function objectClaim(value: unknown): Record<string, unknown> | null {
 function stringList(value: unknown): string[] {
   if (typeof value === "string") return value.split(/\s+/).filter(Boolean);
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function isCompactJwt(value: string): boolean {
+  return value.split(".").length === 3 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2}$/.test(value);
 }
 
 function safeReturnTo(value: string | undefined): string {
@@ -520,6 +620,13 @@ export class AuthError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AuthError";
+  }
+}
+
+export class OidcProviderError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "OidcProviderError";
   }
 }
 
