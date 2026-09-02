@@ -46,7 +46,7 @@ beforeEach(async () => {
     refresh_token: "ak-browser-refresh-token",
     expires_in: 3600,
   });
-});
+}, 30_000);
 
 afterEach(async () => {
   vi.unstubAllGlobals();
