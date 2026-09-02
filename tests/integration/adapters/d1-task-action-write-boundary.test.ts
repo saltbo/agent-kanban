@@ -13,7 +13,7 @@ afterEach(async () => {
   await Promise.all(resources.splice(0).map((resource) => resource.dispose()));
 });
 
-describe("D1 current Task action actor writes", { timeout: 15_000 }, () => {
+describe("D1 current Task action actor writes", () => {
   it("keeps same-Board concurrent Task allocation contiguous while retrying sequence races or returning 409", async () => {
     const { db, ownerId, boardId } = await fixture("concurrent-allocation");
 

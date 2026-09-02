@@ -44,6 +44,8 @@ export default defineConfig({
           include: ["tests/integration/adapters/**/*.test.{ts,tsx}"],
           pool: "forks",
           maxWorkers: 1,
+          testTimeout: 30_000,
+          hookTimeout: 30_000,
         },
       },
       {
