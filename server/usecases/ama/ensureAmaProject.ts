@@ -40,7 +40,7 @@ export async function ensureAmaProject(bindings: AmaProjectBindingPort, projects
       await bindings.release(tenantId, claimToken);
       return afterClaim;
     }
-    const name = projectName(tenantId);
+    const name = "Agent Kanban";
     const renewClaim = async () => {
       const renewedAt = new Date();
       const renewed = await bindings.renew(tenantId, claimToken, new Date(renewedAt.getTime() + CLAIM_TTL_MS).toISOString(), renewedAt.toISOString());
@@ -73,7 +73,3 @@ async function waitForProject(bindings: AmaProjectBindingPort, projects: AmaProj
 }
 
 class AmaProjectClaimLost extends Error {}
-
-function projectName(tenantId: string): string {
-  return `Agent Kanban ${tenantId}`;
-}

@@ -20,7 +20,7 @@ const metadata = (uid: string, name: string) => ({
   archivedAt: null,
 });
 
-const project = (id = "project-1", name = "Agent Kanban tenant-1") => ({
+const project = (id = "project-1", name = "Agent Kanban") => ({
   id,
   name,
   createdAt: "2026-09-01T12:00:00.000Z",
