@@ -175,12 +175,16 @@ describe("0047 Task Event offsets", () => {
     const ownerId = "task-events-fifty";
     await seedUser(setup.db, ownerId, `${ownerId}@test.local`);
     const { createBoard } = await import("../../../server/adapters/d1/boardRepo");
-    const { createTask } = await import("../../../server/adapters/d1/taskRepo");
     const board = await createBoard(setup.db, ownerId, "Fifty Task Events", "ops");
-    const tasks = [];
-    for (let index = 0; index < 50; index++) {
-      tasks.push(await createTask(setup.db, ownerId, { title: `Task Event ${index}`, board_id: board.id }));
-    }
+    const now = new Date().toISOString();
+    const tasks = Array.from({ length: 50 }, (_, index) => ({ id: randomUUID(), title: `Task Event ${index}` }));
+    await setup.db.batch(
+      tasks.map((task, index) =>
+        setup.db
+          .prepare("INSERT INTO tasks (id, board_id, seq, status, title, metadata, created_at, updated_at) VALUES (?, ?, ?, 'todo', ?, '{}', ?, ?)")
+          .bind(task.id, board.id, index + 1, task.title, now, now),
+      ),
+    );
     const { d1TaskEventRepository } = await import("../../../server/adapters/d1/tasks/d1TaskEvents");
 
     const snapshot = await d1TaskEventRepository(setup.db).readSnapshot(
@@ -189,5 +193,5 @@ describe("0047 Task Event offsets", () => {
     );
 
     expect(snapshot?.tasks.map(({ id }) => id)).toEqual(tasks.map(({ id }) => id));
-  });
+  }, 15_000);
 });

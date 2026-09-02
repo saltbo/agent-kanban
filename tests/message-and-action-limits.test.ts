@@ -41,7 +41,7 @@ async function insertActions(taskId: string, count: number): Promise<string[]> {
   for (let i = 0; i < count; i++) {
     // Small sleep to guarantee distinct created_at timestamps in SQLite
     await new Promise((r) => setTimeout(r, 2));
-    const action = await addTaskAction(env.DB, taskId, "machine", "system", "commented", `action ${i}`);
+    const action = await addTaskAction(env.DB, taskId, "user", "limits-user", "commented", `action ${i}`);
     ids.push(action.id);
   }
   return ids;

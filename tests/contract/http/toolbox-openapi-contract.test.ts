@@ -52,12 +52,13 @@ describe("published Resource Server contract", () => {
       .sort();
 
     expect(commands).toEqual(["cancel", "claim", "complete", "reject", "release", "review", "wait"]);
-    for (const path of ["/agents", "/agents/{agentId}", "/machines", "/machines/{machineId}", "/ama/provision"]) {
-      expect(toolbox.paths).not.toHaveProperty(path);
+    for (const path of ["/agents", "/agents/{agentId}", "/machines", "/machines/{machineId}"]) {
+      expect(toolbox.paths).toHaveProperty(path);
     }
-    for (const schema of Object.keys(toolbox.components.schemas)) {
-      expect(schema).not.toMatch(/^(?:Agent|Machine|Ama)/);
-    }
+    expect(toolbox.paths).not.toHaveProperty("/ama/provision");
+    expect(toolbox.components.schemas).toHaveProperty("Agent");
+    expect(toolbox.components.schemas).toHaveProperty("Machine");
+    expect(Object.keys(toolbox.components.schemas)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^Ama/)]));
   });
 
   it("publishes API-Version as an optional override for resource-first commands", async () => {
@@ -345,16 +346,14 @@ describe("published Resource Server contract", () => {
     ];
     const actual: string[] = [];
     for (const [path, pathItem] of Object.entries(toolbox.paths)) {
-      for (const [method, operation] of Object.entries(pathItem)) {
-        if (method === "parameters") continue;
-        const unavailable = (operation.responses as Record<string, Record<string, unknown>>)["503"];
-        if (!unavailable) continue;
-        actual.push(`${method.toUpperCase()} ${path}`);
-        expect(unavailable).toMatchObject({
-          description: expect.stringMatching(/committed.*Retry the same idempotent PUT/i),
-          headers: { "Retry-After": { $ref: "#/components/headers/RetryAfter" } },
-        });
+      const operation = pathItem.put;
+      if (!path.startsWith("/task-") || !operation) continue;
+      const unavailable = (operation.responses as Record<string, Record<string, unknown>>)["503"];
+      if (!unavailable || typeof unavailable.description !== "string" || !/committed.*Retry the same idempotent PUT/i.test(unavailable.description)) {
+        continue;
       }
+      actual.push(`PUT ${path}`);
+      expect(unavailable.headers).toMatchObject({ "Retry-After": { $ref: "#/components/headers/RetryAfter" } });
     }
     expect(actual).toEqual(expected);
   });

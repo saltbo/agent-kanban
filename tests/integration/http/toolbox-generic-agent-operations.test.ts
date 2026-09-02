@@ -245,7 +245,13 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     );
 
     expect(bearer.status).toBe(401);
-    await expect(bearer.json()).resolves.toMatchObject({ error: { code: "UNAUTHORIZED", message: "Realmroot Resource token requires DPoP" } });
+    await expect(bearer.json()).resolves.toMatchObject({
+      type: `${resource}/problems/authentication-required`,
+      title: "Authentication required",
+      status: 401,
+      detail: "Realmroot Resource token requires DPoP",
+      instance: expect.stringMatching(/^urn:request:/),
+    });
 
     const dpop = await request("GET", "/boards", "board:read");
     expect(dpop.status, await dpop.clone().text()).toBe(200);
@@ -506,6 +512,15 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     const board = await createBoard(db, tenantId, "Human assignment board", "ops");
     const task = await createTask(db, tenantId, { title: "Human assigned Task", board_id: board.id });
     const session = await createTestWebSession(db, tenantId, { subjectId: "human-assigner" });
+    env = {
+      ...env,
+      OIDC_ISSUER: issuer,
+      INBOX_RESOURCE: inboxResource,
+      INBOX_API_VERSION: "2026-08-31",
+      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
+      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
+    };
+    await realmrootAgentAuthority(`${resource}/task-assignments/${task.id}`, "PUT", "task:assign");
 
     const response = await api.fetch(
       new Request(`${resource}/task-assignments/${task.id}`, {
@@ -526,6 +541,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       agentActorId: "realmroot-agent-target",
       assignedByActorId: "human-assigner",
     });
+    expect(inboxMessageRequests).toHaveLength(1);
     await expect(db.prepare("SELECT assigned_to, assignee_identity_type FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
       assigned_to: "realmroot-agent-target",
       assignee_identity_type: "realmroot_actor",
@@ -538,8 +554,9 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     const response = await request("POST", "/tasks", "task:write", { title: "Unassigned v2 Task", boardId: board.id });
 
     expect(response.status, await response.clone().text()).toBe(201);
-    const task = (await response.json()) as { id: string; assignedTo: string | null; assigneeIdentityType: string | null };
-    expect(task).toMatchObject({ assignedTo: null, assigneeIdentityType: null });
+    const task = (await response.json()) as { id: string; assignedTo: string | null };
+    expect(task).toMatchObject({ assignedTo: null });
+    expect(task).not.toHaveProperty("assigneeIdentityType");
     await expect(db.prepare("SELECT actor_type, action FROM task_actions WHERE task_id = ?").bind(task.id).first()).resolves.toEqual({
       actor_type: "realmroot:agent",
       action: "created",
@@ -555,12 +572,16 @@ describe("Realmroot Agent generic Toolbox operations", () => {
 
     const response = await request("POST", "/tasks", "task:write", {
       title: `Rejected ${field} Task`,
-      board_id: board.id,
+      boardId: board.id,
       [field]: "actor-not-assignable-at-create",
     });
 
-    expect(response.status, await response.clone().text()).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({ error: { message: "Assign the Task through /api/task-assignments/{taskId}" } });
+    expect(response.status, await response.clone().text()).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      type: `${resource}/problems/request-rejected`,
+      status: 422,
+      detail: `Task contains unsupported properties: ${field}`,
+    });
     await expect(
       Promise.all([db.prepare("SELECT COUNT(*) AS count FROM tasks").first(), db.prepare("SELECT COUNT(*) AS count FROM task_actions").first()]),
     ).resolves.toEqual(before);
@@ -575,11 +596,16 @@ describe("Realmroot Agent generic Toolbox operations", () => {
 
     const response = await request("POST", "/tasks", "task:write", {
       title: "Rejected unknown field Task",
-      board_id: board.id,
+      boardId: board.id,
       unexpected: true,
     });
 
-    expect(response.status, await response.clone().text()).toBe(400);
+    expect(response.status, await response.clone().text()).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      type: `${resource}/problems/request-rejected`,
+      status: 422,
+      detail: "Task contains unsupported properties: unexpected",
+    });
     await expect(
       Promise.all([db.prepare("SELECT COUNT(*) AS count FROM tasks").first(), db.prepare("SELECT COUNT(*) AS count FROM task_actions").first()]),
     ).resolves.toEqual(before);
@@ -611,14 +637,19 @@ describe("Realmroot Agent generic Toolbox operations", () => {
         [field]: field === "assignee_identity_type" ? "realmroot_actor" : "actor-not-assignable-by-patch",
       });
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(403);
       await expect(response.json()).resolves.toMatchObject({
-        error: { message: "Assign the Task through /api/task-assignments/{taskId}" },
+        error: {
+          code: "FORBIDDEN",
+          message: "Operation is not published by the Agent Kanban Resource Server",
+        },
       });
       await expect(db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual(before);
       const read = await request("GET", `/tasks/${task.id}`, "task:read");
       expect(read.status).toBe(200);
-      await expect(read.json()).resolves.toMatchObject({ assignedTo: null, assigneeIdentityType: null });
+      const representation = (await read.json()) as Record<string, unknown>;
+      expect(representation).toMatchObject({ assignedTo: null });
+      expect(representation).not.toHaveProperty("assigneeIdentityType");
     },
   );
 

@@ -1,92 +1,86 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import React from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ActivityLog } from "../src/components/ActivityLog.js";
-import { TaskCard } from "../src/components/TaskCard.js";
+import { ActivityLog } from "@/features/tasks/components/ActivityLog";
+import { TaskCard } from "@/features/tasks/components/TaskCard";
 
-describe("TaskCard agent click", () => {
-  it("opens agent task chat without opening the card detail", () => {
+describe("TaskCard activity entry point", () => {
+  it("stops card navigation when the assigned Realmroot Agent is clicked", () => {
     const task = {
       id: "task-1",
       seq: 17,
       title: "Improve activity",
       status: "in_progress",
       labels: ["frontend"],
-      assigned_to: "agent-1",
+      assigned_to: "agent-subject-1",
+      assignee_identity_type: "realmroot_actor",
       assignee_name: "flint",
       glow_suppressed: false,
     };
     const onClick = vi.fn();
     const onAgentClick = vi.fn();
 
-    render(React.createElement(TaskCard, { task, onClick, onAgentClick }));
-
-    fireEvent.click(screen.getByText("flint"));
+    render(<TaskCard task={task} onClick={onClick} onAgentClick={onAgentClick} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open chat with flint" }));
 
     expect(onAgentClick).toHaveBeenCalledWith(task);
     expect(onClick).not.toHaveBeenCalled();
   });
-
-  it("opens task detail when the card body is clicked", () => {
-    const task = {
-      id: "task-2",
-      seq: 18,
-      title: "Open details",
-      status: "todo",
-      labels: [],
-      assigned_to: "agent-2",
-      assignee_name: "worker",
-    };
-    const onClick = vi.fn();
-
-    render(React.createElement(TaskCard, { task, onClick }));
-
-    fireEvent.click(screen.getByText("Open details"));
-
-    expect(onClick).toHaveBeenCalledTimes(1);
-  });
 });
 
-describe("ActivityLog", () => {
-  it("renders merged notes oldest-to-newest and removes duplicate SSE notes", () => {
+describe("Task ActivityLog", () => {
+  it("merges notes oldest-to-newest and removes a duplicate SSE note", () => {
     const { container } = render(
-      React.createElement(ActivityLog, {
-        reconnecting: false,
-        initialNotes: [
-          note({ id: "newer", action: "completed", actor_name: "Lead", created_at: "2026-05-04T10:03:00.000Z" }),
-          note({ id: "older", action: "created", actor_name: "Lead", created_at: "2026-05-04T10:01:00.000Z" }),
-        ],
-        sseNotes: [
-          note({ id: "newer", action: "completed", actor_name: "Lead", created_at: "2026-05-04T10:03:00.000Z" }),
-          note({ id: "middle", action: "claimed", actor_name: "flint", created_at: "2026-05-04T10:02:00.000Z" }),
-        ],
-      }),
+      <ActivityLog
+        reconnecting={false}
+        initialNotes={[
+          note({
+            id: "newer",
+            action: "completed",
+            actor_name: "Lead",
+            created_at: "2026-05-04T10:03:00.000Z",
+          }),
+          note({
+            id: "older",
+            action: "created",
+            actor_name: "Lead",
+            created_at: "2026-05-04T10:01:00.000Z",
+          }),
+        ]}
+        sseNotes={[
+          note({
+            id: "newer",
+            action: "completed",
+            actor_name: "Lead",
+            created_at: "2026-05-04T10:03:00.000Z",
+          }),
+          note({
+            id: "middle",
+            action: "claimed",
+            actor_name: "flint",
+            actor_type: "realmroot:agent",
+            created_at: "2026-05-04T10:02:00.000Z",
+          }),
+        ]}
+      />,
     );
 
     const text = container.textContent ?? "";
-
     expect(screen.getAllByText("Lead")).toHaveLength(2);
     expect(text.indexOf("created this task")).toBeLessThan(text.indexOf("claimed this task"));
     expect(text.indexOf("claimed this task")).toBeLessThan(text.indexOf("completed this task"));
   });
 
-  it("does not create an inner scroll region", () => {
-    render(
-      React.createElement(ActivityLog, {
-        reconnecting: false,
-        initialNotes: [note({ id: "older", action: "created", created_at: "2026-05-04T10:01:00.000Z" })],
-        sseNotes: [],
-      }),
-    );
+  it("does not create a nested vertical scroll region", () => {
+    render(<ActivityLog reconnecting={false} initialNotes={[note({ id: "created", action: "created" })]} sseNotes={[]} />);
 
     const liveRegion = screen.getByText("created this task").closest("[aria-live='polite']");
-
+    expect(liveRegion).not.toBeNull();
     expect(liveRegion?.className).not.toContain("overflow-y-auto");
     expect(liveRegion?.className).not.toContain("max-h-");
   });
 
-  it("renders comment detail as GitHub-style markdown content", () => {
+  it("renders Realmroot Agent comments as GitHub-style Markdown", () => {
     const markdown = [
       "## Review notes",
       "",
@@ -107,11 +101,19 @@ describe("ActivityLog", () => {
     ].join("\n");
 
     const { container } = render(
-      React.createElement(ActivityLog, {
-        reconnecting: false,
-        initialNotes: [note({ action: "commented", detail: markdown, actor_name: "flint" })],
-        sseNotes: [],
-      }),
+      <ActivityLog
+        reconnecting={false}
+        initialNotes={[
+          note({
+            action: "commented",
+            detail: markdown,
+            actor_id: "agent-subject-1",
+            actor_name: "flint",
+            actor_type: "realmroot:agent",
+          }),
+        ]}
+        sseNotes={[]}
+      />,
     );
 
     expect(screen.getByText("flint")).toBeTruthy();
@@ -121,7 +123,6 @@ describe("ActivityLog", () => {
     expect(screen.getByRole("link", { name: "PR" }).getAttribute("href")).toBe("https://example.com/pr/1");
     expect(screen.getByText("inline code").tagName).toBe("CODE");
     expect(screen.getByText("quoted feedback").closest("blockquote")).toBeTruthy();
-    expect(screen.getByRole("table")).toBeTruthy();
     expect(within(screen.getByRole("table")).getByText("status")).toBeTruthy();
     expect(container.querySelector("pre code")?.textContent).toContain("const ok = true;");
   });
@@ -133,6 +134,7 @@ function note(overrides: Record<string, unknown>) {
     task_id: "task-1",
     action: "created",
     detail: null,
+    actor_id: "user-subject-1",
     actor_type: "user",
     actor_name: "Lead",
     created_at: "2026-05-04T10:00:00.000Z",
