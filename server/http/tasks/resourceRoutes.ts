@@ -176,7 +176,7 @@ async function listTaskNotes(c: TaskContext): Promise<Response> {
 async function getTaskNote(c: TaskContext): Promise<Response> {
   await requireTask(c);
   const note = await getTaskAction(c.env.DB, taskId(c), noteId(c));
-  if (!note || note.action !== "commented") throw new HTTPException(404, { message: "Task Note not found" });
+  if (note?.action !== "commented") throw new HTTPException(404, { message: "Task Note not found" });
   if (isResourcePrincipal(c)) {
     c.header("ETag", `"${note.id}"`);
     return c.json(taskNoteResource(note, c.req.url));

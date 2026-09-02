@@ -173,7 +173,7 @@ async function replaceDecision(
       decision = finalized;
     } else {
       const winner = await repository.findTarget(input.ownerId, input.taskId, input.reviewSubmissionVersion);
-      if (!winner?.decision || winner.decision.state !== "accepted") {
+      if (winner?.decision?.state !== "accepted") {
         throw conflict("Task state changed before the review decision was finalized");
       }
       validateDecision(winner.decision, kind, input.reason);

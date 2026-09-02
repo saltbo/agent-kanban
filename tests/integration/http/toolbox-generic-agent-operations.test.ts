@@ -251,44 +251,42 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     expect(dpop.status, await dpop.clone().text()).toBe(200);
   });
 
-  it.each([
-    "boards",
-    "repositories",
-    "tasks",
-    "notes",
-  ] as const)("requires and replays Idempotency-Key without duplicating %s creations", async (resourceKind) => {
-    const fixture = await creationFixture(resourceKind);
-    const before = await fixture.count();
+  it.each(["boards", "repositories", "tasks", "notes"] as const)(
+    "requires and replays Idempotency-Key without duplicating %s creations",
+    async (resourceKind) => {
+      const fixture = await creationFixture(resourceKind);
+      const before = await fixture.count();
 
-    const missing = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", null);
-    expect(missing.status).toBe(428);
-    await expect(missing.json()).resolves.toMatchObject({ type: expect.stringContaining("idempotency-key-required") });
-    await expect(fixture.count()).resolves.toBe(before);
+      const missing = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", null);
+      expect(missing.status).toBe(428);
+      await expect(missing.json()).resolves.toMatchObject({ type: expect.stringContaining("idempotency-key-required") });
+      await expect(fixture.count()).resolves.toBe(before);
 
-    const key = `generic-${resourceKind}-same-key`;
-    const created = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", key);
-    expect(created.status, await created.clone().text()).toBe(201);
-    const createdBody = await created.clone().text();
-    const createdHeaders = {
-      location: created.headers.get("Location"),
-      etag: created.headers.get("ETag"),
-    };
-    expect(createdHeaders.location).toMatch(/^https:\/\/ak\.toolbox\.test\/api\//);
-    expect(createdHeaders.etag).toMatch(/^".+"$/);
-    const expectedCount = await mutateCreatedResource(resourceKind, (JSON.parse(createdBody) as { id: string }).id, before);
+      const key = `generic-${resourceKind}-same-key`;
+      const created = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", key);
+      expect(created.status, await created.clone().text()).toBe(201);
+      const createdBody = await created.clone().text();
+      const createdHeaders = {
+        location: created.headers.get("Location"),
+        etag: created.headers.get("ETag"),
+      };
+      expect(createdHeaders.location).toMatch(/^https:\/\/ak\.toolbox\.test\/api\//);
+      expect(createdHeaders.etag).toMatch(/^".+"$/);
+      const expectedCount = await mutateCreatedResource(resourceKind, (JSON.parse(createdBody) as { id: string }).id, before);
 
-    const replayed = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", key);
-    expect(replayed.status).toBe(201);
-    expect(await replayed.text()).toBe(createdBody);
-    expect({ location: replayed.headers.get("Location"), etag: replayed.headers.get("ETag") }).toEqual(createdHeaders);
-    expect(replayed.headers.get("Idempotency-Replayed")).toBe("true");
-    await expect(fixture.count()).resolves.toBe(expectedCount);
+      const replayed = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", key);
+      expect(replayed.status).toBe(201);
+      expect(await replayed.text()).toBe(createdBody);
+      expect({ location: replayed.headers.get("Location"), etag: replayed.headers.get("ETag") }).toEqual(createdHeaders);
+      expect(replayed.headers.get("Idempotency-Replayed")).toBe("true");
+      await expect(fixture.count()).resolves.toBe(expectedCount);
 
-    const conflict = await request("POST", fixture.path, fixture.scope, fixture.conflictingBody, true, "2026-08-29", key);
-    expect(conflict.status).toBe(409);
-    await expect(conflict.json()).resolves.toMatchObject({ type: expect.stringContaining("idempotency-key-conflict") });
-    await expect(fixture.count()).resolves.toBe(expectedCount);
-  });
+      const conflict = await request("POST", fixture.path, fixture.scope, fixture.conflictingBody, true, "2026-08-29", key);
+      expect(conflict.status).toBe(409);
+      await expect(conflict.json()).resolves.toMatchObject({ type: expect.stringContaining("idempotency-key-conflict") });
+      await expect(fixture.count()).resolves.toBe(expectedCount);
+    },
+  );
 
   it("returns paginated lowerCamel Agent collections while preserving browser arrays and snake_case", async () => {
     const firstBoard = await createBoard(db, tenantId, "Collection board one", "ops");
@@ -602,28 +600,27 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     await expect(db.prepare("SELECT COUNT(*) AS count FROM task_actions").first()).resolves.toEqual({ count: 0 });
   });
 
-  it.each([
-    "assigned_to",
-    "agent_id",
-    "assignee_identity_type",
-  ] as const)("rejects Task PATCH field %s without creating a wire or persisted assignment", async (field) => {
-    const board = await createBoard(db, tenantId, `Rejected patch ${field}`, "ops");
-    const task = await createTask(db, tenantId, { title: `Unassigned ${field}`, board_id: board.id });
-    const before = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first();
+  it.each(["assigned_to", "agent_id", "assignee_identity_type"] as const)(
+    "rejects Task PATCH field %s without creating a wire or persisted assignment",
+    async (field) => {
+      const board = await createBoard(db, tenantId, `Rejected patch ${field}`, "ops");
+      const task = await createTask(db, tenantId, { title: `Unassigned ${field}`, board_id: board.id });
+      const before = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first();
 
-    const response = await request("PATCH", `/tasks/${task.id}`, "task:write", {
-      [field]: field === "assignee_identity_type" ? "realmroot_actor" : "actor-not-assignable-by-patch",
-    });
+      const response = await request("PATCH", `/tasks/${task.id}`, "task:write", {
+        [field]: field === "assignee_identity_type" ? "realmroot_actor" : "actor-not-assignable-by-patch",
+      });
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { message: "Assign the Task through /api/task-assignments/{taskId}" },
-    });
-    await expect(db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual(before);
-    const read = await request("GET", `/tasks/${task.id}`, "task:read");
-    expect(read.status).toBe(200);
-    await expect(read.json()).resolves.toMatchObject({ assignedTo: null, assigneeIdentityType: null });
-  });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: "Assign the Task through /api/task-assignments/{taskId}" },
+      });
+      await expect(db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual(before);
+      const read = await request("GET", `/tasks/${task.id}`, "task:read");
+      expect(read.status).toBe(200);
+      await expect(read.json()).resolves.toMatchObject({ assignedTo: null, assigneeIdentityType: null });
+    },
+  );
 
   it("[spec: resource-server/generic-operations] executes representative verb-first Board, unassigned Task, Note, and Repository operations with exact scopes", async () => {
     const ownBoard = await createBoard(db, tenantId, "Own board", "ops");

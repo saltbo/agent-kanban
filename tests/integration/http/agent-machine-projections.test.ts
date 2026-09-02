@@ -175,49 +175,48 @@ describe("Agent and Machine projection HTTP resources", () => {
       operationPath: "/api/v1/environments",
       scopes: ["environments:read", "runners:read", "projects:read", "projects:write"],
     },
-  ])("[spec: agents/transparent-ama-project] initializes the Project before the $resourceName collection", async ({
-    path,
-    operationPath,
-    scopes,
-  }) => {
-    await fixture.db.prepare("DELETE FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
-    const events: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      delegatedAmaFetch(scopes, async (request) => {
-        const pathname = new URL(request.url).pathname;
-        events.push(`${request.method} ${pathname}`);
-        if (pathname === "/api/v1/projects" && request.method === "GET") {
-          return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-        }
-        if (pathname === "/api/v1/projects" && request.method === "POST") {
-          await expect(request.json()).resolves.toEqual({ name: `Agent Kanban ${ownerId}` });
-          return Response.json({
-            id: "project-initialized",
-            name: `Agent Kanban ${ownerId}`,
-            createdAt: "2026-09-01T12:00:00.000Z",
-            updatedAt: "2026-09-01T12:00:01.000Z",
-          });
-        }
-        if (pathname === operationPath) {
-          await expect(
-            fixture.db.prepare("SELECT ama_project_id FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).first(),
-          ).resolves.toEqual({ ama_project_id: "project-initialized" });
-          expect(request.headers.get("x-ama-project-id")).toBe("project-initialized");
-          return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-        }
-        if (pathname === "/api/v1/runners") {
-          return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-        }
-        throw new Error(`Unexpected AMA request ${request.method} ${pathname}`);
-      }),
-    );
+  ])(
+    "[spec: agents/transparent-ama-project] initializes the Project before the $resourceName collection",
+    async ({ path, operationPath, scopes }) => {
+      await fixture.db.prepare("DELETE FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
+      const events: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        delegatedAmaFetch(scopes, async (request) => {
+          const pathname = new URL(request.url).pathname;
+          events.push(`${request.method} ${pathname}`);
+          if (pathname === "/api/v1/projects" && request.method === "GET") {
+            return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
+          }
+          if (pathname === "/api/v1/projects" && request.method === "POST") {
+            await expect(request.json()).resolves.toEqual({ name: `Agent Kanban ${ownerId}` });
+            return Response.json({
+              id: "project-initialized",
+              name: `Agent Kanban ${ownerId}`,
+              createdAt: "2026-09-01T12:00:00.000Z",
+              updatedAt: "2026-09-01T12:00:01.000Z",
+            });
+          }
+          if (pathname === operationPath) {
+            await expect(
+              fixture.db.prepare("SELECT ama_project_id FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).first(),
+            ).resolves.toEqual({ ama_project_id: "project-initialized" });
+            expect(request.headers.get("x-ama-project-id")).toBe("project-initialized");
+            return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
+          }
+          if (pathname === "/api/v1/runners") {
+            return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
+          }
+          throw new Error(`Unexpected AMA request ${request.method} ${pathname}`);
+        }),
+      );
 
-    const response = await browserGet(path);
+      const response = await browserGet(path);
 
-    expect(response.status, await response.clone().text()).toBe(200);
-    expect(events.slice(0, 3)).toEqual(["GET /api/v1/projects", "POST /api/v1/projects", `GET ${operationPath}`]);
-  });
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(events.slice(0, 3)).toEqual(["GET /api/v1/projects", "POST /api/v1/projects", `GET ${operationPath}`]);
+    },
+  );
 
   it("[spec: agents/transparent-ama-project] maps an active initialization claim to retryable 503", async () => {
     await fixture.db.prepare("DELETE FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();

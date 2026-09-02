@@ -19,22 +19,20 @@ afterAll(async () => mf.dispose());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("v2 GitHub webhook routing without Maintainers", () => {
-  it.each([
-    "issues",
-    "issue_comment",
-    "pull_request_review",
-    "pull_request_review_comment",
-  ])("does not dispatch removed Maintainer event %s", async (event) => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    const body = JSON.stringify({ action: "created" });
+  it.each(["issues", "issue_comment", "pull_request_review", "pull_request_review_comment"])(
+    "does not dispatch removed Maintainer event %s",
+    async (event) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const body = JSON.stringify({ action: "created" });
 
-    const response = await webhookRequest(event, body);
+      const response = await webhookRequest(event, body);
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ handled: false });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ handled: false });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps pull_request task routing without a maintainer_dispatch response", async () => {
     const body = JSON.stringify({ action: "opened", pull_request: { html_url: "https://github.com/acme/repo/pull/1", merged: false } });

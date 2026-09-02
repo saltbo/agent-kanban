@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@assistant-ui/store': 0.2.20
+
 importers:
 
   .:
@@ -100,14 +103,14 @@ importers:
         version: 1.1.2(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       '@biomejs/biome':
-        specifier: ^2.4.10
+        specifier: 2.5.11
         version: 2.5.11
       '@cloudflare/vite-plugin':
         specifier: ^1.35.0
-        version: 1.54.2(vite@7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13))(wrangler@4.127.1(@cloudflare/workers-types@4.20260702.1))
+        version: 1.54.2(vite@7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13))(wrangler@4.127.1(@cloudflare/workers-types@5.20260902.1))
       '@cloudflare/workers-types':
-        specifier: ^4.20260505.1
-        version: 4.20260702.1
+        specifier: ^5.20260828.1
+        version: 5.20260902.1
       '@playwright/test':
         specifier: ^1.60.0
         version: 1.62.1
@@ -115,8 +118,8 @@ importers:
         specifier: ^4.2.4
         version: 4.3.3(vite@7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13))
       '@testing-library/jest-dom':
-        specifier: ^6.9.1
-        version: 6.10.0(@testing-library/dom@10.4.1)
+        specifier: 6.9.1
+        version: 6.9.1
       '@testing-library/react':
         specifier: ^16.3.2
         version: 16.3.3(@testing-library/dom@10.4.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -161,7 +164,7 @@ importers:
         version: 4.1.11(@types/node@25.9.5)(@vitest/coverage-v8@4.1.11)(jsdom@29.1.1)(vite@7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13))
       wrangler:
         specifier: ^4.87.0
-        version: 4.127.1(@cloudflare/workers-types@4.20260702.1)
+        version: 4.127.1(@cloudflare/workers-types@5.20260902.1)
 
 packages:
 
@@ -186,7 +189,7 @@ packages:
   '@assistant-ui/core@0.1.17':
     resolution: {integrity: sha512-IWIP98UVQ9W+oF0yz8XqFRtaX8HtozWVUWt6D/BSV6cyKwLfJ8niHtLG74bSnllTnGcreU2El3GR/tIodR1XuA==}
     peerDependencies:
-      '@assistant-ui/store': ^0.2.9
+      '@assistant-ui/store': 0.2.20
       '@assistant-ui/tap': ^0.5.10
       '@types/react': '*'
       assistant-cloud: ^0.1.27
@@ -225,10 +228,10 @@ packages:
       '@types/react-dom':
         optional: true
 
-  '@assistant-ui/store@0.2.22':
-    resolution: {integrity: sha512-RdUFLOFJ3ZwIoOZYrRvps3OAODwnWoUAuNfqbROKrj5qtlQsIJRqxUNdLTjcf4AimhkjCwOaFacGHHm9lE4qBw==}
+  '@assistant-ui/store@0.2.20':
+    resolution: {integrity: sha512-g+iHnov+JMZmVAPKhfs9YqCXWFcCBWCyi+oqsc/kAR9zMsE0+qbE36iyRYfsJFrhMDm+6Ev7/2UTO+1HwTiZfA==}
     peerDependencies:
-      '@assistant-ui/tap': ^0.9.0
+      '@assistant-ui/tap': ^0.5.16 || ^0.7.1 || ^0.8.1 || ^0.9.0
       '@types/react': '*'
       react: ^18 || ^19
     peerDependenciesMeta:
@@ -563,8 +566,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@cloudflare/workers-types@4.20260702.1':
-    resolution: {integrity: sha512-mOhf5TUEB1m2vPrxtqoIGfz0fUC9xyxRDx5gWHy5s+OCo6dcV+g7wI1R7gYCMFohhqF/2y2xeKVwMwCJjfn/WA==}
+  '@cloudflare/workers-types@5.20260902.1':
+    resolution: {integrity: sha512-FpgVlUNWBLPtC51m/t9Eo8DzbFoOg05MSicoPQRS3eitvPRznJxkxuCy0P23unP2CjLIAczLR5nFNRWlKMJvrA==}
 
   '@cspotcode/source-map-support@0.8.1':
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
@@ -2183,12 +2186,9 @@ packages:
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
     engines: {node: '>=18'}
 
-  '@testing-library/jest-dom@6.10.0':
-    resolution: {integrity: sha512-HQwu0KaB2zyT0iLzBL+8CLyZDL3KlZlZJ+2iyc9uCUnlJVskJU/UlPuVCyIPhtukjPQdT2QNoR5nCP5FqTmmDQ==}
-    engines: {node: '>=22', npm: '>=6', yarn: '>=1'}
-    deprecated: Incorrect minor release with breaking changes (Node >=22 and required @testing-library/dom peer). Use 6.9.1 for the 6.x line, or upgrade to 7.0.0.
-    peerDependencies:
-      '@testing-library/dom': '>=10 <11'
+  '@testing-library/jest-dom@6.9.1':
+    resolution: {integrity: sha512-zIcONa+hVtVSSep9UT3jZ5rizo2BsxgyDYU7WFD5eICBE7no3881HGeb/QkGfsJs6JTkY1aQhT7rIPC7e+0nnA==}
+    engines: {node: '>=14', npm: '>=6', yarn: '>=1'}
 
   '@testing-library/react@16.3.3':
     resolution: {integrity: sha512-Uo193NgQbPMz6lrrhtRQQFcMC6Re/ELLFbbuVL30WDlZxlpZf9/lMHTAVxPRLw1q1iu9OJmR1c2BLiENRstdBg==}
@@ -4760,9 +4760,9 @@ snapshots:
 
   '@asamuzakjp/nwsapi@2.3.9': {}
 
-  '@assistant-ui/core@0.1.17(@assistant-ui/store@0.2.22(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.1.42)(react@19.2.8)(zustand@5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8)))':
+  '@assistant-ui/core@0.1.17(@assistant-ui/store@0.2.20(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.1.42)(react@19.2.8)(zustand@5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8)))':
     dependencies:
-      '@assistant-ui/store': 0.2.22(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
+      '@assistant-ui/store': 0.2.20(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
       '@assistant-ui/tap': 0.5.16(@types/react@19.2.18)(react@19.2.8)
       assistant-stream: 0.3.40
       nanoid: 5.1.16
@@ -4792,8 +4792,8 @@ snapshots:
 
   '@assistant-ui/react@0.12.28(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))':
     dependencies:
-      '@assistant-ui/core': 0.1.17(@assistant-ui/store@0.2.22(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.1.42)(react@19.2.8)(zustand@5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8)))
-      '@assistant-ui/store': 0.2.22(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
+      '@assistant-ui/core': 0.1.17(@assistant-ui/store@0.2.20(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.1.42)(react@19.2.8)(zustand@5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8)))
+      '@assistant-ui/store': 0.2.20(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
       '@assistant-ui/tap': 0.5.16(@types/react@19.2.18)(react@19.2.8)
       '@radix-ui/primitive': 1.1.7
       '@radix-ui/react-compose-refs': 1.1.5(@types/react@19.2.18)(react@19.2.8)
@@ -4819,7 +4819,7 @@ snapshots:
       - redis
       - use-sync-external-store
 
-  '@assistant-ui/store@0.2.22(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)':
+  '@assistant-ui/store@0.2.20(@assistant-ui/tap@0.5.16(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)':
     dependencies:
       '@assistant-ui/tap': 0.5.16(@types/react@19.2.18)(react@19.2.8)
       react: 19.2.8
@@ -5102,14 +5102,14 @@ snapshots:
     optionalDependencies:
       workerd: 1.20260828.1
 
-  '@cloudflare/vite-plugin@1.54.2(vite@7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13))(wrangler@4.127.1(@cloudflare/workers-types@4.20260702.1))':
+  '@cloudflare/vite-plugin@1.54.2(vite@7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13))(wrangler@4.127.1(@cloudflare/workers-types@5.20260902.1))':
     dependencies:
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260828.1)
       miniflare: 5.20260828.0-alpha
       unenv: 2.0.0-rc.24
       vite: 7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13)
       workerd: 1.20260828.1
-      wrangler: 4.127.1(@cloudflare/workers-types@4.20260702.1)
+      wrangler: 4.127.1(@cloudflare/workers-types@5.20260902.1)
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
@@ -5145,7 +5145,7 @@ snapshots:
   '@cloudflare/workerd-windows-64@1.20260828.1':
     optional: true
 
-  '@cloudflare/workers-types@4.20260702.1': {}
+  '@cloudflare/workers-types@5.20260902.1': {}
 
   '@cspotcode/source-map-support@0.8.1':
     dependencies:
@@ -6559,10 +6559,9 @@ snapshots:
       picocolors: 1.1.1
       pretty-format: 27.5.1
 
-  '@testing-library/jest-dom@6.10.0(@testing-library/dom@10.4.1)':
+  '@testing-library/jest-dom@6.9.1':
     dependencies:
       '@adobe/css-tools': 4.5.0
-      '@testing-library/dom': 10.4.1
       aria-query: 5.3.2
       css.escape: 1.5.1
       dom-accessibility-api: 0.6.3
@@ -9273,7 +9272,7 @@ snapshots:
       '@cloudflare/workerd-linux-arm64': 1.20260828.1
       '@cloudflare/workerd-windows-64': 1.20260828.1
 
-  wrangler@4.127.1(@cloudflare/workers-types@4.20260702.1):
+  wrangler@4.127.1(@cloudflare/workers-types@5.20260902.1):
     dependencies:
       '@cloudflare/kv-asset-handler': 0.5.0
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260828.1)
@@ -9284,7 +9283,7 @@ snapshots:
       unenv: 2.0.0-rc.24
       workerd: 1.20260828.1
     optionalDependencies:
-      '@cloudflare/workers-types': 4.20260702.1
+      '@cloudflare/workers-types': 5.20260902.1
       fsevents: 2.3.3
     transitivePeerDependencies:
       - bufferutil

@@ -50,27 +50,25 @@ describe("D1 current Task action actor writes", () => {
     });
   });
 
-  it.each([
-    "machine",
-    "agent:worker",
-    "agent:leader",
-    "arbitrary:actor",
-  ])("rejects createTask actor type %s before writing a Task or action", async (actorType) => {
-    const { db, ownerId, boardId } = await fixture(`create-${actorType}`);
+  it.each(["machine", "agent:worker", "agent:leader", "arbitrary:actor"])(
+    "rejects createTask actor type %s before writing a Task or action",
+    async (actorType) => {
+      const { db, ownerId, boardId } = await fixture(`create-${actorType}`);
 
-    await expect(
-      createTask(db, ownerId, {
-        title: `Rejected ${actorType}`,
-        board_id: boardId,
-        actorType: actorType as never,
-        actorId: "legacy-actor",
-      }),
-    ).rejects.toThrow(`Unsupported v2 Task action actor type: ${actorType}`);
-    await expect(db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE board_id = ?").bind(boardId).first()).resolves.toEqual({ count: 0 });
-    await expect(
-      db.prepare("SELECT COUNT(*) AS count FROM task_actions WHERE task_id IN (SELECT id FROM tasks WHERE board_id = ?)").bind(boardId).first(),
-    ).resolves.toEqual({ count: 0 });
-  });
+      await expect(
+        createTask(db, ownerId, {
+          title: `Rejected ${actorType}`,
+          board_id: boardId,
+          actorType: actorType as never,
+          actorId: "legacy-actor",
+        }),
+      ).rejects.toThrow(`Unsupported v2 Task action actor type: ${actorType}`);
+      await expect(db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE board_id = ?").bind(boardId).first()).resolves.toEqual({ count: 0 });
+      await expect(
+        db.prepare("SELECT COUNT(*) AS count FROM task_actions WHERE task_id IN (SELECT id FROM tasks WHERE board_id = ?)").bind(boardId).first(),
+      ).resolves.toEqual({ count: 0 });
+    },
+  );
 
   it("allows Realmroot Agent actions, rejects legacy writes without side effects, and still reads historical actor types", async () => {
     const { db, ownerId, boardId } = await fixture("action-history");
