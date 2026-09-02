@@ -31,6 +31,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   await mf.dispose();
 });
 
