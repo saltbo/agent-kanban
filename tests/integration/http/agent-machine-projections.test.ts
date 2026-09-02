@@ -163,86 +163,26 @@ describe("Agent and Machine projection HTTP resources", () => {
   });
 
   it.each([
-    {
-      resourceName: "Agent",
-      path: "/agents",
-      operationPath: "/api/v1/agents",
-      scopes: ["agents:read", "projects:read", "projects:write"],
-    },
-    {
-      resourceName: "Machine",
-      path: "/machines",
-      operationPath: "/api/v1/environments",
-      scopes: ["environments:read", "runners:read", "projects:read", "projects:write"],
-    },
-  ])(
-    "[spec: agents/transparent-ama-project] initializes the Project before the $resourceName collection",
-    async ({ path, operationPath, scopes }) => {
-      await fixture.db.prepare("DELETE FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
-      const events: string[] = [];
-      vi.stubGlobal(
-        "fetch",
-        delegatedAmaFetch(scopes, async (request) => {
-          const pathname = new URL(request.url).pathname;
-          events.push(`${request.method} ${pathname}`);
-          if (pathname === "/api/v1/projects" && request.method === "GET") {
-            return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-          }
-          if (pathname === "/api/v1/projects" && request.method === "POST") {
-            const body = (await request.json()) as { name: string };
-            expect(body).toEqual({ name: "Agent Kanban" });
-            expect(body.name).not.toContain(ownerId);
-            return Response.json({
-              id: "project-initialized",
-              name: "Agent Kanban",
-              createdAt: "2026-09-01T12:00:00.000Z",
-              updatedAt: "2026-09-01T12:00:01.000Z",
-            });
-          }
-          if (pathname === operationPath) {
-            await expect(
-              fixture.db.prepare("SELECT ama_project_id FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).first(),
-            ).resolves.toEqual({ ama_project_id: "project-initialized" });
-            expect(request.headers.get("x-ama-project-id")).toBe("project-initialized");
-            return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-          }
-          if (pathname === "/api/v1/runners") {
-            return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-          }
-          throw new Error(`Unexpected AMA request ${request.method} ${pathname}`);
-        }),
-      );
-
-      const response = await browserGet(path);
-
-      expect(response.status, await response.clone().text()).toBe(200);
-      expect(events.slice(0, 3)).toEqual(["GET /api/v1/projects", "POST /api/v1/projects", `GET ${operationPath}`]);
-    },
-  );
-
-  it("[spec: agents/transparent-ama-project] maps an active initialization claim to retryable 503", async () => {
+    { resourceName: "Agent", path: "/agents" },
+    { resourceName: "Machine", path: "/machines" },
+  ])("[spec: agents/transparent-ama-project] fails the $resourceName collection explicitly when the login binding is missing", async ({ path }) => {
     await fixture.db.prepare("DELETE FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
-    await fixture.db
-      .prepare("INSERT INTO ama_resource_initializations (tenant_id, claim_token, expires_at) VALUES (?, ?, ?)")
-      .bind(ownerId, "other-request", new Date(Date.now() + 60_000).toISOString())
-      .run();
-    vi.stubGlobal(
-      "fetch",
-      delegatedAmaFetch(["agents:read", "projects:read", "projects:write"], async (request) => {
-        throw new Error(`AMA must not be called while another claim is active: ${request.url}`);
-      }),
-    );
-
-    const response = await browserGet("/agents");
-
-    expect(response.status, await response.clone().text()).toBe(503);
-    expect(response.headers.get("Retry-After")).toBe("1");
-    await expect(response.json()).resolves.toMatchObject({
-      status: 503,
-      type: `${resource}/problems/ama-initialization-busy`,
+    const fetchMock = vi.fn(async () => {
+      throw new Error("projection dependencies must not lazily call OIDC or AMA");
     });
-  }, 30_000);
+    vi.stubGlobal("fetch", fetchMock);
 
+    const response = await browserGet(path);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      detail: "AMA Project binding is unavailable",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(
+      fixture.db.prepare("SELECT COUNT(*) AS count FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).first(),
+    ).resolves.toEqual({ count: 0 });
+  });
   it("[spec: machines/environment-projection] returns AMA self-hosted Environment and Runner projections", async () => {
     vi.stubGlobal(
       "fetch",

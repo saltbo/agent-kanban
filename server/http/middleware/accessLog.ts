@@ -13,6 +13,7 @@ export function createAccessLogMiddleware(logger: AccessLogger) {
     await next();
 
     const status = c.res.status;
+    const failed = status >= 500 || c.get("requestFailed") === true;
     const fields: Record<string, unknown> = {
       method: c.req.method,
       path: c.req.path,
@@ -21,11 +22,11 @@ export function createAccessLogMiddleware(logger: AccessLogger) {
       request_id: c.get("requestId"),
       trace_id: c.get("traceId"),
       span_id: c.get("spanId"),
-      result: status >= 500 ? "server_error" : status >= 400 ? "client_error" : "success",
-      ...(status >= 500 ? errorDiagnosticFields(c.get("requestError")) : {}),
+      result: failed ? "server_error" : status >= 400 ? "client_error" : "success",
+      ...(failed ? errorDiagnosticFields(c.get("requestError")) : {}),
     };
 
-    if (status >= 500) logger.error("request completed", fields);
+    if (failed) logger.error("request completed", fields);
     else if (status >= 400) logger.warn("request completed", fields);
     else logger.info("request completed", fields);
   };

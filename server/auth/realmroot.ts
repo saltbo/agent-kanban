@@ -1,7 +1,10 @@
-import { storeWebSessionGrant } from "@server/adapters/realmroot/delegatedAmaToken";
+import { AmaProjectCatalogAdapter } from "@server/adapters/agency/projectCatalog";
+import { D1AmaProjectBindingAdapter } from "@server/adapters/d1/amaProjectBinding";
+import { delegatedAmaToken, storeWebSessionGrant } from "@server/adapters/realmroot/delegatedAmaToken";
 import { akPublicUrl, akResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
 import { createLogger } from "@server/observability/logger";
+import { ensureAmaProject } from "@server/usecases/ama/ensureAmaProject";
 import { AGENCY_RUNTIMES } from "@shared";
 import type { Context } from "hono";
 import { calculateJwkThumbprint, createRemoteJWKSet, decodeProtectedHeader, importJWK, type JWTPayload, errors as joseErrors, jwtVerify } from "jose";
@@ -185,6 +188,18 @@ export async function finishRealmrootLogin(c: Context<{ Bindings: Env }>): Promi
          updated_at = ?`,
     ).bind(tenantId, claims.sub, email, name, role, now),
   ]);
+
+  try {
+    const amaToken = await delegatedAmaToken(c.env, {
+      sourceAccessToken: tokenBody.access_token,
+      scopes: ["projects:read", "projects:write"],
+    });
+    await ensureAmaProject(new D1AmaProjectBindingAdapter(c.env.DB), new AmaProjectCatalogAdapter(c.env, amaToken, c.get("traceparent")), tenantId);
+  } catch (error) {
+    c.set("requestError", error instanceof Error ? error : new Error("AMA Project initialization failed"));
+    c.set("requestFailed", true);
+    return authFailure("Agent Kanban workspace initialization failed. Try signing in again.");
+  }
 
   const sessionToken = randomToken(48);
   const sessionId = crypto.randomUUID();

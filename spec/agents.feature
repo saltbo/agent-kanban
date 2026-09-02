@@ -2,12 +2,12 @@ Feature: Agent projections
   AK presents safe Agent resources sourced from AMA without owning Agent state.
 
   @agents/transparent-ama-project @api
-  Scenario: The first Agent projection initializes the hidden AMA project
+  Scenario: Sign-in initializes the hidden AMA project
     Given the current Realmroot tenant has no stored AMA project binding
-    When an Agent lists Agent projections through the AK Resource Server
+    When a user signs in to AK through Realmroot
     Then AK creates or reuses the tenant's project named "Agent Kanban" in AMA
-    And AK persists exactly one tenant-to-project binding before reading Agents
-    And concurrent first requests reuse the winning binding
+    And AK persists exactly one tenant-to-project binding before establishing the web session
+    And AMA-backed Resource operations never initialize a missing Project lazily
   @agents/authoritative-projection @api
   Scenario: Read safe Agent projections from AMA
     Given AMA is authoritative for the tenant's Agents

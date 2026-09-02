@@ -135,6 +135,57 @@ describe("verified Task runtime provenance", () => {
     }
   });
 
+  it("[spec: session-observation/exact-session] rejects a missing Project binding before OIDC or Agency is called", async () => {
+    const board = await createBoard(db, tenantId, "Missing observation binding", "ops");
+    const task = await createTask(db, tenantId, { title: "Bound Task without Project", board_id: board.id });
+    await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
+      ownerId: tenantId,
+      taskId: task.id,
+      assigneeActorId: actorId,
+      assignedByActorId: "assigner-a",
+    });
+    expect(
+      (
+        await agentRequest("PUT", `/task-claims/${task.id}`, "task:claim", {
+          runtime: "codex",
+          session_id: "agency-session-without-project",
+        })
+      ).status,
+    ).toBe(201);
+    const session = await createTestWebSession(db, tenantId);
+    env = {
+      ...env,
+      AMA_ORIGIN: "https://agency.test",
+      OIDC_SERVICE_CLIENT_ID: "ak-service",
+      OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
+    };
+    await storeWebSessionGrant(env, session.id, {
+      access_token: "browser-ak-token",
+      refresh_token: "browser-refresh-token",
+      expires_in: 300,
+    });
+    const upstream = vi.fn(async () => {
+      throw new Error("OIDC or Agency must not be called without a tenant Project binding");
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await api.fetch(
+      new Request(`${resource}/tasks/${task.id}/session`, {
+        headers: { cookie: session.cookie, "API-Version": "2026-08-29" },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      status: 503,
+      title: "AMA unavailable",
+      type: `${resource}/problems/ama-projection-failed`,
+      detail: "AMA Project binding is unavailable",
+    });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("[spec: session-observation/exact-session] resolves the canonical stored Session and maps boundary failures", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const board = await createBoard(db, tenantId, "Exact Session observation", "ops");
