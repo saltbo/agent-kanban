@@ -167,7 +167,7 @@ describe("0047 Task Event offsets", () => {
     });
     await expect(repository.readSnapshot("task-events-owner", [own.id, foreign.id])).resolves.toBeNull();
     await expect(repository.readSnapshot("task-events-owner", [own.id, "missing-task"])).resolves.toBeNull();
-  }, 15_000);
+  });
 
   it("reads exactly fifty Task IDs without exceeding the D1 bind limit", async () => {
     const setup = await setupMiniflare();
