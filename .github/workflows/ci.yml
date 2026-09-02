@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  lint-and-test:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,5 +19,27 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run typecheck
-      - run: pnpm run test
       - run: pnpm run build
+
+  test:
+    name: test (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: toolbox-http
+            command: pnpm exec vitest run --project integration-http tests/integration/http/toolbox-generic-agent-operations.test.ts
+          - suite: other-http
+            command: pnpm exec vitest run --project integration-http --exclude tests/integration/http/toolbox-generic-agent-operations.test.ts
+          - suite: core
+            command: pnpm exec vitest run --project unit-domain --project unit-application --project unit-component --project integration-adapters --project integration-migrations --project contract-http --project legacy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: ${{ matrix.command }}
