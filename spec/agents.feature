@@ -5,7 +5,7 @@ Feature: Agent projections
   Scenario: The first Agent projection initializes the hidden AMA project
     Given the current Realmroot tenant has no stored AMA project binding
     When an Agent lists Agent projections through the AK Resource Server
-    Then AK creates or reuses the tenant's deterministic Agent Kanban project in AMA
+    Then AK creates or reuses the tenant's project named "Agent Kanban" in AMA
     And AK persists exactly one tenant-to-project binding before reading Agents
     And concurrent first requests reuse the winning binding
   @agents/authoritative-projection @api

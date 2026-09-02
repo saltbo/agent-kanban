@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AmaProjectBindingPort, type AmaProjectCatalogPort, ensureAmaProject } from "../../../server/usecases/ama/ensureAmaProject";
 
 const tenantId = "tenant-transparent-project";
-const projectName = `Agent Kanban ${tenantId}`;
+const projectName = "Agent Kanban";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -41,7 +41,7 @@ describe("transparent AMA project initialization", () => {
     expect(projects.createProject).not.toHaveBeenCalled();
   });
 
-  it("[spec: agents/transparent-ama-project] reuses the exact deterministic AMA project", async () => {
+  it("[spec: agents/transparent-ama-project] reuses the exact fixed-name AMA project", async () => {
     const { bindings, projects } = ports();
     vi.mocked(projects.listProjects).mockResolvedValue([
       { id: "project-other", name: `${projectName} other` },
@@ -53,11 +53,12 @@ describe("transparent AMA project initialization", () => {
     expect(bindings.store).toHaveBeenCalledWith(tenantId, "project-deterministic", expect.any(String));
   });
 
-  it("[spec: agents/transparent-ama-project] creates and stores the deterministic project when absent", async () => {
+  it("[spec: agents/transparent-ama-project] creates and stores the fixed-name project without the tenant id", async () => {
     const { bindings, projects } = ports();
 
     await expect(ensureAmaProject(bindings, projects, tenantId)).resolves.toBe("project-created");
     expect(projects.createProject).toHaveBeenCalledWith(projectName);
+    expect(projectName).not.toContain(tenantId);
     expect(bindings.store).toHaveBeenCalledWith(tenantId, "project-created", expect.any(String));
   });
 

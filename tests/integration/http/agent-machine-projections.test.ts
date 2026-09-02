@@ -189,10 +189,12 @@ describe("Agent and Machine projection HTTP resources", () => {
             return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
           }
           if (pathname === "/api/v1/projects" && request.method === "POST") {
-            await expect(request.json()).resolves.toEqual({ name: `Agent Kanban ${ownerId}` });
+            const body = (await request.json()) as { name: string };
+            expect(body).toEqual({ name: "Agent Kanban" });
+            expect(body.name).not.toContain(ownerId);
             return Response.json({
               id: "project-initialized",
-              name: `Agent Kanban ${ownerId}`,
+              name: "Agent Kanban",
               createdAt: "2026-09-01T12:00:00.000Z",
               updatedAt: "2026-09-01T12:00:01.000Z",
             });
