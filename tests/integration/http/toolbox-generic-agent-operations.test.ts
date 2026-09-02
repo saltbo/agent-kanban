@@ -751,6 +751,15 @@ describe("Realmroot Agent generic Toolbox operations", () => {
   it("[spec: tasks/reject-review] [spec: tasks/complete-review] lets a different human decide Review Submissions through HTTP", async () => {
     const board = await createBoard(db, tenantId, "Human review decisions", "ops");
     const session = await createTestWebSession(db, tenantId, { subjectId: "human-reviewer" });
+    env = {
+      ...env,
+      OIDC_ISSUER: issuer,
+      INBOX_RESOURCE: inboxResource,
+      INBOX_API_VERSION: "2026-08-31",
+      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
+      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
+    };
+    await realmrootAgentAuthority(`${resource}/task-review-rejections/bootstrap`, "PUT", "task:reject");
 
     for (const kind of ["rejections", "completions"] as const) {
       const task = await reviewReadyTask(tenantId, board.id, `Human ${kind}`, "assigned-agent");
@@ -779,6 +788,21 @@ describe("Realmroot Agent generic Toolbox operations", () => {
         status: kind === "rejections" ? "in_progress" : "done",
       });
     }
+
+    expect(machineTokenRequests).toHaveLength(2);
+    expect(inboxMessageRequests).toHaveLength(2);
+    const messages = await Promise.all(
+      inboxMessageRequests.map(
+        async (messageRequest) =>
+          (await messageRequest.clone().json()) as {
+            recipients: string[];
+            content: { text: string };
+          },
+      ),
+    );
+    expect(messages.map(({ recipients }) => recipients)).toEqual([["agent:assigned-agent"], ["agent:assigned-agent"]]);
+    expect(messages[0].content.text).toContain("review_rejected");
+    expect(messages[1].content.text).toContain("completed");
   });
 
   it("rejects stale reviewSubmissionVersion bodies for rejection and completion", async () => {
