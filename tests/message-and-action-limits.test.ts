@@ -1,7 +1,6 @@
 // @vitest-environment node
 //
-// Tests for the bounded-read contracts introduced in messageRepo.listMessages
-// and taskRepo.getTaskActions:
+// Tests for the bounded-read contracts in taskRepo.getTaskActions:
 //   - Without `since`: returns the most recent `limit` rows in ASC order.
 //   - With `since`: returns up to `limit` rows *after* the cursor in ASC order.
 //   - Default limit is 500; callers may pass a smaller value.
@@ -27,161 +26,26 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 async function makeBoard(name: string) {
-  const { createBoard } = await import("../apps/web/server/boardRepo");
+  const { createBoard } = await import("../server/adapters/d1/boardRepo");
   return createBoard(env.DB, "limits-user", name, "ops");
 }
 
 async function makeTask(boardId: string, title: string) {
-  const { createTask } = await import("../apps/web/server/taskRepo");
+  const { createTask } = await import("../server/adapters/d1/taskRepo");
   return createTask(env.DB, "limits-user", { title, board_id: boardId });
 }
 
 async function insertActions(taskId: string, count: number): Promise<string[]> {
-  const { addTaskAction } = await import("../apps/web/server/taskRepo");
+  const { addTaskAction } = await import("../server/adapters/d1/taskRepo");
   const ids: string[] = [];
   for (let i = 0; i < count; i++) {
     // Small sleep to guarantee distinct created_at timestamps in SQLite
     await new Promise((r) => setTimeout(r, 2));
-    const action = await addTaskAction(env.DB, taskId, "machine", "system", "commented", `action ${i}`);
+    const action = await addTaskAction(env.DB, taskId, "user", "limits-user", "commented", `action ${i}`);
     ids.push(action.id);
   }
   return ids;
 }
-
-async function insertMessages(taskId: string, count: number): Promise<string[]> {
-  const { createMessage } = await import("../apps/web/server/messageRepo");
-  const ids: string[] = [];
-  for (let i = 0; i < count; i++) {
-    await new Promise((r) => setTimeout(r, 2));
-    const msg = await createMessage(env.DB, taskId, "user", "limits-user", `message ${i}`);
-    ids.push(msg.id);
-  }
-  return ids;
-}
-
-// ---------------------------------------------------------------------------
-// listMessages
-// ---------------------------------------------------------------------------
-
-describe("listMessages — no since (tail window)", () => {
-  let taskId: string;
-
-  beforeAll(async () => {
-    const board = await makeBoard("lm-no-since-board");
-    const task = await makeTask(board.id, "lm-no-since-task");
-    taskId = task.id;
-  });
-
-  it("returns empty array for task with no messages", async () => {
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    const msgs = await listMessages(env.DB, taskId);
-    expect(msgs).toEqual([]);
-  });
-
-  it("returns single message in ASC order", async () => {
-    const { createMessage, listMessages } = await import("../apps/web/server/messageRepo");
-    await createMessage(env.DB, taskId, "user", "limits-user", "only message");
-    const msgs = await listMessages(env.DB, taskId);
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0].content).toBe("only message");
-  });
-
-  it("returns results in ascending created_at order", async () => {
-    const { createMessage, listMessages } = await import("../apps/web/server/messageRepo");
-    await createMessage(env.DB, taskId, "user", "limits-user", "second message");
-    const msgs = await listMessages(env.DB, taskId);
-    // created_at of last entry must be >= first
-    expect(new Date(msgs[msgs.length - 1].created_at).getTime()).toBeGreaterThanOrEqual(new Date(msgs[0].created_at).getTime());
-  });
-
-  it("truncates to limit and returns the tail (most recent rows)", async () => {
-    const board = await makeBoard("lm-truncate-board");
-    const task = await makeTask(board.id, "lm-truncate-task");
-    await insertMessages(task.id, 7);
-
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    const msgs = await listMessages(env.DB, task.id, undefined, 5);
-    expect(msgs).toHaveLength(5);
-    // The tail window: should contain messages 2–6 (0-indexed), not message 0 or 1
-    expect(msgs.some((m) => m.content === "message 0")).toBe(false);
-    expect(msgs.some((m) => m.content === "message 1")).toBe(false);
-    expect(msgs.some((m) => m.content === "message 6")).toBe(true);
-  });
-
-  it("returns exactly limit rows when count equals limit", async () => {
-    const board = await makeBoard("lm-exact-board");
-    const task = await makeTask(board.id, "lm-exact-task");
-    await insertMessages(task.id, 5);
-
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    const msgs = await listMessages(env.DB, task.id, undefined, 5);
-    expect(msgs).toHaveLength(5);
-  });
-});
-
-describe("listMessages — with since (incremental catch-up)", () => {
-  let taskId: string;
-
-  beforeAll(async () => {
-    const board = await makeBoard("lm-since-board");
-    const task = await makeTask(board.id, "lm-since-task");
-    taskId = task.id;
-    await insertMessages(taskId, 5);
-  });
-
-  it("returns empty when since is after all messages", async () => {
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    const future = new Date(Date.now() + 60000).toISOString();
-    const msgs = await listMessages(env.DB, taskId, future);
-    expect(msgs).toEqual([]);
-  });
-
-  it("returns only messages after the since cursor", async () => {
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    // Fetch all to get the 2nd message's created_at
-    const all = await listMessages(env.DB, taskId);
-    const pivot = all[1].created_at;
-
-    const msgs = await listMessages(env.DB, taskId, pivot);
-    expect(msgs.length).toBe(3);
-    // All returned rows must be strictly after the pivot
-    for (const m of msgs) {
-      expect(new Date(m.created_at).getTime()).toBeGreaterThan(new Date(pivot).getTime());
-    }
-  });
-
-  it("returns results in ascending order when since is provided", async () => {
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    const all = await listMessages(env.DB, taskId);
-    const pivot = all[0].created_at;
-
-    const msgs = await listMessages(env.DB, taskId, pivot);
-    for (let i = 1; i < msgs.length; i++) {
-      expect(new Date(msgs[i].created_at).getTime()).toBeGreaterThanOrEqual(new Date(msgs[i - 1].created_at).getTime());
-    }
-  });
-
-  it("truncates to limit when rows after cursor exceed limit", async () => {
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    const all = await listMessages(env.DB, taskId);
-    const pivot = all[0].created_at; // after first, 4 rows remain
-
-    const msgs = await listMessages(env.DB, taskId, pivot, 2);
-    expect(msgs).toHaveLength(2);
-    // Should be the first two after the cursor (head), not the tail
-    expect(msgs[0].content).toBe("message 1");
-    expect(msgs[1].content).toBe("message 2");
-  });
-
-  it("returns all rows after cursor when count is below limit", async () => {
-    const { listMessages } = await import("../apps/web/server/messageRepo");
-    const all = await listMessages(env.DB, taskId);
-    const pivot = all[2].created_at; // 2 rows remain after index 2
-
-    const msgs = await listMessages(env.DB, taskId, pivot, 500);
-    expect(msgs).toHaveLength(2);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // getTaskActions
@@ -198,7 +62,7 @@ describe("getTaskActions — no since (tail window)", () => {
   });
 
   it("returns at least the creation action for a new task", async () => {
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const actions = await getTaskActions(env.DB, taskId);
     expect(actions.length).toBeGreaterThanOrEqual(1);
     expect(actions[0].action).toBe("created");
@@ -206,7 +70,7 @@ describe("getTaskActions — no since (tail window)", () => {
 
   it("returns results in ascending created_at order", async () => {
     await insertActions(taskId, 2);
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const actions = await getTaskActions(env.DB, taskId);
     for (let i = 1; i < actions.length; i++) {
       expect(new Date(actions[i].created_at).getTime()).toBeGreaterThanOrEqual(new Date(actions[i - 1].created_at).getTime());
@@ -219,7 +83,7 @@ describe("getTaskActions — no since (tail window)", () => {
     // createTask inserts 1 "created" action; insert 6 more → 7 total
     await insertActions(task.id, 6);
 
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const actions = await getTaskActions(env.DB, task.id, undefined, 5);
     expect(actions).toHaveLength(5);
     // "created" action should be excluded (oldest row dropped)
@@ -234,7 +98,7 @@ describe("getTaskActions — no since (tail window)", () => {
     // 1 "created" + 4 more = 5 total
     await insertActions(task.id, 4);
 
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const actions = await getTaskActions(env.DB, task.id, undefined, 5);
     expect(actions).toHaveLength(5);
   });
@@ -251,14 +115,14 @@ describe("getTaskActions — with since (incremental catch-up)", () => {
   });
 
   it("returns empty when since is after all actions", async () => {
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const future = new Date(Date.now() + 60000).toISOString();
     const actions = await getTaskActions(env.DB, taskId, future);
     expect(actions).toEqual([]);
   });
 
   it("returns only actions after the since cursor", async () => {
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const all = await getTaskActions(env.DB, taskId);
     const pivot = all[1].created_at;
 
@@ -269,7 +133,7 @@ describe("getTaskActions — with since (incremental catch-up)", () => {
   });
 
   it("returns results in ascending order when since is provided", async () => {
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const all = await getTaskActions(env.DB, taskId);
     const pivot = all[0].created_at;
 
@@ -280,7 +144,7 @@ describe("getTaskActions — with since (incremental catch-up)", () => {
   });
 
   it("truncates to limit when rows after cursor exceed limit", async () => {
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const all = await getTaskActions(env.DB, taskId);
     // After the first row (created), we have the "created" action + 5 "commented"
     const pivot = all[0].created_at; // skip first; up to 5 rows remain
@@ -293,7 +157,7 @@ describe("getTaskActions — with since (incremental catch-up)", () => {
   });
 
   it("returns all rows after cursor when count is below limit", async () => {
-    const { getTaskActions } = await import("../apps/web/server/taskRepo");
+    const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const all = await getTaskActions(env.DB, taskId);
     const pivot = all[all.length - 3].created_at; // 2 rows remain
 

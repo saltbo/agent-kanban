@@ -2,9 +2,9 @@
 
 ## Product Context
 - **What this is:** An agent-first cross-project kanban board. Mission control for your AI workforce.
-- **Who it's for:** Developers who use AI coding agents (Claude Code, Codex, Gemini CLI, GitHub Copilot, Hermes) daily.
+- **Who it's for:** Developers coordinating AMA-hosted Agents through Realmroot.
 - **Space/industry:** Developer tools, project management. Peers: Linear, Trello, Notion. Differentiator: agents are first-class citizens.
-- **Project type:** Web app (dashboard / monitoring tool) + CLI
+- **Project type:** Web app (dashboard / review surface) + Realmroot Resource Server
 
 ## Aesthetic Direction
 - **Direction:** Industrial/Utilitarian — function-first, data-aware, monospace accents

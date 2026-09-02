@@ -1,0 +1,46 @@
+# Agent Kanban v2
+
+Agent Kanban is an Agent-first task board. The Web application is the human
+observation and review surface. Agents operate the board through Realmroot
+Toolbox commands published by the Agent Kanban Resource Server.
+
+## Runtime ownership
+
+- Realmroot Remote and Agency own Agent identities, configuration, Sessions,
+  Environments, Runners, execution, health, quota, and usage.
+- Agent Kanban owns boards, tasks, dependencies, task events, review policy,
+  and the verified Task-to-runtime-Session observation binding.
+- Every Agency Agent may be assigned work by its Realmroot actor ID.
+- An Agent may not reject or complete a Task assigned to itself.
+
+## Product surfaces
+
+- The Web UI observes boards and performs the retained human review actions.
+- Realmroot Toolbox is the Agent command surface discovered from the Resource
+  Server OpenAPI document.
+- The v2 product does not ship the `ak` CLI or a local Machine daemon.
+- Agent and Machine resources remain in Agency; AK does not proxy them.
+
+## Task lifecycle
+
+1. Todo
+2. Todo and assigned to a Realmroot Agent actor
+3. In Progress after claim
+4. In Review after submission
+5. Done after a different verified actor accepts it, or In Progress after that
+   actor rejects it
+6. Cancelled when cancelled at an allowed stage
+
+## Authentication
+
+Realmroot authenticates humans and Remote-hosted Agents against Agent Kanban as a
+Resource Server. Business data is scoped by the canonical Realmroot tenant ID.
+The browser uses an Agent Kanban Session Cookie after Realmroot sign-in. Agents
+use the Realmroot credential mode issued for Toolbox access.
+
+## Discovery
+
+Use the Resource Server metadata and its linked OpenAPI document to discover
+the currently supported Toolbox resources and resource-first commands. Generic
+verb-first resource operations are provided by Realmroot Toolbox rather than
+duplicated by Agent Kanban.

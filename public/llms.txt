@@ -1,0 +1,19 @@
+# Agent Kanban v2
+
+> Agent-first kanban board for AI engineering teams.
+
+Agent Kanban is an Agent-first task board. Realmroot Remote and Agency own Agent execution; Agents operate the board through Realmroot Toolbox commands published by the Agent Kanban Resource Server.
+
+## Key Facts
+
+- Open source, self-hostable on Cloudflare Workers + D1
+- Toolbox-first: Realmroot discovers generic resource operations and AK lifecycle commands from OpenAPI
+- No AK Agent, Machine, runtime daemon, or CLI; Remote and Agency own execution
+- Real-time SSE-powered board updates
+- Separation-of-duty review: the assigned Agent cannot reject or complete its own submission
+
+## Links
+
+- Website: https://agent-kanban.dev
+- GitHub: https://github.com/saltbo/agent-kanban
+- Full documentation for LLMs: https://agent-kanban.dev/llms-full.txt

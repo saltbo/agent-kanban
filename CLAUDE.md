@@ -9,75 +9,84 @@ Do not deviate without explicit user approval.
 In QA mode, flag any code that doesn't match DESIGN.md.
 
 ## Architecture
-- Monorepo: pnpm workspaces
-- Frontend: apps/web/src/ — React + Vite + Tailwind + shadcn/ui
-- Backend: apps/web/server/ — Hono API, repo layer, auth, SSE
-- Worker entry: apps/web/worker/index.ts — exports Hono app + TunnelRelay DO
+- Single pnpm package; do not add workspaces or nested package manifests
+- Frontend: `src/` — React + Vite + Tailwind + shadcn/ui
+- Backend: `server/` — domain, use cases, adapters, auth, HTTP composition
+- Worker entry: `server/worker/index.ts`
 - Build: @cloudflare/vite-plugin — produces client assets + worker bundle
 - Database: Cloudflare D1 (SQLite)
-- Durable Objects: TunnelRelay (WebSocket relay for runtime sessions ↔ browser)
-- CLI: packages/cli/ — TypeScript, published to npm
-- Shared types: packages/shared/ — proper package with build step
-- Agent skill: skills/agent-kanban/ — installed via `npx skills add` to target repos
+- Shared types: `shared/` — source in the same TypeScript project
+- Agent skills use Realmroot Toolbox commands published by the AK Resource Server
 
 ## UI Principles
 - **Read-only board** — the web UI is for observation and review, not task management
-- **No task creation UI** — tasks are created exclusively by agents via CLI/API
+- **No task creation UI** — tasks are created by agents through Realmroot Toolbox
 - **No status transition buttons** — no claim/cancel/release/assign in the UI
 - **No drag-and-drop** — card ordering is managed by agents
 - **Only two review actions in UI**: reject (send back to agent) and complete (accept) — can be performed by humans or lead agents via API
-- Board switcher and task detail (logs, PR, chat) are the only navigation interactions
+- Board switcher, task detail (logs, PR, chat), and Agent/Machine list/detail pages are the primary navigation interactions
 
 ## Patterns
-- Data access: thin repo layer (taskRepo.ts, boardRepo.ts, agentRepo.ts, messageRepo.ts) — no raw SQL in route handlers
-- Error handling: Hono onError + HTTPException — centralized error envelope { error: { code, message } }
+- Data access: feature-owned repositories for v2 workflows. Legacy Agent,
+  Machine, Session, Maintainer, mailbox, and runtime rows may remain stored but
+  have no v2 repository or business-logic consumer; no raw SQL in route handlers
+- Error handling: v2 Resource operations use RFC 9457 `application/problem+json`; browser-internal legacy routes retain the centralized `{ error: { code, message } }` envelope.
 - Claim atomicity: db.batch() for race-condition-free task claims
-- Auth: Realmroot authenticates humans and Native CLI/machine clients. Browser users use AK's opaque server Session Cookie; CLI/machines use Realmroot access tokens for the AK Resource with the credential mode Realmroot issued (Bearer or DPoP). AK Agents retain AK-owned Ed25519 identities and short-lived `agent+jwt` Sessions. Business data is scoped by the canonical Realmroot tenant ID in `owner_id`.
-- AMA auth: the Web Application requests AK and AMA Resources in one Realmroot grant. AK stores the rotated refresh token encrypted server-side and calls AMA with the user's AMA-audience Bearer token plus `X-AMA-Project-ID`. AK never sends a custom tenant header and never owns an AMA/Realmroot Agent credential; AMA independently manages any Realmroot identity attached to its Agent resource.
-- Agent identity: registered via `POST /api/agents` with Ed25519 public key. Each agent has a cryptographic identity (identicon, fingerprint). Daemon generates ephemeral keypair per spawn.
-- Agent status: idle → working (on claim/assign) → idle (on complete/release/cancel with no other active tasks) → offline (on stale timeout)
-- Task lifecycle: Todo → Todo+assigned (AMA runtime dispatch) → In Progress (agent claim) → In Review (agent review+PR) → Done (reviewer complete) or Cancelled (cancel at any stage). Reviewer = human or lead agent.
+- Auth: Realmroot authenticates humans and Agency Agents using AK as a native Resource Server. Resource tokens require DPoP; browser users use AK's opaque server Session Cookie. Business data is scoped by the canonical Realmroot tenant ID in `owner_id`.
+- Realmroot Remote owns Agent and Session execution; Agency owns the authoritative Agent, Project, Environment, Runner, and Session resources. AK may hold a server-side Agency grant and translate Project, Agent, and Environment lifecycle for its public projections, but it stores no local Agent/Machine entity and never creates, messages, or closes Agency Sessions.
+- Task lifecycle: Todo → Todo+assigned → In Progress (Agent Claim) → In Review (Review Submission) → Done (Review Completion) or Cancelled. Assignment does not dispatch runtime work. The assignee cannot complete or reject its own Review Submission.
+- Task Claim stores the verified `runtime` and `session_id` supplied by Remote's signed Agent binding. Never accept a caller-authored Session id/socket URL or infer a latest Session by Agent.
 - Task dependencies: `depends_on` JSON array, cycle detection via recursive CTE (taskDeps.ts), `blocked` computed on read
 - Task origin: `created_from` for single-level subtask tracking
-- Stale detection: write-on-read in GET /api/boards/:id and inline before assign (taskStale.ts). 2h timeout, idempotent.
-- SSE: TransformStream-based, 2s poll for 25s (CF Workers limit), Last-Event-ID resume via log ID → timestamp resolution (sse.ts). Emits typed events (`event: log` for task_logs, `event: message` for messages).
-- Messages: `messages` table for human ↔ agent chat. `agent_id` = agent runtime session ID. D1 as message bus — AMA/runtime sessions handle agent-side delivery, browser reads via SSE.
-- Runtime implementation: **AMA is the current source of truth** for runtime dispatch, quota/usage, health, and schedulability. Check `apps/web/server/amaRuntime.ts`, `apps/web/server/taskDispatch.ts`, AMA runner/provider data, and related API routes before considering any legacy local daemon behavior.
-- `ak start` is the current supported entrypoint for starting a local AK runtime/machine context. The deprecated part is the old local daemon scheduling implementation and historical assumptions about daemon polling/provider availability, not the `ak start` command itself. Do not use old daemon heartbeat, local provider availability, or legacy daemon smoke behavior as the explanation for current runtime scheduling unless the task explicitly asks about legacy daemon support.
-- Repo management: `ak create repo` registers repo at tenant level. `ak get repo` lists registered repos.
-- Data model: Board is the workspace unit. Repositories belong to owner (tenant-level, like machines). Tasks belong to boards, optionally linked to a repository. Machines belong to owner (user/org).
+- SSE: TransformStream-based, 2s poll for 25s (CF Workers limit), Last-Event-ID resume via Task Note ID → timestamp resolution. Task streams emit Task Notes only.
+- Agency is the source of truth for runtime work. Remote's signed binding supplies claim provenance; AK resolves that exact binding through Agency and relays Session events read-only without forwarding runtime commands.
+- The v2 `ak` CLI is removed. Do not add new CLI commands or runtime behavior; expose Agent operations through the Resource Server and Realmroot Toolbox.
+- v1-to-v2 data migration is a separate deliverable. Do not add compatibility
+  readers, verifiers, cleanup ledgers, destructive cutover jobs, or legacy
+  runtime fallbacks to the v2 application. The future upgrade must stop unless
+  every v1 Task is `done` or `cancelled`.
+- Data model: Board is the workspace unit. Repositories belong to owner (tenant-level). Tasks belong to boards, optionally linked to a repository.
+- BDD source of truth: product behaviour lives in `spec/*.feature`; proving tests carry `[spec: capability/scenario]`.
 
 ## Post-Write Workflow
 After every significant code change, follow this sequence:
 
 1. **Test** — invoke test-writer agent to write/update unit/integration tests and run them.
-   - If changes touch frontend components (`apps/web/src/`), also invoke playwright-test-generator agent to create/update E2E tests, and playwright-test-healer to fix any broken existing E2E tests.
-   - ALL PASS → proceed to step 2.
+   - If changes touch frontend components (`src/`), also invoke playwright-test-generator agent to create/update E2E tests, and playwright-test-healer to fix any broken existing E2E tests.
+   - All behavior-selected cases pass → proceed to step 2.
    - FAILURES → you (main agent) read the failure, decide if the bug is in source code or test code.
      - Source bug → fix the source code, re-run tests yourself.
      - Test bug → state why the test is wrong, then forward to test-writer (unit) or playwright-test-healer (E2E) agent to fix.
-   - After all tests pass, proceed to step 2.
+   - After the behavior-selected cases pass, proceed to step 2.
 2. **Review** — invoke clean-code-reviewer agent (reviews both source and test code).
    - REVISE on source code → you (main agent) fix, then re-run review.
    - REVISE on test code → forward issues to the appropriate test agent to fix.
    - PASS → proceed to step 3.
 
 **Ownership rule**: you (main agent) only modify source code. Test code is owned by test agents — all test modifications go through them.
-3. **Regression** — run build + type check + full test suite to catch breakage.
-   - `pnpm build && pnpm typecheck && npx vitest run`
-   - Use `pnpm typecheck`, NOT `tsc --noEmit` at the root: the root tsconfig is solution-style (`files: []` + `references`), so `tsc --noEmit` there checks nothing. `pnpm typecheck` runs `tsc --noEmit` per project (shared, cli, web/server/worker) and actually catches type errors.
-   - Any failure → fix and re-run. If fix touches source code, go back to step 1.
-4. **Legacy daemon smoke test** — if changes explicitly touch deprecated daemon code (`packages/cli/src/daemon/`), run `./scripts/daemon-smoke-test.sh` and ensure it passes before considering that legacy path done.
-   - Before smoke, always refresh the local CLI with `bash scripts/install-cli.sh`.
-   - Smoke is mandatory. Missing arguments are not a reason to skip it: discover existing resources with `ak get board -o json`, `ak get repo -o json`, and `ak get agent -o json`, or create the missing resources.
-   - The default smoke target is the Demo board with the `slink` repository. The smoke script auto-discovers these defaults when arguments are omitted.
-
+3. **Agent development verification** — follow `docs/designs/next/05-test-pyramid.md`.
+   Before running anything, identify the observable behavior changed and the
+   smallest set of exact cases that proves it. Run only those cases. Do not
+   default to a whole test file, package, layer, or repository suite.
+   - Apply the same rule to static checks. Select the smallest command that
+     covers the changed boundary; do not repeatedly run all checks while iterating.
+   - Any failure → fix and re-run the failed or directly affected cases. If the
+     fix touches source code, go back to step 1.
 ## Testing
 - Framework: vitest (root `vitest.config.ts`)
-- Run: `npx vitest run`
+- Normative layer and case-placement rules:
+  `docs/designs/next/05-test-pyramid.md`
+- Default run: exact named cases selected from the changed behavior. Use an
+  owning file only when every case in it is relevant. Do not run a complete
+  layer or default to `npx vitest run`.
 - Run with coverage: `npx vitest run --coverage --coverage.include='<glob>'`
 - Coverage provider: `@vitest/coverage-v8` (install with `pnpm add -Dw @vitest/coverage-v8` if missing)
-- Tests in `tests/` directory
-- Unit/integration tests: `*.test.ts` — direct import of modules, real D1 via Miniflare (no mocks)
+- Pure domain/use-case/component tests live beside their owning source. Cross-
+  boundary integration and contract tests live in `tests/`; browser journeys
+  live in `e2e/`.
+- Unit tests use pure dependencies or explicit port fakes and never Miniflare.
+- Adapter/migration and HTTP integration tests may use real D1 via Miniflare
+  with bounded workers and explicit disposal. Contract tests verify the
+  published schema/runtime agreement without depending on repository internals.
 - E2E tests: `*.spec.ts` — Playwright browser tests
-- Test data setup: Miniflare D1 with migrations from `apps/web/migrations/`, seed helpers in test files
+- Test data setup: Miniflare D1 with migrations from `migrations/`, seed helpers in test files

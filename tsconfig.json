@@ -1,4 +1,22 @@
 {
-  "files": [],
-  "references": [{ "path": "apps/web" }, { "path": "packages/cli" }, { "path": "packages/shared" }]
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "types": ["@cloudflare/workers-types"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@server/*": ["./server/*"],
+      "@shared": ["./shared/index.ts"],
+      "@shared/*": ["./shared/*"]
+    }
+  },
+  "include": ["src", "server", "shared", "*.ts"],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx", "tests", "e2e"]
 }

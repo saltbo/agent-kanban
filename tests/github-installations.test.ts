@@ -18,14 +18,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { importJWK, SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createTestAgent, createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
+import { createTestWebSession, seedUser, setupMiniflare } from "./helpers/db";
 
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
-const REALMROOT_ISSUER = "https://github-installations.realmroot.test";
-const AK_RESOURCE = "http://localhost/api";
+const OIDC_ISSUER = "https://github-installations.realmroot.test";
+const AK_PUBLIC_ORIGIN = "http://localhost";
 
 let db: D1Database;
 let mf: Miniflare;
@@ -66,19 +65,15 @@ const sharedPrivateKey =
 function makeEnv(overrides: Record<string, unknown> = {}): any {
   return {
     DB: db,
-    AE: { writeDataPoint: () => {} } as any,
     EMAIL: { send: async () => ({ messageId: "test" }) } as any,
-    TUNNEL_RELAY: null as any,
     ASSETS: null as any,
     AUTH_SECRET: "test-secret-32-chars-minimum-ok!!",
     ALLOWED_HOSTS: "localhost:8788",
     GITHUB_CLIENT_ID: "x",
     GITHUB_CLIENT_SECRET: "x",
-    MAILS_ADMIN_TOKEN: "",
     GITHUB_APP_WEBHOOK_SECRET: WEBHOOK_SECRET,
-    REALMROOT_ISSUER,
-    REALMROOT_CLI_CLIENT_ID: "ak-cli-test",
-    AK_RESOURCE,
+    OIDC_ISSUER,
+    AK_PUBLIC_ORIGIN,
     ...overrides,
   };
 }
@@ -98,7 +93,7 @@ async function apiRequest(
   envOverrides: Record<string, unknown> = {},
   token?: string,
 ) {
-  const { api } = await import("../apps/web/server/routes");
+  const { api } = await import("../server/http/app");
   const allHeaders: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http", ...headers };
   if (token?.includes(":csrf:")) {
     const [sessionToken, csrfToken] = token.split(":csrf:");
@@ -123,40 +118,6 @@ async function createVerifiedUserToken(): Promise<{ token: string; userId: strin
   return { token: `${session.token}:csrf:${session.csrfToken}`, userId };
 }
 
-async function createAkAgentAuthorization(ownerId: string, agentId: string, sessionId?: string) {
-  const resolvedSessionId = sessionId ?? (await createBoundAgentSession(ownerId, agentId));
-  const identity = await db.prepare("SELECT private_key FROM agents WHERE id = ? AND owner_id = ?").bind(agentId, ownerId).first<{
-    private_key: string;
-  }>();
-  if (!identity) throw new Error("Agent signing identity was not found");
-  const privateKey = await importJWK(JSON.parse(identity.private_key), "EdDSA");
-  const accessToken = await new SignJWT({ aid: agentId, jti: randomUUID() })
-    .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
-    .setAudience("http://localhost")
-    .setSubject(resolvedSessionId)
-    .setIssuedAt()
-    .setExpirationTime("1m")
-    .sign(privateKey);
-  return { accessToken, sessionId: resolvedSessionId };
-}
-
-async function createBoundAgentSession(ownerId: string, agentId: string): Promise<string> {
-  const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
-  const agent = await db.prepare("SELECT public_key FROM agents WHERE id = ? AND owner_id = ?").bind(agentId, ownerId).first<{
-    public_key: string;
-  }>();
-  if (!agent) throw new Error("Agent public key was not found");
-  const sessionId = randomUUID();
-  await createAmaAgentSession(db, makeEnv(), {
-    ownerId,
-    agentId,
-    sessionId,
-    sessionPublicKey: agent.public_key,
-    amaSessionId: `ama-session-${sessionId}`,
-  });
-  return sessionId;
-}
-
 beforeAll(async () => {
   ({ mf, db } = await setupMiniflare());
 });
@@ -174,7 +135,7 @@ afterEach(() => {
 
 describe("upsertInstallation", () => {
   it("inserts a new installation row", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 100_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -191,7 +152,7 @@ describe("upsertInstallation", () => {
   });
 
   it("stores account_login lowercased", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 200_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -208,7 +169,7 @@ describe("upsertInstallation", () => {
   });
 
   it("COALESCE: does NOT overwrite an existing owner_id when upserted with null owner", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 300_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -232,7 +193,7 @@ describe("upsertInstallation", () => {
   });
 
   it("COALESCE: sets owner_id when first inserted with null then upserted with a value", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 400_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -255,7 +216,7 @@ describe("upsertInstallation", () => {
   });
 
   it("updates repository_selection on conflict", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 500_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -283,7 +244,7 @@ describe("upsertInstallation", () => {
 
 describe("deleteInstallation", () => {
   it("removes the installation row", async () => {
-    const { upsertInstallation, deleteInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, deleteInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 600_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -298,7 +259,7 @@ describe("deleteInstallation", () => {
   });
 
   it("removes child repository rows when installation is deleted", async () => {
-    const { upsertInstallation, deleteInstallation, addInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, deleteInstallation, addInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 700_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -318,7 +279,7 @@ describe("deleteInstallation", () => {
 
 describe("setInstallationSuspended", () => {
   it("sets suspended_at to a timestamp when suspended", async () => {
-    const { upsertInstallation, setInstallationSuspended } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, setInstallationSuspended } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 800_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -337,7 +298,7 @@ describe("setInstallationSuspended", () => {
   });
 
   it("clears suspended_at (unsuspend) by setting null", async () => {
-    const { upsertInstallation, setInstallationSuspended } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, setInstallationSuspended } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 810_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -360,7 +321,7 @@ describe("setInstallationSuspended", () => {
 
 describe("replaceInstallationRepositories", () => {
   it("inserts repos from the list", async () => {
-    const { upsertInstallation, replaceInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, replaceInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 900_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -379,7 +340,7 @@ describe("replaceInstallationRepositories", () => {
   });
 
   it("replaces previous repos with the new list", async () => {
-    const { upsertInstallation, replaceInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, replaceInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 910_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -398,7 +359,7 @@ describe("replaceInstallationRepositories", () => {
   });
 
   it("stores full_name lowercased", async () => {
-    const { upsertInstallation, replaceInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, replaceInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 920_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -416,7 +377,7 @@ describe("replaceInstallationRepositories", () => {
   });
 
   it("empties the repo list when passed an empty array", async () => {
-    const { upsertInstallation, replaceInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, replaceInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 930_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -436,7 +397,7 @@ describe("replaceInstallationRepositories", () => {
 
 describe("addInstallationRepositories", () => {
   it("inserts the given repos", async () => {
-    const { upsertInstallation, addInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, addInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 1_000_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -457,7 +418,7 @@ describe("addInstallationRepositories", () => {
   });
 
   it("is a no-op when repos array is empty", async () => {
-    const { upsertInstallation, addInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, addInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 1_010_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -472,7 +433,7 @@ describe("addInstallationRepositories", () => {
   });
 
   it("is idempotent (INSERT OR IGNORE)", async () => {
-    const { upsertInstallation, addInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, addInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 1_020_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -494,7 +455,7 @@ describe("addInstallationRepositories", () => {
 describe("removeInstallationRepositories", () => {
   it("removes the specified repos", async () => {
     const { upsertInstallation, addInstallationRepositories, removeInstallationRepositories } = await import(
-      "../apps/web/server/githubInstallations"
+      "../server/adapters/github/githubInstallations"
     );
     const id = Math.floor(Math.random() * 1_000_000) + 1_100_000;
     await upsertInstallation(db, {
@@ -515,7 +476,7 @@ describe("removeInstallationRepositories", () => {
 
   it("is a no-op when fullNames array is empty", async () => {
     const { upsertInstallation, addInstallationRepositories, removeInstallationRepositories } = await import(
-      "../apps/web/server/githubInstallations"
+      "../server/adapters/github/githubInstallations"
     );
     const id = Math.floor(Math.random() * 1_000_000) + 1_110_000;
     await upsertInstallation(db, {
@@ -533,7 +494,7 @@ describe("removeInstallationRepositories", () => {
 
   it("matches case-insensitively (lowercases input before delete)", async () => {
     const { upsertInstallation, addInstallationRepositories, removeInstallationRepositories } = await import(
-      "../apps/web/server/githubInstallations"
+      "../server/adapters/github/githubInstallations"
     );
     const id = Math.floor(Math.random() * 1_000_000) + 1_120_000;
     await upsertInstallation(db, {
@@ -554,13 +515,13 @@ describe("removeInstallationRepositories", () => {
 
 describe("handleGithubInstallationEvent", () => {
   it("returns handled:false when installation id is missing", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const result = await handleGithubInstallationEvent(db, { action: "created", installation: undefined });
     expect(result.handled).toBe(false);
   });
 
   it("inserts a new installation row on 'created' with selection 'all'", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_300_000;
     const result = await handleGithubInstallationEvent(db, {
       action: "created",
@@ -577,7 +538,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("owner remains NULL when no github account row matches", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_310_000;
     await handleGithubInstallationEvent(db, {
       action: "created",
@@ -588,7 +549,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("seeds selected-repo rows when selection is 'selected' with repositories in payload", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_320_000;
     await handleGithubInstallationEvent(db, {
       action: "created",
@@ -606,7 +567,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("deletes the installation row on 'deleted'", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_340_000;
     await handleGithubInstallationEvent(db, {
       action: "created",
@@ -622,7 +583,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("deletes selected-repo rows when installation is deleted", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_350_000;
     await handleGithubInstallationEvent(db, {
       action: "created",
@@ -638,7 +599,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("sets suspended_at on 'suspend'", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_360_000;
     await handleGithubInstallationEvent(db, {
       action: "created",
@@ -657,7 +618,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("clears suspended_at on 'unsuspend'", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_370_000;
     const ts = new Date().toISOString();
     await handleGithubInstallationEvent(db, {
@@ -676,7 +637,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("is idempotent: sending 'created' twice results in one row", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_380_000;
     const payload = {
       action: "created" as const,
@@ -689,7 +650,7 @@ describe("handleGithubInstallationEvent", () => {
   });
 
   it("returns handled:false and skips upsert when account info is missing", async () => {
-    const { handleGithubInstallationEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_390_000;
     const result = await handleGithubInstallationEvent(db, {
       action: "created",
@@ -705,14 +666,14 @@ describe("handleGithubInstallationEvent", () => {
 
 describe("handleGithubInstallationRepositoriesEvent", () => {
   it("returns handled:false when installation id is missing", async () => {
-    const { handleGithubInstallationRepositoriesEvent } = await import("../apps/web/server/githubWebhook");
+    const { handleGithubInstallationRepositoriesEvent } = await import("../server/adapters/github/githubWebhook");
     const result = await handleGithubInstallationRepositoriesEvent(db, { action: "added", installation: undefined });
     expect(result.handled).toBe(false);
   });
 
   it("adds repository rows on 'added' action", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
-    const { handleGithubInstallationRepositoriesEvent } = await import("../apps/web/server/githubWebhook");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
+    const { handleGithubInstallationRepositoriesEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_400_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -736,8 +697,8 @@ describe("handleGithubInstallationRepositoriesEvent", () => {
   });
 
   it("removes repository rows on 'removed' action", async () => {
-    const { upsertInstallation, addInstallationRepositories } = await import("../apps/web/server/githubInstallations");
-    const { handleGithubInstallationRepositoriesEvent } = await import("../apps/web/server/githubWebhook");
+    const { upsertInstallation, addInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
+    const { handleGithubInstallationRepositoriesEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_410_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -762,8 +723,8 @@ describe("handleGithubInstallationRepositoriesEvent", () => {
   });
 
   it("clears selected-repo rows when selection flips to 'all'", async () => {
-    const { upsertInstallation, addInstallationRepositories } = await import("../apps/web/server/githubInstallations");
-    const { handleGithubInstallationRepositoriesEvent } = await import("../apps/web/server/githubWebhook");
+    const { upsertInstallation, addInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
+    const { handleGithubInstallationRepositoriesEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_420_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -805,7 +766,7 @@ describe("repoAppStatus / repoAppStatusBatch", () => {
     repos: string[] = [],
     suspendedAt: string | null = null,
   ) {
-    const { upsertInstallation, replaceInstallationRepositories } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, replaceInstallationRepositories } = await import("../server/adapters/github/githubInstallations");
     const id = installForCounter++;
     await upsertInstallation(db, {
       installationId: id,
@@ -827,46 +788,46 @@ describe("repoAppStatus / repoAppStatusBatch", () => {
   }
 
   it("returns 'covered' for any repo under account when selection is 'all'", async () => {
-    const { repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     await installFor(OWNER_A, "allcovered-acme", 1001, "all");
     expect(await repoAppStatus(db, OWNER_A, "allcovered-acme/anything")).toBe("covered");
     expect(await repoAppStatus(db, OWNER_A, "allcovered-acme/other")).toBe("covered");
   });
 
   it("returns 'covered' only for listed repos when selection is 'selected'", async () => {
-    const { repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     await installFor(OWNER_A, "selcovered-corp", 1002, "selected", ["selcovered-corp/listed-repo"]);
     expect(await repoAppStatus(db, OWNER_A, "selcovered-corp/listed-repo")).toBe("covered");
     expect(await repoAppStatus(db, OWNER_A, "selcovered-corp/unlisted-repo")).toBe("not_covered");
   });
 
   it("returns 'suspended' when installation suspended_at is set", async () => {
-    const { repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     await installFor(OWNER_A, "suspendedacct", 1003, "all", [], new Date().toISOString());
     expect(await repoAppStatus(db, OWNER_A, "suspendedacct/any-repo")).toBe("suspended");
   });
 
   it("returns 'app_not_installed' when no installation exists for the account", async () => {
-    const { repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     expect(await repoAppStatus(db, OWNER_A, "nonexistent-account/repo")).toBe("app_not_installed");
   });
 
   it("is case-insensitive (Acme/Repo vs stored acme/repo)", async () => {
-    const { repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     await installFor(OWNER_A, "CaseOrg", 1004, "selected", ["CaseOrg/MyRepo"]);
     expect(await repoAppStatus(db, OWNER_A, "CaseOrg/MyRepo")).toBe("covered");
     expect(await repoAppStatus(db, OWNER_A, "caseorg/myrepo")).toBe("covered");
   });
 
   it("cross-tenant isolation: owner B's install on 'sharedacct' does not cover owner A's query", async () => {
-    const { repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     await installFor(OWNER_B, "sharedacct", 1005, "all");
     // Owner A has no installation on sharedacct
     expect(await repoAppStatus(db, OWNER_A, "sharedacct/shared-repo")).toBe("app_not_installed");
   });
 
   it("repoAppStatusBatch returns a map keyed by the original input strings", async () => {
-    const { repoAppStatusBatch } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatusBatch } = await import("../server/adapters/github/githubInstallations");
     await installFor(OWNER_A, "batchacct", 1006, "selected", ["batchacct/repo-a"]);
     const result = await repoAppStatusBatch(db, OWNER_A, ["batchacct/repo-a", "batchacct/repo-b"]);
     expect(result.get("batchacct/repo-a")).toBe("covered");
@@ -874,7 +835,7 @@ describe("repoAppStatus / repoAppStatusBatch", () => {
   });
 
   it("repoAppStatusBatch returns empty map for empty input", async () => {
-    const { repoAppStatusBatch } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatusBatch } = await import("../server/adapters/github/githubInstallations");
     const result = await repoAppStatusBatch(db, OWNER_A, []);
     expect(result.size).toBe(0);
   });
@@ -884,7 +845,7 @@ describe("repoAppStatus / repoAppStatusBatch", () => {
 
 describe("getInstallationsForOwner", () => {
   it("returns only installations belonging to the given owner", async () => {
-    const { upsertInstallation, getInstallationsForOwner } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, getInstallationsForOwner } = await import("../server/adapters/github/githubInstallations");
     const owner1 = `owner-list-1-${randomUUID()}`;
     const owner2 = `owner-list-2-${randomUUID()}`;
     const id1 = Math.floor(Math.random() * 1_000_000) + 3_000_000;
@@ -912,13 +873,13 @@ describe("getInstallationsForOwner", () => {
   });
 
   it("returns empty array when owner has no installations", async () => {
-    const { getInstallationsForOwner } = await import("../apps/web/server/githubInstallations");
+    const { getInstallationsForOwner } = await import("../server/adapters/github/githubInstallations");
     const result = await getInstallationsForOwner(db, "owner-with-no-installs");
     expect(result).toHaveLength(0);
   });
 
   it("parses fields correctly from the row", async () => {
-    const { upsertInstallation, getInstallationsForOwner } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, getInstallationsForOwner } = await import("../server/adapters/github/githubInstallations");
     const owner = `owner-parse-${randomUUID()}`;
     const id = Math.floor(Math.random() * 1_000_000) + 3_200_000;
     const ts = new Date().toISOString();
@@ -965,7 +926,7 @@ describe("POST /api/webhooks/github-app — installation events", () => {
   });
 
   it("handles installation 'deleted' event via route", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 4_100_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -986,7 +947,7 @@ describe("POST /api/webhooks/github-app — installation events", () => {
   });
 
   it("handles installation_repositories 'added' event via route", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 4_200_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -1083,7 +1044,7 @@ describe("GET /api/github-app/config", () => {
   });
 
   it("returns installed:true + accounts list when owner has a non-suspended installation", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const { token, userId } = await createVerifiedUserToken();
     const installId = Math.floor(Math.random() * 1_000_000) + 8_000_000;
     await upsertInstallation(db, {
@@ -1113,7 +1074,7 @@ describe("GET /api/github-app/config", () => {
   });
 
   it("returns installed:false when owner's installation is suspended", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const { token, userId } = await createVerifiedUserToken();
     const installId = Math.floor(Math.random() * 1_000_000) + 8_100_000;
     await upsertInstallation(db, {
@@ -1146,7 +1107,7 @@ describe("app_status on /api/repositories read model", () => {
   });
 
   it("repoAppStatus returns 'covered' after installing app on the account", async () => {
-    const { upsertInstallation, repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 5_000_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -1161,13 +1122,13 @@ describe("app_status on /api/repositories read model", () => {
   });
 
   it("repoAppStatus returns 'app_not_installed' for a repo with no installation", async () => {
-    const { repoAppStatus } = await import("../apps/web/server/githubInstallations");
+    const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     const status = await repoAppStatus(db, OWNER, "no-install-org/random-repo");
     expect(status).toBe("app_not_installed");
   });
 
   it("repoAppStatusBatch includes all requested repos in result map", async () => {
-    const { upsertInstallation, repoAppStatusBatch } = await import("../apps/web/server/githubInstallations");
+    const { upsertInstallation, repoAppStatusBatch } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 5_100_000;
     await upsertInstallation(db, {
       installationId: id,
@@ -1219,7 +1180,7 @@ describe("recordInstallationFromSetup", () => {
   });
 
   it("upserts the installation under the owner when fetch returns 'all' selection", async () => {
-    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_000_000;
 
     vi.stubGlobal(
@@ -1256,7 +1217,7 @@ describe("recordInstallationFromSetup", () => {
   });
 
   it("accepts a GitHub App private key PEM with escaped newlines", async () => {
-    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_050_000;
 
     vi.stubGlobal(
@@ -1284,7 +1245,7 @@ describe("recordInstallationFromSetup", () => {
   });
 
   it("accepts GitHub's RSA PRIVATE KEY PEM shape", async () => {
-    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_060_000;
     const rsaPrivateKey = "-----BEGIN RSA PRIVATE KEY-----\n" + "AQIDBAUGBwgJCgsMDQ4PEA==\n" + "-----END RSA PRIVATE KEY-----";
 
@@ -1313,7 +1274,7 @@ describe("recordInstallationFromSetup", () => {
   });
 
   it("upserts the installation and stores selected repos when selection is 'selected'", async () => {
-    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_100_000;
 
     vi.stubGlobal(
@@ -1367,20 +1328,26 @@ describe("recordInstallationFromSetup", () => {
   });
 
   it("throws when GitHub API returns non-ok for getInstallation", async () => {
-    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_200_000;
+    const credentialSentinel = "github-upstream-credential-sentinel";
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("Not Found", { status: 404 })),
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        return new Response(credentialSentinel, { status: 404 });
+      }),
     );
 
     const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey, GITHUB_APP_SLUG: "agent-kanban" });
-    await expect(recordInstallationFromSetup(db, env, OWNER, installId)).rejects.toThrow(/404/);
+    const error = await recordInstallationFromSetup(db, env, OWNER, installId).catch((caught: unknown) => caught);
+    expect(error).toEqual(new Error(`GitHub get installation ${installId} failed (HTTP 404)`));
+    expect(String(error)).not.toContain(credentialSentinel);
   });
 
   it("throws when mintInstallationWideToken fails (access_tokens returns non-ok)", async () => {
-    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_300_000;
 
     vi.stubGlobal(
@@ -1410,7 +1377,7 @@ describe("recordInstallationFromSetup", () => {
   });
 
   it("throws when listInstallationRepositories list call returns non-ok", async () => {
-    const { listInstallationRepositories } = await import("../apps/web/server/githubApp");
+    const { listInstallationRepositories } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_400_000;
 
     vi.stubGlobal(
@@ -1431,408 +1398,8 @@ describe("recordInstallationFromSetup", () => {
     await expect(listInstallationRepositories(env, installId)).rejects.toThrow(/500/);
   });
 
-  it("POST /api/repositories/:id/github-token returns a repo-scoped installation token", async () => {
-    const { token, userId } = await createVerifiedUserToken();
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    await upsertInstallation(db, {
-      installationId: 7_777,
-      ownerId: userId,
-      accountLogin: "auth-org",
-      accountId: 7_777,
-      accountType: "Organization",
-      repositorySelection: "all",
-    });
-    const repo = await createRepository(db, userId, {
-      name: `auth-repo-${randomUUID()}`,
-      url: "https://github.com/auth-org/auth-repo",
-    });
-    const requests: Array<{ url: string; method: string; body: string }> = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = input instanceof Request ? input.url : String(input);
-        const method = input instanceof Request ? input.method : ((init as any)?.method ?? "GET");
-        const body = input instanceof Request ? await input.clone().text() : String((init as any)?.body ?? "");
-        requests.push({ url, method, body });
-        if (url === "https://api.github.com/repos/auth-org/auth-repo/installation") {
-          return new Response(JSON.stringify({ id: 7_777 }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        if (url === "https://api.github.com/app/installations/7777/access_tokens") {
-          return new Response(JSON.stringify({ token: "ghs_repo_scoped", expires_at: "2026-06-25T13:00:00Z" }), {
-            status: 201,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        throw new Error(`Unexpected fetch: ${url}`);
-      }),
-    );
-
-    const res = await apiRequest(
-      "POST",
-      `/api/repositories/${repo.id}/github-token`,
-      undefined,
-      {},
-      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-      token,
-    );
-
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body).toEqual({
-      repository_id: repo.id,
-      full_name: "auth-org/auth-repo",
-      token: "ghs_repo_scoped",
-      expires_at: "2026-06-25T13:00:00Z",
-    });
-    const tokenRequest = requests.find((request) => request.url.endsWith("/access_tokens"));
-    expect(tokenRequest?.method).toBe("POST");
-    expect(JSON.parse(tokenRequest?.body ?? "{}")).toEqual({
-      repositories: ["auth-repo"],
-      permissions: { contents: "write", issues: "write", pull_requests: "write" },
-    });
-  });
-
-  it("POST /api/repositories/:id/github-token allows an active maintainer worker for its board repository", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
-    const { createBoard } = await import("../apps/web/server/boardRepo");
-    const { createBoardMaintainer } = await import("../apps/web/server/boardMaintainerRepo");
-    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const ownerId = `maintainer-token-owner-${randomUUID()}`;
-    await seedUser(db, ownerId, `${ownerId}@test.local`);
-    await upsertInstallation(db, {
-      installationId: 8_001,
-      ownerId,
-      accountLogin: "maintainer-auth-org",
-      accountId: 8_001,
-      accountType: "Organization",
-      repositorySelection: "all",
-    });
-    const board = await createBoard(db, ownerId, `maintainer-token-board-${randomUUID()}`, "dev");
-    const repo = await createRepository(db, ownerId, {
-      name: `maintainer-token-repo-${randomUUID()}`,
-      url: "https://github.com/maintainer-auth-org/maintainer-auth-repo",
-    });
-    await recordBoardRepository(db, board.id, repo.id);
-    const agent = await createTestAgent(db, ownerId, {
-      name: "Maintainer worker",
-      username: `maintainer-worker-${randomUUID()}`,
-      runtime: "claude",
-      role: "board-maintainer",
-    });
-    await createBoardMaintainer(db, ownerId, {
-      boardId: board.id,
-      agentId: agent.id,
-      amaScheduleId: `sched-${randomUUID()}`,
-      amaHttpTriggerId: `http-${randomUUID()}`,
-      amaMemoryStoreId: `mem-${randomUUID()}`,
-      prompt: "Maintain the board",
-      intervalSeconds: 3600,
-      heartbeatEnabled: true,
-      status: "active",
-    });
-    const path = `/api/repositories/${repo.id}/github-token`;
-    const authority = await createAkAgentAuthorization(ownerId, agent.id);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = input instanceof Request ? input.url : String(input);
-        if (url === "https://api.github.com/repos/maintainer-auth-org/maintainer-auth-repo/installation") {
-          return new Response(JSON.stringify({ id: 8_001 }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        if (url === "https://api.github.com/app/installations/8001/access_tokens") {
-          const body = input instanceof Request ? await input.clone().text() : String((init as any)?.body ?? "");
-          expect(JSON.parse(body)).toEqual({
-            repositories: ["maintainer-auth-repo"],
-            permissions: { contents: "write", issues: "write", pull_requests: "write" },
-          });
-          return new Response(JSON.stringify({ token: "ghs_maintainer_worker", expires_at: "2026-06-25T14:00:00Z" }), {
-            status: 201,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        throw new Error(`Unexpected fetch: ${url}`);
-      }),
-    );
-
-    const res = await apiRequest(
-      "POST",
-      path,
-      undefined,
-      { Authorization: `Bearer ${authority.accessToken}` },
-      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-    );
-
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      repository_id: repo.id,
-      full_name: "maintainer-auth-org/maintainer-auth-repo",
-      token: "ghs_maintainer_worker",
-    });
-  });
-
-  it("POST /api/repositories/:id/github-token rejects a worker that is not an active maintainer for the repository", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
-    const { createBoard } = await import("../apps/web/server/boardRepo");
-    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const ownerId = `plain-worker-token-owner-${randomUUID()}`;
-    await seedUser(db, ownerId, `${ownerId}@test.local`);
-    await upsertInstallation(db, {
-      installationId: 8_002,
-      ownerId,
-      accountLogin: "plain-worker-org",
-      accountId: 8_002,
-      accountType: "Organization",
-      repositorySelection: "all",
-    });
-    const board = await createBoard(db, ownerId, `plain-worker-board-${randomUUID()}`, "dev");
-    const repo = await createRepository(db, ownerId, {
-      name: `plain-worker-repo-${randomUUID()}`,
-      url: "https://github.com/plain-worker-org/plain-worker-repo",
-    });
-    await recordBoardRepository(db, board.id, repo.id);
-    const worker = await createTestAgent(db, ownerId, {
-      name: "Plain worker",
-      username: `plain-worker-${randomUUID()}`,
-      runtime: "claude",
-    });
-    const path = `/api/repositories/${repo.id}/github-token`;
-    const authority = await createAkAgentAuthorization(ownerId, worker.id);
-    const githubFetch = vi.fn(async () => {
-      throw new Error("GitHub must not be called for an unauthorized Agent");
-    });
-    vi.stubGlobal("fetch", githubFetch);
-
-    const res = await apiRequest(
-      "POST",
-      path,
-      undefined,
-      { Authorization: `Bearer ${authority.accessToken}` },
-      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-    );
-
-    expect(res.status).toBe(403);
-    const body = (await res.json()) as any;
-    expect(body.error.message).toBe("Worker agent is not an active maintainer or current task worker for this repository");
-    expect(githubFetch).not.toHaveBeenCalled();
-  });
-
-  it("POST /api/repositories/:id/github-token allows the current task worker for its task repository", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
-    const { createBoard } = await import("../apps/web/server/boardRepo");
-    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const { createTask } = await import("../apps/web/server/taskRepo");
-    const ownerId = `task-worker-token-owner-${randomUUID()}`;
-    await seedUser(db, ownerId, `${ownerId}@test.local`);
-    await upsertInstallation(db, {
-      installationId: 8_003,
-      ownerId,
-      accountLogin: "task-worker-org",
-      accountId: 8_003,
-      accountType: "Organization",
-      repositorySelection: "all",
-    });
-    const board = await createBoard(db, ownerId, `task-worker-board-${randomUUID()}`, "dev");
-    const repo = await createRepository(db, ownerId, {
-      name: `task-worker-repo-${randomUUID()}`,
-      url: "https://github.com/task-worker-org/task-worker-repo",
-    });
-    await recordBoardRepository(db, board.id, repo.id);
-    const worker = await createTestAgent(db, ownerId, {
-      name: "Task worker",
-      username: `task-worker-${randomUUID()}`,
-      runtime: "claude",
-    });
-    const sessionId = await createBoundAgentSession(ownerId, worker.id);
-    await createTask(db, ownerId, {
-      title: "Use task-scoped GitHub auth",
-      board_id: board.id,
-      assigned_to: worker.id,
-      repository_id: repo.id,
-      metadata: { annotations: { agentSessionId: sessionId } },
-      skipRuntimeAvailability: true,
-    });
-    const path = `/api/repositories/${repo.id}/github-token`;
-    const authority = await createAkAgentAuthorization(ownerId, worker.id, sessionId);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = input instanceof Request ? input.url : String(input);
-        if (url === "https://api.github.com/repos/task-worker-org/task-worker-repo/installation") {
-          return new Response(JSON.stringify({ id: 8_003 }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        if (url === "https://api.github.com/app/installations/8003/access_tokens") {
-          const body = input instanceof Request ? await input.clone().text() : String((init as any)?.body ?? "");
-          expect(JSON.parse(body)).toEqual({
-            repositories: ["task-worker-repo"],
-            permissions: { contents: "write", issues: "write", pull_requests: "write" },
-          });
-          return new Response(JSON.stringify({ token: "ghs_task_worker", expires_at: "2026-06-25T15:00:00Z" }), {
-            status: 201,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        throw new Error(`Unexpected fetch: ${url}`);
-      }),
-    );
-
-    const res = await apiRequest(
-      "POST",
-      path,
-      undefined,
-      {
-        Authorization: `Bearer ${authority.accessToken}`,
-      },
-      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-    );
-
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      repository_id: repo.id,
-      full_name: "task-worker-org/task-worker-repo",
-      token: "ghs_task_worker",
-    });
-  });
-
-  it("POST /api/repositories/:id/github-token rejects task workers that are not bound to the requested active task repository", async () => {
-    const { createBoard } = await import("../apps/web/server/boardRepo");
-    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const { createTask } = await import("../apps/web/server/taskRepo");
-
-    const cases = [
-      { name: "session mismatch", taskSession: "other" as const },
-      { name: "repository mismatch", requestOtherRepo: true },
-      { name: "done task", status: "done" },
-      { name: "cancelled task", status: "cancelled" },
-      { name: "assigned to another agent", assignedToOtherAgent: true },
-    ];
-
-    for (const scenario of cases) {
-      const ownerId = `task-worker-deny-${scenario.name.replaceAll(" ", "-")}-${randomUUID()}`;
-      await seedUser(db, ownerId, `${ownerId}@test.local`);
-      const board = await createBoard(db, ownerId, `task-worker-deny-board-${randomUUID()}`, "dev");
-      const repo = await createRepository(db, ownerId, {
-        name: `task-worker-deny-repo-${randomUUID()}`,
-        url: `https://github.com/task-worker-deny-org/${randomUUID()}`,
-      });
-      const otherRepo = await createRepository(db, ownerId, {
-        name: `task-worker-deny-other-repo-${randomUUID()}`,
-        url: `https://github.com/task-worker-deny-org/${randomUUID()}`,
-      });
-      await recordBoardRepository(db, board.id, repo.id);
-      await recordBoardRepository(db, board.id, otherRepo.id);
-      const worker = await createTestAgent(db, ownerId, {
-        name: "Denied task worker",
-        username: `denied-task-worker-${randomUUID()}`,
-        runtime: "claude",
-      });
-      const otherWorker = await createTestAgent(db, ownerId, {
-        name: "Other task worker",
-        username: `other-task-worker-${randomUUID()}`,
-        runtime: "claude",
-      });
-      const sessionId = await createBoundAgentSession(ownerId, worker.id);
-      const task = await createTask(db, ownerId, {
-        title: `Denied task-scoped GitHub auth: ${scenario.name}`,
-        board_id: board.id,
-        assigned_to: scenario.assignedToOtherAgent ? otherWorker.id : worker.id,
-        repository_id: repo.id,
-        metadata: { annotations: { agentSessionId: scenario.taskSession === "other" ? randomUUID() : sessionId } },
-        skipRuntimeAvailability: true,
-      });
-      if (scenario.status) {
-        await db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").bind(scenario.status, new Date().toISOString(), task.id).run();
-      }
-      const path = `/api/repositories/${scenario.requestOtherRepo ? otherRepo.id : repo.id}/github-token`;
-      const authority = await createAkAgentAuthorization(ownerId, worker.id, sessionId);
-      const githubFetch = vi.fn(async () => {
-        throw new Error("GitHub must not be called for an unauthorized task Agent");
-      });
-      vi.stubGlobal("fetch", githubFetch);
-
-      const res = await apiRequest(
-        "POST",
-        path,
-        undefined,
-        {
-          Authorization: `Bearer ${authority.accessToken}`,
-        },
-        { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-      );
-
-      expect(res.status, scenario.name).toBe(403);
-      const body = (await res.json()) as any;
-      expect(body.error.message, scenario.name).toBe("Worker agent is not an active maintainer or current task worker for this repository");
-      expect(githubFetch, scenario.name).not.toHaveBeenCalled();
-      vi.unstubAllGlobals();
-    }
-  }, 30_000);
-
-  it("POST /api/repositories/:id/github-token rejects repos not covered by this owner's GitHub App installation", async () => {
-    const { token, userId } = await createVerifiedUserToken();
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    await upsertInstallation(db, {
-      installationId: 7_778,
-      ownerId: "another-owner",
-      accountLogin: "cross-token-org",
-      accountId: 7_778,
-      accountType: "Organization",
-      repositorySelection: "all",
-    });
-    const repo = await createRepository(db, userId, {
-      name: `cross-token-repo-${randomUUID()}`,
-      url: "https://github.com/cross-token-org/auth-repo",
-    });
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const res = await apiRequest(
-      "POST",
-      `/api/repositories/${repo.id}/github-token`,
-      undefined,
-      {},
-      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-      token,
-    );
-
-    expect(res.status).toBe(403);
-    const body = (await res.json()) as any;
-    expect(body.error.message).toBe("GitHub App is not installed for this owner and repository");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("POST /api/repositories/:id/github-token rejects non-GitHub repositories before fetching GitHub", async () => {
-    const { token, userId } = await createVerifiedUserToken();
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const repo = await createRepository(db, userId, {
-      name: `gitlab-repo-${randomUUID()}`,
-      url: "https://gitlab.com/auth-org/auth-repo",
-    });
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const res = await apiRequest(
-      "POST",
-      `/api/repositories/${repo.id}/github-token`,
-      undefined,
-      {},
-      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
-      token,
-    );
-
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as any;
-    expect(body.error.message).toBe("GitHub auth is only available for github.com repositories");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("throws when GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY is not set", async () => {
-    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const { recordInstallationFromSetup } = await import("../server/adapters/github/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_500_000;
     const env = makeEnv({ GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined });
     await expect(recordInstallationFromSetup(db, env, OWNER, installId)).rejects.toThrow(/not configured/i);
@@ -1849,8 +1416,8 @@ describe("DELETE /api/repositories does not remove installation rows", () => {
   });
 
   it("github_installations row survives after deleting a repository", async () => {
-    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
-    const { createRepository, deleteRepository } = await import("../apps/web/server/repositoryRepo");
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
+    const { createRepository, deleteRepository } = await import("../server/adapters/d1/repositoryRepo");
 
     // Install app
     const installId = Math.floor(Math.random() * 1_000_000) + 7_000_000;

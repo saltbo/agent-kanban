@@ -1,16 +1,18 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.8/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.11/schema.json",
   "files": {
     "includes": [
       "**",
       "!**/dist",
       "!**/node_modules",
       "!**/.wrangler",
+      "!**/playwright-report",
+      "!**/test-results",
       "!**/pnpm-lock.yaml",
       "!**/*.min.js",
       "!**/*.min.css",
       "!**/*.css",
-      "!**/apps/web/src/components/ui"
+      "!**/src/components/ui"
     ]
   },
   "formatter": {
@@ -27,7 +29,7 @@
   },
   "linter": {
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "suspicious": {
         "noExplicitAny": "off",
         "noArrayIndexKey": "off"
@@ -38,7 +40,7 @@
         "useNodejsImportProtocol": "off"
       },
       "a11y": {
-        "recommended": false
+        "preset": "none"
       },
       "correctness": {
         "noUnusedFunctionParameters": "off",

@@ -4,11 +4,6 @@ dist/
 .pages-dev/
 *.local
 
-# Build output
-packages/shared/dist/
-packages/cli/dist/
-packages/cli/native/process-tree/build/
-
 # IDE
 .idea/
 .vscode/
@@ -42,6 +37,7 @@ test-results/
 
 # Playwright MCP logs
 .playwright-mcp/
+.playwright-cli/
 
 # Root wrangler config (local dev workaround)
 /wrangler.jsonc

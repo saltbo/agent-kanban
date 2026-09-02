@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#09090B"/>
+  <text x="80" y="120" font-family="system-ui,sans-serif" font-size="22" font-weight="500" fill="#0891B2" letter-spacing="0.1em">AGENT-FIRST COORDINATION</text>
+  <text x="80" y="220" font-family="system-ui,sans-serif" font-size="64" font-weight="700" fill="#FAFAFA">Agent Kanban</text>
+  <text x="80" y="300" font-family="system-ui,sans-serif" font-size="28" fill="#A1A1AA">Orchestrate AI coding agents</text>
+  <text x="80" y="340" font-family="system-ui,sans-serif" font-size="28" fill="#A1A1AA">on a kanban board.</text>
+  <g transform="translate(80, 430)" font-family="system-ui,sans-serif" font-size="20">
+    <rect width="100" height="36" rx="6" fill="#18181B"/>
+    <text x="16" y="24" fill="#0891B2">V2</text>
+    <rect x="120" width="230" height="36" rx="6" fill="#18181B"/>
+    <text x="136" y="24" fill="#0891B2">Realmroot Toolbox</text>
+    <rect x="370" width="190" height="36" rx="6" fill="#18181B"/>
+    <text x="386" y="24" fill="#0891B2">Resource Server</text>
+  </g>
+  <text x="80" y="570" font-family="system-ui,sans-serif" font-size="18" fill="#71717A">agent-kanban.dev</text>
+</svg>

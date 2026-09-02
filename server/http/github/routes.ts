@@ -1,0 +1,84 @@
+import { listRepositories, normalizeGitUrl } from "@server/adapters/d1/repositoryRepo";
+import { isGithubAppConfigured, listInstallationRepositories, recordInstallationFromSetup } from "@server/adapters/github/githubApp";
+import { getInstallationsForOwner } from "@server/adapters/github/githubInstallations";
+import {
+  handleGithubInstallationEvent,
+  handleGithubInstallationRepositoriesEvent,
+  handleGithubPullRequestEvent,
+  verifyGithubSignature,
+} from "@server/adapters/github/githubWebhook";
+import type { Env } from "@server/env";
+import type { InstallableRepo } from "@shared";
+import type { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+
+export function registerGithubWebhookRoutes(api: Hono<{ Bindings: Env }>): void {
+  api.post("/api/webhooks/github-app", async (c) => {
+    const secret = c.env.GITHUB_APP_WEBHOOK_SECRET;
+    if (!secret) throw new HTTPException(503, { message: "GitHub App webhook is not configured" });
+    const signature = c.req.header("x-hub-signature-256");
+    const body = await c.req.text();
+    if (!signature || !(await verifyGithubSignature(secret, body, signature))) {
+      throw new HTTPException(401, { message: "Invalid webhook signature" });
+    }
+    const event = c.req.header("x-github-event");
+    const payload = JSON.parse(body);
+    if (event === "pull_request") return c.json({ ok: true, ...(await handleGithubPullRequestEvent(c.env.DB, c.env, payload)) });
+    if (event === "installation") return c.json({ ok: true, ...(await handleGithubInstallationEvent(c.env.DB, payload)) });
+    if (event === "installation_repositories") {
+      return c.json({ ok: true, ...(await handleGithubInstallationRepositoriesEvent(c.env.DB, payload)) });
+    }
+    return c.json({ ok: true, handled: false });
+  });
+}
+
+export function registerGithubApplicationRoutes(api: Hono<{ Bindings: Env }>): void {
+  api.get("/api/github-app/config", async (c) => {
+    const slug = c.env.GITHUB_APP_SLUG ?? null;
+    const active = (await getInstallationsForOwner(c.env.DB, c.get("ownerId"))).filter((installation) => installation.suspendedAt === null);
+    return c.json({
+      configured: isGithubAppConfigured(c.env),
+      slug,
+      install_url: slug ? `https://github.com/apps/${slug}/installations/new` : null,
+      installed: active.length > 0,
+      accounts: active.map((installation) => installation.accountLogin),
+    });
+  });
+
+  api.get("/api/github-app/setup", async (c) => {
+    if (!isGithubAppConfigured(c.env)) throw new HTTPException(503, { message: "GitHub App is not configured" });
+    const installationId = Number(c.req.query("installation_id"));
+    if (!Number.isInteger(installationId) || installationId <= 0) {
+      throw new HTTPException(400, { message: "installation_id is required" });
+    }
+    await recordInstallationFromSetup(c.env.DB, c.env, c.get("ownerId"), installationId);
+    return c.redirect("/repositories?app_installed=1");
+  });
+
+  api.get("/api/github-app/repositories", async (c) => {
+    const ownerId = c.get("ownerId");
+    const installations = (await getInstallationsForOwner(c.env.DB, ownerId)).filter((installation) => installation.suspendedAt === null);
+    if (installations.length === 0) return c.json({ installed: false, repositories: [] });
+
+    const existingUrls = new Set((await listRepositories(c.env.DB, ownerId)).map((repository) => repository.url));
+    const remoteRepositories = await Promise.all(
+      installations.map((installation) => listInstallationRepositories(c.env, installation.installationId)),
+    );
+    const seen = new Set<string>();
+    const repositories: InstallableRepo[] = [];
+    for (const repository of remoteRepositories.flat()) {
+      const key = repository.full_name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      repositories.push({
+        full_name: repository.full_name,
+        name: repository.name,
+        clone_url: repository.clone_url,
+        private: repository.private,
+        already_added: existingUrls.has(normalizeGitUrl(repository.clone_url)),
+      });
+    }
+    repositories.sort((left, right) => left.full_name.localeCompare(right.full_name));
+    return c.json({ installed: true, repositories });
+  });
+}

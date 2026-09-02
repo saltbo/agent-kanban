@@ -40,17 +40,17 @@ describe("createSSEResponse", () => {
   let taskId: string;
 
   beforeAll(async () => {
-    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createBoard } = await import("../server/adapters/d1/boardRepo");
     const board = await createBoard(env.DB, "sse-user", "SSE Board", "ops");
     boardId = board.id;
 
-    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { createTask } = await import("../server/adapters/d1/taskRepo");
     const task = await createTask(env.DB, "sse-user", { title: "SSE Task", board_id: boardId });
     taskId = task.id;
   });
 
   it("returns a Response with correct SSE headers", async () => {
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, taskId, null);
     expect(response).toBeInstanceOf(Response);
     expect(response.headers.get("Content-Type")).toBe("text/event-stream");
@@ -59,11 +59,11 @@ describe("createSSEResponse", () => {
   });
 
   it("streams initial logs as SSE events", async () => {
-    const { addTaskAction } = await import("../apps/web/server/taskRepo");
-    await addTaskAction(env.DB, taskId, "machine", "system", "commented", "Log entry 1");
-    await addTaskAction(env.DB, taskId, "machine", "system", "commented", "Log entry 2");
+    const { addTaskAction } = await import("../server/adapters/d1/taskRepo");
+    await addTaskAction(env.DB, taskId, "user", "sse-user", "commented", "Log entry 1");
+    await addTaskAction(env.DB, taskId, "user", "sse-user", "commented", "Log entry 2");
 
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, taskId, null);
     const text = await readSSEUntil(response.body!, (t) => t.includes("Log entry 2"));
 
@@ -74,29 +74,34 @@ describe("createSSEResponse", () => {
     expect(text).toContain("data: ");
   });
 
-  it("streams messages as SSE events", async () => {
-    const { createMessage } = await import("../apps/web/server/messageRepo");
-    await createMessage(env.DB, taskId, "user", "sse-user", "Hello from user");
+  it("streams only Task Notes even when a retained legacy message row exists", async () => {
+    await env.DB.prepare("INSERT INTO messages (id, task_id, sender_type, sender_id, content) VALUES (?, ?, 'user', ?, ?)")
+      .bind("legacy-message-sse", taskId, "sse-user", "Legacy message must stay out of SSE")
+      .run();
+    const { addTaskAction } = await import("../server/adapters/d1/taskRepo");
+    await addTaskAction(env.DB, taskId, "user", "sse-user", "commented", "Visible Task Note");
 
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, taskId, null);
-    const text = await readSSEUntil(response.body!, (t) => t.includes("event: message"));
+    const text = await readSSEUntil(response.body!, (body) => body.includes("Visible Task Note"));
 
-    expect(text).toContain("event: message");
-    expect(text).toContain("Hello from user");
+    expect(text).toContain("event: note");
+    expect(text).toContain("Visible Task Note");
+    expect(text).not.toContain("event: message");
+    expect(text).not.toContain("Legacy message must stay out of SSE");
   });
 
   it("resumes from lastEventId", async () => {
-    const { addTaskAction, getTaskActions } = await import("../apps/web/server/taskRepo");
-    await addTaskAction(env.DB, taskId, "machine", "system", "commented", "Before resume");
+    const { addTaskAction, getTaskActions } = await import("../server/adapters/d1/taskRepo");
+    await addTaskAction(env.DB, taskId, "user", "sse-user", "commented", "Before resume");
     const logsBeforeResume = await getTaskActions(env.DB, taskId);
     const lastLogId = logsBeforeResume[logsBeforeResume.length - 1].id;
 
     // Small delay to ensure distinct timestamp in D1 (millisecond resolution)
     await new Promise((r) => setTimeout(r, 50));
-    await addTaskAction(env.DB, taskId, "machine", "system", "commented", "After resume");
+    await addTaskAction(env.DB, taskId, "user", "sse-user", "commented", "After resume");
 
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, taskId, lastLogId);
     const text = await readSSEUntil(response.body!, (t) => t.includes("After resume"));
 
@@ -104,13 +109,13 @@ describe("createSSEResponse", () => {
   });
 
   it("returns stream for task with only creation log", async () => {
-    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { createTask } = await import("../server/adapters/d1/taskRepo");
     const freshTask = await createTask(env.DB, "sse-user", {
       title: "Fresh SSE Task",
       board_id: boardId,
     });
 
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, freshTask.id, null);
     expect(response).toBeInstanceOf(Response);
     expect(response.headers.get("Content-Type")).toBe("text/event-stream");
@@ -121,45 +126,18 @@ describe("createSSEResponse", () => {
     expect(text).toContain('"action":"created"');
   });
 
-  it("merges logs and messages by time order", async () => {
-    const { createTask, addTaskAction } = await import("../apps/web/server/taskRepo");
-    const { createMessage } = await import("../apps/web/server/messageRepo");
-    const mergeTask = await createTask(env.DB, "sse-user", {
-      title: "Merge SSE Task",
-      board_id: boardId,
-    });
-
-    await createMessage(env.DB, mergeTask.id, "user", "sse-user", "Message first");
-    // Small delay to ensure distinct timestamp in D1 (millisecond resolution)
-    await new Promise((r) => setTimeout(r, 50));
-    await addTaskAction(env.DB, mergeTask.id, "machine", "system", "commented", "Log second");
-
-    const { createSSEResponse } = await import("../apps/web/server/sse");
-    const response = await createSSEResponse(env as any, mergeTask.id, null);
-    const text = await readSSEUntil(response.body!, (t) => t.includes("Message first") && t.includes("Log second"));
-
-    expect(text).toContain("event: message");
-    expect(text).toContain("event: note");
-    expect(text).toContain("Message first");
-    expect(text).toContain("Log second");
-
-    const msgPos = text.indexOf("Message first");
-    const logPos = text.indexOf("Log second");
-    expect(msgPos).toBeLessThan(logPos);
-  });
-
   it("poll loop picks up new events after initial batch", async () => {
-    const { createTask, addTaskAction } = await import("../apps/web/server/taskRepo");
+    const { createTask, addTaskAction } = await import("../server/adapters/d1/taskRepo");
     const pollTask = await createTask(env.DB, "sse-user", {
       title: "Poll SSE Task",
       board_id: boardId,
     });
 
     setTimeout(async () => {
-      await addTaskAction(env.DB, pollTask.id, "machine", "system", "commented", "Polled event from loop");
+      await addTaskAction(env.DB, pollTask.id, "user", "sse-user", "commented", "Polled event from loop");
     }, 500);
 
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, pollTask.id, null);
     // Poll loop fires at 2s intervals — use a longer per-read timeout to avoid premature resolution
     const text = await readSSEUntil(response.body!, (t) => t.includes("Polled event from loop"), 8000, 3000);
@@ -168,7 +146,7 @@ describe("createSSEResponse", () => {
   }, 15000);
 
   it("returns 400 JSON error when lastEventId is not found in DB", async () => {
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, taskId, "nonexistent-event-id-xyz");
     expect(response.status).toBe(400);
     expect(response.headers.get("Content-Type")).toContain("application/json");
@@ -178,7 +156,7 @@ describe("createSSEResponse", () => {
   });
 
   it("lastSeen defaults to current time when no batch and no since", async () => {
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, "nonexistent-task-id", null);
     expect(response).toBeInstanceOf(Response);
     expect(response.headers.get("Content-Type")).toBe("text/event-stream");
@@ -188,17 +166,17 @@ describe("createSSEResponse", () => {
   });
 
   it("limits initial events to 50 per type", async () => {
-    const { createTask, addTaskAction } = await import("../apps/web/server/taskRepo");
+    const { createTask, addTaskAction } = await import("../server/adapters/d1/taskRepo");
     const bigTask = await createTask(env.DB, "sse-user", {
       title: "Big SSE Task",
       board_id: boardId,
     });
 
     for (let i = 0; i < 55; i++) {
-      await addTaskAction(env.DB, bigTask.id, "machine", "system", "commented", `Bulk log ${i}`);
+      await addTaskAction(env.DB, bigTask.id, "user", "sse-user", "commented", `Bulk log ${i}`);
     }
 
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, bigTask.id, null);
     const text = await readSSEUntil(response.body!, (t) => (t.match(/event: note/g) || []).length >= 50);
 
@@ -209,8 +187,8 @@ describe("createSSEResponse", () => {
   });
 
   it("emits gap event with initial_truncated when catch-up window hits the 500-row cap", async () => {
-    const { createTask, getTaskActions } = await import("../apps/web/server/taskRepo");
-    const { MAX_TASK_PARTITION_ROWS } = await import("../apps/web/server/db");
+    const { createTask, getTaskActions } = await import("../server/adapters/d1/taskRepo");
+    const { MAX_TASK_PARTITION_ROWS } = await import("../server/db/index");
 
     const gapTask = await createTask(env.DB, "sse-user", {
       title: "Gap SSE Task",
@@ -224,19 +202,19 @@ describe("createSSEResponse", () => {
 
     // Insert MAX_TASK_PARTITION_ROWS rows directly with manufactured timestamps
     // so we hit the cap exactly when querying with `since = cursorAction.created_at`
-    const { newLongId } = await import("../apps/web/server/db");
+    const { newLongId } = await import("../server/db/index");
     const stmts = [];
     for (let i = 0; i < MAX_TASK_PARTITION_ROWS; i++) {
       const ts = new Date(cursorTime + (i + 1)).toISOString();
       stmts.push(
         env.DB.prepare(
           "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
-        ).bind(newLongId(), gapTask.id, "machine", "system", "commented", `gap-action-${i}`, ts),
+        ).bind(newLongId(), gapTask.id, "user", "sse-user", "commented", `gap-action-${i}`, ts),
       );
     }
     await env.DB.batch(stmts);
 
-    const { createSSEResponse } = await import("../apps/web/server/sse");
+    const { createSSEResponse } = await import("../server/adapters/stream/sse");
     const response = await createSSEResponse(env as any, gapTask.id, cursorAction.id);
 
     const text = await readSSEUntil(response.body!, (t) => t.includes("event: gap"), 5000);
