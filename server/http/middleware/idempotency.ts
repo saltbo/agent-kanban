@@ -7,8 +7,9 @@ import {
   resolveIdempotentResponse,
 } from "@server/adapters/d1/resourceIdempotency";
 import type { Env } from "@server/env";
+import { apiErrorHandler } from "@server/http/middleware/errorHandler";
 import { effectiveApiVersion, v2Problem } from "@server/http/middleware/v2Contract";
-import type { Context, Next } from "hono";
+import type { Context, ErrorHandler, Next } from "hono";
 
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{8,200}$/;
 
@@ -61,17 +62,17 @@ export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next:
     throw error;
   }
   c.set("resourceIdempotency", idempotency);
-  try {
-    await next();
-    return undefined;
-  } catch (error) {
-    if (error instanceof ResourceIdempotencyReplay) return replayResponse(error.response);
-    if (error instanceof ResourceIdempotencyConflict) {
-      return v2Problem(c, 409, "idempotency-key-conflict", "Idempotency key conflict", error.message);
-    }
-    throw error;
-  }
+  await next();
+  return undefined;
 }
+
+export const resourceServerErrorHandler: ErrorHandler = (error, c) => {
+  if (error instanceof ResourceIdempotencyReplay) return replayResponse(error.response);
+  if (error instanceof ResourceIdempotencyConflict) {
+    return v2Problem(c, 409, "idempotency-key-conflict", "Idempotency key conflict", error.message);
+  }
+  return apiErrorHandler(error, c);
+};
 
 async function hashUpstreamKey(ownerId: string, actorId: string, apiVersion: string, method: string, path: string, key: string): Promise<string> {
   const input = new TextEncoder().encode(`${ownerId}\n${actorId}\n${apiVersion}\n${method}\n${path}\n${key}`);

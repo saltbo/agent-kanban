@@ -6,7 +6,6 @@ import { representationEtag } from "@server/http/resource-server/representation"
 import {
   completeExternalCreation,
   externalCreationIdempotencyKey,
-  isResourcePrincipal,
   readJsonBody,
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
@@ -50,7 +49,7 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
     };
     const machineEtag = await representationEtag(response.machine);
     await completeExternalCreation(c, "machines", result.machine.id, machineEtag.slice(1, -1), response);
-    if (isResourcePrincipal(c)) setCreatedResourceHeaders(c, "machines", result.machine.id, machineEtag.slice(1, -1));
+    setCreatedResourceHeaders(c, "machines", result.machine.id, machineEtag.slice(1, -1));
     return c.json(response, 201);
   });
 

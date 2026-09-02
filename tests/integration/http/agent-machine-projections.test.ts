@@ -420,7 +420,7 @@ describe("Agent and Machine projection HTTP resources", () => {
         etag: response.headers.get("ETag"),
       })),
     );
-    expect(snapshots[1]?.body).toBe(snapshots[0]?.body);
+    expect(snapshots[1]).toEqual(snapshots[0]);
     expect(machineCreates).toBe(2);
     await expect(
       fixture.db

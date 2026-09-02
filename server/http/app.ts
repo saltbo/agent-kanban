@@ -6,8 +6,7 @@ import { registerBoardRoutes } from "@server/http/boards/routes";
 import { registerGithubApplicationRoutes, registerGithubWebhookRoutes } from "@server/http/github/routes";
 import { registerMachineRoutes } from "@server/http/machines/routes";
 import { createAccessLogMiddleware } from "@server/http/middleware/accessLog";
-import { apiErrorHandler } from "@server/http/middleware/errorHandler";
-import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
+import { idempotencyMiddleware, resourceServerErrorHandler } from "@server/http/middleware/idempotency";
 import { requestContextMiddleware } from "@server/http/middleware/requestContext";
 import { isPublishedV2Operation, v2ApiVersionMiddleware } from "@server/http/middleware/v2Contract";
 import { registerPublicRoutes } from "@server/http/public/routes";
@@ -23,7 +22,7 @@ const logger = createLogger("api");
 
 api.use("*", requestContextMiddleware);
 api.use("*", createAccessLogMiddleware(logger));
-api.onError(apiErrorHandler);
+api.onError(resourceServerErrorHandler);
 
 // Public routes must be registered before the protected /api middleware.
 registerAuthRoutes(api);
