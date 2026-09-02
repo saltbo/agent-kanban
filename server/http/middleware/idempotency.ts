@@ -11,7 +11,7 @@ import { apiErrorHandler } from "@server/http/middleware/errorHandler";
 import { effectiveApiVersion, v2Problem } from "@server/http/middleware/v2Contract";
 import type { Context, ErrorHandler, Next } from "hono";
 
-const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{8,200}$/;
+const IDEMPOTENCY_KEY_VALUE = /^[A-Za-z0-9._:-]{8,200}$/;
 
 export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next: Next): Promise<Response | undefined> {
   const principal = c.get("principal");
@@ -22,10 +22,19 @@ export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next:
     return undefined;
   }
 
-  const key = c.req.header("idempotency-key");
-  if (!key) return v2Problem(c, 428, "idempotency-key-required", "Idempotency key required", "Idempotency-Key is required for this creation");
-  if (!IDEMPOTENCY_KEY.test(key)) {
-    return v2Problem(c, 400, "invalid-idempotency-key", "Invalid idempotency key", "Idempotency-Key must contain 8 to 200 safe characters");
+  const fieldValue = c.req.header("idempotency-key");
+  if (!fieldValue) {
+    return v2Problem(c, 400, "idempotency-key-required", "Idempotency key required", "Idempotency-Key is required for this creation");
+  }
+  const key = parseIdempotencyKey(fieldValue, principal.source === "session");
+  if (!key) {
+    return v2Problem(
+      c,
+      400,
+      "invalid-idempotency-key",
+      "Invalid idempotency key",
+      'Idempotency-Key must be an RFC 8941 quoted string containing 8 to 200 safe characters, for example "request-uuid"',
+    );
   }
 
   const actorId = principal.actorId ?? principal.subjectId;
@@ -57,7 +66,7 @@ export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next:
     if (replay) return replayResponse(replay);
   } catch (error) {
     if (error instanceof ResourceIdempotencyConflict) {
-      return v2Problem(c, 409, "idempotency-key-conflict", "Idempotency key conflict", error.message);
+      return v2Problem(c, 422, "idempotency-key-conflict", "Idempotency key conflict", error.message);
     }
     throw error;
   }
@@ -69,7 +78,7 @@ export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next:
 export const resourceServerErrorHandler: ErrorHandler = (error, c) => {
   if (error instanceof ResourceIdempotencyReplay) return replayResponse(error.response);
   if (error instanceof ResourceIdempotencyConflict) {
-    return v2Problem(c, 409, "idempotency-key-conflict", "Idempotency key conflict", error.message);
+    return v2Problem(c, 422, "idempotency-key-conflict", "Idempotency key conflict", error.message);
   }
   return apiErrorHandler(error, c);
 };
@@ -94,12 +103,17 @@ export function replayResponse(response: IdempotentHttpResponse): Response {
 
 function creationResourceKind(method: string, path: string): string | null {
   if (method !== "POST") return null;
-  if (path === "/api/boards") return "board";
-  if (path === "/api/repositories") return "repository";
   if (path === "/api/tasks") return "task";
   if (path === "/api/agents") return "agent";
   if (path === "/api/machines") return "machine";
   if (/^\/api\/tasks\/[^/]+\/notes$/.test(path)) return "task-note";
+  return null;
+}
+
+function parseIdempotencyKey(fieldValue: string, allowUnquotedBrowserValue: boolean): string | null {
+  const quoted = /^"([A-Za-z0-9._:-]{8,200})"$/.exec(fieldValue);
+  if (quoted) return quoted[1];
+  if (allowUnquotedBrowserValue && IDEMPOTENCY_KEY_VALUE.test(fieldValue)) return fieldValue;
   return null;
 }
 

@@ -46,13 +46,17 @@ Task representation.
 ```bash
 realmroot toolbox post agent-kanban/tasks \
   --content-type application/json \
-  --header 'Idempotency-Key: <unique-task-key>' \
   @task.json --json
 
 realmroot toolbox put agent-kanban/task-assignments/<task-id> \
   --content-type application/json \
   '{"agentActorId":"<realmroot-agent-actor-id>"}' --json
 ```
+
+Realmroot Toolbox v0.5.0 or newer generates the required idempotency key and
+reuses it across transient retries of this invocation. Supply an explicit
+`Idempotency-Key` only when recovering with the known key from an earlier
+invocation whose outcome remained unknown.
 
 The Task body uses lowerCamelCase resource fields such as `boardId`, `title`,
 `description`, `repositoryId`, `labels`, `dependsOn`, `createdFrom`, and

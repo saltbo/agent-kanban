@@ -7,12 +7,6 @@ import { customAlphabet } from "nanoid";
 
 const nanoidSlug = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
 
-import {
-  completeIdempotency,
-  type ResourceIdempotency,
-  ResourceIdempotencyReplay,
-  resolveIdempotentResponse,
-} from "@server/adapters/d1/resourceIdempotency";
 import { computeBlocked } from "@server/adapters/d1/taskDeps";
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
@@ -41,14 +35,7 @@ function normalizeLabels(labels: BoardLabel[]): BoardLabel[] {
   });
 }
 
-export async function createBoard(
-  db: D1,
-  ownerId: string,
-  name: string,
-  type: BoardType,
-  description?: string,
-  idempotency?: ResourceIdempotency<Board>,
-): Promise<Board> {
+export async function createBoard(db: D1, ownerId: string, name: string, type: BoardType, description?: string): Promise<Board> {
   const id = newId();
   const now = new Date().toISOString();
   const board: Board = {
@@ -66,15 +53,7 @@ export async function createBoard(
   const insertion = db
     .prepare("INSERT INTO boards (id, owner_id, name, description, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .bind(id, ownerId, name, description || null, type, now, now);
-  try {
-    if (idempotency) await db.batch([insertion, completeIdempotency(db, idempotency, id, board)]);
-    else await insertion.run();
-  } catch (error) {
-    if (!idempotency) throw error;
-    const replay = await resolveIdempotentResponse(db, idempotency);
-    if (!replay) throw error;
-    throw new ResourceIdempotencyReplay(replay);
-  }
+  await insertion.run();
   return board;
 }
 

@@ -17,7 +17,6 @@ import {
   assertResourceWriteFields,
   isResourcePrincipal,
   readJsonBody,
-  resourceIdempotencyFor,
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
 import type { Hono } from "hono";
@@ -36,17 +35,7 @@ export function registerRepositoryRoutes(api: Hono<{ Bindings: Env }>): void {
     const ownerId = c.get("ownerId");
     const fullName = new URL(normalizeGitUrl(body.url)).pathname.replace(/^\//, "");
     const appStatus = await repoAppStatus(c.env.DB, ownerId, fullName);
-    const repository = await createRepository(
-      c.env.DB,
-      ownerId,
-      body,
-      resourceIdempotencyFor(
-        c,
-        "repositories",
-        (resource) => resource.id,
-        (resource) => repositoryResource({ ...resource, app_status: appStatus }, c.req.url),
-      ),
-    );
+    const repository = await createRepository(c.env.DB, ownerId, body);
     if (isResourcePrincipal(c)) {
       setCreatedResourceHeaders(c, "repositories", repository.id, repository.id);
       return c.json(repositoryResource({ ...repository, app_status: appStatus }, c.req.url), 201);

@@ -20,7 +20,6 @@ import {
   assertResourceWriteFields,
   isResourcePrincipal,
   readJsonBody,
-  resourceIdempotencyFor,
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
 import { type BoardLabel, isBoardType } from "@shared";
@@ -38,19 +37,7 @@ export function registerBoardRoutes(api: Hono<{ Bindings: Env }>): void {
     }
     if (!body.name) throw new HTTPException(400, { message: "name is required" });
     if (!isBoardType(body.type)) throw new HTTPException(400, { message: "type must be 'dev' or 'ops'" });
-    const board = await createBoard(
-      c.env.DB,
-      c.get("ownerId"),
-      body.name,
-      body.type,
-      body.description,
-      resourceIdempotencyFor(
-        c,
-        "boards",
-        (resource) => resource.updated_at,
-        (resource) => boardResource(resource, c.req.url),
-      ),
-    );
+    const board = await createBoard(c.env.DB, c.get("ownerId"), body.name, body.type, body.description);
     if (isResourcePrincipal(c)) {
       setCreatedResourceHeaders(c, "boards", board.id, board.updated_at);
       return c.json(boardResource(board, c.req.url), 201);

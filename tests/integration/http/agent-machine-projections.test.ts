@@ -292,7 +292,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     );
 
     const missingKey = await browserPost("/machines", { name: "Build host" });
-    expect(missingKey.status).toBe(428);
+    expect(missingKey.status).toBe(400);
 
     const response = await browserPost("/machines", { name: "Build host" }, "machine-form-request-1");
     expect(response.status, await response.clone().text()).toBe(201);
@@ -347,6 +347,11 @@ describe("Agent and Machine projection HTTP resources", () => {
       systemPrompt: "Handle concurrent work",
     };
 
+    const missingKey = await browserPost("/agents", body);
+    expect(missingKey.status).toBe(400);
+    expect(identityCreates).toBe(0);
+    expect(agentCreates).toBe(0);
+
     const responses = await Promise.all([browserPost("/agents", body, key), browserPost("/agents", body, key)]);
     expect(responses.map((response) => response.status)).toEqual([201, 201]);
     expect(responses.filter((response) => response.headers.get("Idempotency-Replayed") === null)).toHaveLength(1);
@@ -369,7 +374,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     ).resolves.toEqual({ count: 1 });
 
     const conflict = await browserPost("/agents", { ...body, name: "Different Agent" }, key);
-    expect(conflict.status).toBe(409);
+    expect(conflict.status).toBe(422);
     expect(identityCreates).toBe(2);
     expect(agentCreates).toBe(2);
 
@@ -430,7 +435,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     ).resolves.toEqual({ count: 1 });
 
     const conflict = await browserPost("/machines", { name: "Different Machine" }, key);
-    expect(conflict.status).toBe(409);
+    expect(conflict.status).toBe(422);
     expect(machineCreates).toBe(2);
 
     const otherSession = await browserSessionFor("projection-human-other");

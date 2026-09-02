@@ -10,7 +10,7 @@ Toolbox supplies generic verb-first operations for ordinary resources:
 
 ```bash
 realmroot toolbox get agent-kanban/boards --json
-realmroot toolbox post agent-kanban/tasks --content-type application/json --header 'Idempotency-Key: <unique-task-key>' @task.json --json
+realmroot toolbox post agent-kanban/tasks --content-type application/json @task.json --json
 realmroot toolbox get agent-kanban/tasks/<task-id>/notes --json
 ```
 
@@ -63,8 +63,11 @@ Agency resources except for the existing bounded Task Session observation.
 - Paths contain resource nouns only; HTTP methods carry operation semantics.
 - `API-Version` is optional. Omitting it selects the current v2 contract; an
   explicit unsupported value is rejected. Responses echo the selected version.
-- Agent collections use lowerCamelCase representations and cursor envelopes;
-  generic creations require `Idempotency-Key` and replay the original result.
+- Agent collections use lowerCamelCase representations and cursor envelopes.
+  Toolbox must generate `Idempotency-Key` for Task, Task Note, Agent, and
+  Machine creations, reuse it across one invocation's automatic retries, and
+  hide it from the caller. Board and Repository creation do not require the
+  header.
 - Realmroot authentication establishes a normalized principal; Task ownership,
   tenant, assignment, and separation-of-duty checks authorize each resource.
 - Review decisions include the current `reviewSubmissionVersion` returned by

@@ -132,9 +132,18 @@ describe("published Resource Server contract", () => {
     }
     expect(Object.keys(toolbox.paths)).not.toEqual(expect.arrayContaining([expect.stringMatching(/labels/)]));
 
-    for (const path of ["/boards", "/repositories", "/tasks", "/tasks/{taskId}/notes"] as const) {
+    for (const path of ["/boards", "/repositories"] as const) {
+      expect(toolbox.paths[path].post.parameters).not.toEqual(expect.arrayContaining([{ $ref: "#/components/parameters/IdempotencyKey" }]));
+    }
+    for (const path of ["/tasks", "/tasks/{taskId}/notes", "/agents", "/machines"] as const) {
       expect(toolbox.paths[path].post.parameters).toEqual(expect.arrayContaining([{ $ref: "#/components/parameters/IdempotencyKey" }]));
     }
+    expect(toolbox.components.parameters.IdempotencyKey).toMatchObject({
+      name: "Idempotency-Key",
+      in: "header",
+      required: true,
+      description: expect.stringContaining("RFC 8941"),
+    });
     for (const [path, schema] of [
       ["/boards", "BoardCollection"],
       ["/repositories", "RepositoryCollection"],

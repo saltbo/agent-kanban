@@ -36,8 +36,8 @@ Use Toolbox's generic verb-first operations. Create a Board or Repository only
 when it does not already exist:
 
 ```bash
-realmroot toolbox post agent-kanban/boards --content-type application/json --header 'Idempotency-Key: <unique-board-key>' @board.json --json
-realmroot toolbox post agent-kanban/repositories --content-type application/json --header 'Idempotency-Key: <unique-repository-key>' @repository.json --json
+realmroot toolbox post agent-kanban/boards --content-type application/json @board.json --json
+realmroot toolbox post agent-kanban/repositories --content-type application/json @repository.json --json
 ```
 
 Discover executable Agents through AK's Agency-backed projection and select
@@ -55,11 +55,16 @@ orchestration. Do not call Agency directly or create an AK-local Agent row.
 For each approved work item, create an unassigned Task, then its Assignment:
 
 ```bash
-realmroot toolbox post agent-kanban/tasks --content-type application/json --header 'Idempotency-Key: <unique-task-key>' @task.json --json
+realmroot toolbox post agent-kanban/tasks --content-type application/json @task.json --json
 realmroot toolbox put agent-kanban/task-assignments/<task-id> \
   --content-type application/json \
   '{"agentActorId":"<realmroot-agent-actor-id>"}' --json
 ```
+
+Realmroot Toolbox v0.5.0 or newer generates the required idempotency key and
+reuses it across transient retries of this invocation. Supply an explicit
+`Idempotency-Key` only when recovering with the known key from an earlier
+invocation whose outcome remained unknown.
 
 Encode real prerequisites in `dependsOn`. Tasks with overlapping files or
 contracts should be combined or ordered; only independent Tasks should run in
@@ -83,9 +88,11 @@ When one prerequisite completes, continue monitoring its dependents. Remote
 owns Agent execution; AK only exposes the updated dependency and Task state.
 Report the final Task states, review outcomes, and unresolved external blockers.
 
-Ordinary published resource operations use generic verbs. Every generic POST
-requires a stable `Idempotency-Key`; reuse it only for an exact retry. Board
-labels and destructive management remain browser-owned in this release.
+Ordinary published resource operations use generic verbs. Toolbox generates
+the required idempotency key for Task, Task Note, Agent, and Machine creation
+and reuses it across transient retries. Board and Repository creation do not
+require the header. Board labels and destructive management remain
+browser-owned in this release.
 Only AK lifecycle operations use the generated resource-first `task ...`
 commands. Never invoke the removed `ak` CLI or invent resource-first CRUD
 aliases.

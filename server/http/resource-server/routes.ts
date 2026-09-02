@@ -74,9 +74,9 @@ function toolboxDocument(env: Env) {
     );
   const readProblems = problems([400, 401, 403, 404, 500]);
   const projectionReadProblems = problems([400, 401, 403, 404, 409, 502, 503]);
-  const projectionCreateProblems = problems([400, 401, 403, 409, 415, 422, 428, 502, 503]);
-  const createProblems = problems([400, 401, 403, 409, 415, 422, 428, 500]);
-  const dependentCreateProblems = problems([400, 401, 403, 404, 409, 415, 422, 428, 500]);
+  const projectionCreateProblems = problems([400, 401, 403, 409, 415, 422, 502, 503]);
+  const createProblems = problems([400, 401, 403, 409, 415, 422, 500]);
+  const dependentCreateProblems = problems([400, 401, 403, 404, 409, 415, 422, 500]);
   const workflowProblems = problems([400, 401, 403, 404, 409, 412, 415, 422, 428, 500]);
   const notificationProblems = {
     "503": {
@@ -133,7 +133,7 @@ function toolboxDocument(env: Env) {
         },
         post: {
           ...operation("createBoard", "board:write", "Board created", "201"),
-          parameters: [version, idempotencyKey],
+          parameters: [version],
           requestBody: { required: true, ...json({ $ref: "#/components/schemas/BoardWrite" }) },
           responses: { "201": createdResponse("Board created", { $ref: "#/components/schemas/Board" }), ...createProblems },
         },
@@ -162,7 +162,7 @@ function toolboxDocument(env: Env) {
         },
         post: {
           ...operation("createRepository", "repository:write", "Repository created", "201"),
-          parameters: [version, idempotencyKey],
+          parameters: [version],
           requestBody: { required: true, ...json({ $ref: "#/components/schemas/RepositoryWrite" }) },
           responses: {
             "201": createdResponse("Repository created", { $ref: "#/components/schemas/Repository" }),
@@ -411,8 +411,9 @@ function toolboxDocument(env: Env) {
           name: "Idempotency-Key",
           in: "header",
           required: true,
-          description: "Caller- and API-version-scoped key. The original response is retained and replayable for 24 hours.",
-          schema: { type: "string", minLength: 8, maxLength: 200 },
+          description:
+            "Client-generated RFC 8941 string scoped to the caller, operation, request content, and API version. Automatic retries of one invocation reuse the value; a new invocation uses a new value. Toolbox clients should generate it without caller input. The original response is replayable for 24 hours.",
+          schema: { type: "string", pattern: '^"[A-Za-z0-9._:-]{8,200}"$', example: '"0198f4d2-9055-7e52-a31a-e0d9a06bc847"' },
         },
         IfMatch: { name: "If-Match", in: "header", required: true, schema: { type: "string" } },
         TaskId: { name: "taskId", in: "path", required: true, schema: { type: "string" } },

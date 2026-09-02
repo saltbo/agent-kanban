@@ -13,7 +13,8 @@ Feature: Realmroot Resource Server
     Then Toolbox uses cursor collections, lowerCamelCase representations, and generic verb-first operations
     And omitting API-Version selects the current v2 contract
     And an explicit unsupported API-Version is rejected
-    And every generic creation requires an Idempotency-Key
+    And Board and Repository creation does not require an Idempotency-Key
+    And Task, Task Note, Agent, and Machine creation requires an RFC 8941 string Idempotency-Key
 
   @resource-server/workflow-commands @api
   Scenario: Publish only AK-specific resource-first commands

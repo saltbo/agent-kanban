@@ -279,15 +279,33 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     expect(dpop.status, await dpop.clone().text()).toBe(200);
   });
 
-  it.each(["boards", "repositories", "tasks", "notes"] as const)(
-    "requires and replays Idempotency-Key without duplicating %s creations",
+  it.each(["boards", "repositories"] as const)(
+    "[spec: resource-server/generic-operations] creates %s without an Idempotency-Key",
+    async (resourceKind) => {
+      const fixture = await creationFixture(resourceKind);
+      const before = await fixture.count();
+
+      const created = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", null);
+
+      expect(created.status, await created.clone().text()).toBe(201);
+      await expect(fixture.count()).resolves.toBe(before + 1);
+    },
+  );
+
+  it.each(["tasks", "notes"] as const)(
+    "[spec: resource-server/generic-operations] requires and replays an RFC 8941 Idempotency-Key without duplicating %s creations",
     async (resourceKind) => {
       const fixture = await creationFixture(resourceKind);
       const before = await fixture.count();
 
       const missing = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", null);
-      expect(missing.status).toBe(428);
+      expect(missing.status).toBe(400);
       await expect(missing.json()).resolves.toMatchObject({ type: expect.stringContaining("idempotency-key-required") });
+      await expect(fixture.count()).resolves.toBe(before);
+
+      const invalidRaw = await request("POST", fixture.path, fixture.scope, fixture.body, true, "2026-08-29", "unquoted-key", "actor-toolbox", false);
+      expect(invalidRaw.status).toBe(400);
+      await expect(invalidRaw.json()).resolves.toMatchObject({ type: expect.stringContaining("invalid-idempotency-key") });
       await expect(fixture.count()).resolves.toBe(before);
 
       const key = `generic-${resourceKind}-same-key`;
@@ -310,7 +328,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       await expect(fixture.count()).resolves.toBe(expectedCount);
 
       const conflict = await request("POST", fixture.path, fixture.scope, fixture.conflictingBody, true, "2026-08-29", key);
-      expect(conflict.status).toBe(409);
+      expect(conflict.status).toBe(422);
       await expect(conflict.json()).resolves.toMatchObject({ type: expect.stringContaining("idempotency-key-conflict") });
       await expect(fixture.count()).resolves.toBe(expectedCount);
     },
@@ -388,12 +406,15 @@ describe("Realmroot Agent generic Toolbox operations", () => {
   });
 
   it("[spec: resource-server/generic-operations] [spec: tasks/wait] defaults API-Version and signs pagination and Task Event cursors independently of the Web secret", async () => {
+    const boardResponse = await request("POST", "/boards", "board:write", { name: "Default version board", type: "ops" }, false, "2026-08-29", null);
+    expect(boardResponse.status, await boardResponse.clone().text()).toBe(201);
+    const boardId = (await boardResponse.json<{ id: string }>()).id;
     const key = "default-version-idempotency";
-    const createBody = { name: "Default version board", type: "ops" };
-    const created = await request("POST", "/boards", "board:write", createBody, false, "2026-08-29", key);
+    const createBody = { title: "Default version Task", boardId };
+    const created = await request("POST", "/tasks", "task:write", createBody, false, "2026-08-29", key);
     expect(created.status, await created.clone().text()).toBe(201);
     expect(created.headers.get("API-Version")).toBe("2026-08-29");
-    const replayed = await request("POST", "/boards", "board:write", createBody, true, "2026-08-29", key);
+    const replayed = await request("POST", "/tasks", "task:write", createBody, true, "2026-08-29", key);
     expect(replayed.status).toBe(201);
     expect(replayed.headers.get("Idempotency-Replayed")).toBe("true");
     await expect(
@@ -417,7 +438,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     expect(nextPage.status, await nextPage.clone().text()).toBe(200);
     expect(nextPage.headers.get("API-Version")).toBe("2026-08-29");
 
-    const task = await createTask(db, tenantId, { title: "Default version Task Event", board_id: (await created.json<{ id: string }>()).id });
+    const task = await createTask(db, tenantId, { title: "Default version Task Event", board_id: boardId });
     await db.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(task.id).run();
     const event = await request("GET", `/task-events?taskId=${task.id}&until=in-review&waitSeconds=0`, "task:read", undefined, false);
     const eventBody = (await event.json()) as { cursor: string };
@@ -900,7 +921,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
           authorization: `DPoP ${authority.accessToken}`,
           dpop: authority.proof,
           "API-Version": "2026-08-29",
-          "Idempotency-Key": `invalid-${problemType}`,
+          "Idempotency-Key": JSON.stringify(`invalid-${problemType}`),
           "content-type": contentType,
         },
         body,
@@ -989,6 +1010,7 @@ async function request(
   apiVersion = "2026-08-29",
   idempotencyKey: string | null = method === "POST" ? `test-${randomUUID()}` : null,
   actorId = "actor-toolbox",
+  structuredIdempotencyKey = true,
 ): Promise<Response> {
   const url = `${resource}${path}`;
   const requestUrl = new URL(url);
@@ -1001,7 +1023,7 @@ async function request(
         dpop: authority.proof,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...(versioned ? { "API-Version": apiVersion } : {}),
-        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        ...(idempotencyKey ? { "Idempotency-Key": structuredIdempotencyKey ? JSON.stringify(idempotencyKey) : idempotencyKey } : {}),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }),

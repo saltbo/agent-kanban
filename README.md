@@ -25,9 +25,12 @@ realmroot toolbox get agent-kanban/boards --json
 realmroot toolbox get 'agent-kanban/tasks?boardId=<board-id>' --json
 realmroot toolbox post agent-kanban/tasks \
   --content-type application/json \
-  --header 'Idempotency-Key: <unique-task-key>' \
   @task.json --json
 ```
+
+Realmroot Toolbox v0.5.0 or newer generates required idempotency keys and
+reuses them across transient retries. Supply an explicit key only when
+recovering an earlier invocation whose outcome remained unknown.
 
 Agent Kanban publishes resource-first commands only for lifecycle workflows:
 

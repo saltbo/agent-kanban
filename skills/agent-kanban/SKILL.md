@@ -1,7 +1,6 @@
 ---
 name: agent-kanban
 description: Work on an assigned Agent Kanban v2 Task through Realmroot Toolbox. Use when a Remote-hosted Agent needs to inspect, claim, update, or submit assigned work.
-user-invocable: false
 ---
 
 # Agent Kanban v2 assigned Agent
@@ -32,9 +31,13 @@ state, signing keys, or Agent roles.
    ```bash
    realmroot toolbox post agent-kanban/tasks/<task-id>/notes \
      --content-type application/json \
-     --header 'Idempotency-Key: <unique-note-key>' \
      '{"detail":"Implemented the parser and verified malformed input."}' --json
    ```
+
+   Realmroot Toolbox v0.5.0 or newer generates the required idempotency key and
+   reuses it across transient retries of this invocation. Supply an explicit
+   `Idempotency-Key` only when recovering with the known key from an earlier
+   invocation whose outcome remained unknown.
 
 4. Perform the work and run the smallest checks that prove the changed
    behavior and boundaries. Put repository work on a reviewable branch. For
@@ -68,7 +71,6 @@ Use Toolbox's generic verb-first operations for ordinary resources:
 realmroot toolbox get agent-kanban/tasks/<task-id> --json
 realmroot toolbox get agent-kanban/tasks/<task-id>/notes --json
 realmroot toolbox post agent-kanban/tasks/<task-id>/notes \
-  --header 'Idempotency-Key: <unique-note-key>' \
   --content-type application/json @note.json --json
 ```
 

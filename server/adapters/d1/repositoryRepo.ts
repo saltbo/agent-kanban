@@ -1,9 +1,3 @@
-import {
-  completeIdempotency,
-  type ResourceIdempotency,
-  ResourceIdempotencyReplay,
-  resolveIdempotentResponse,
-} from "@server/adapters/d1/resourceIdempotency";
 import { type D1, newId } from "@server/db";
 import type { PageWindow } from "@server/domain/pagination";
 import { ApplicationError } from "@server/usecases/applicationError";
@@ -44,12 +38,7 @@ function withFullName<T extends { url: string }>(repo: T): T & { full_name: stri
   return { ...repo, full_name: extractFullName(repo.url) };
 }
 
-export async function createRepository(
-  db: D1,
-  ownerId: string,
-  input: CreateRepositoryInput,
-  idempotency?: ResourceIdempotency<Repository>,
-): Promise<Repository> {
+export async function createRepository(db: D1, ownerId: string, input: CreateRepositoryInput): Promise<Repository> {
   const id = newId();
   const now = new Date().toISOString();
   const url = normalizeGitUrl(input.url);
@@ -58,15 +47,7 @@ export async function createRepository(
   const insertion = db
     .prepare("INSERT INTO repositories (id, owner_id, name, url, created_at) VALUES (?, ?, ?, ?, ?)")
     .bind(id, ownerId, input.name, url, now);
-  try {
-    if (idempotency) await db.batch([insertion, completeIdempotency(db, idempotency, id, repository)]);
-    else await insertion.run();
-  } catch (error) {
-    if (!idempotency) throw error;
-    const replay = await resolveIdempotentResponse(db, idempotency);
-    if (!replay) throw error;
-    throw new ResourceIdempotencyReplay(replay);
-  }
+  await insertion.run();
 
   return repository;
 }
