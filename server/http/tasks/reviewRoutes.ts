@@ -19,7 +19,7 @@ import {
   replaceTaskReviewSubmission,
   TaskReviewSubmissionFailure,
 } from "@server/usecases/tasks/replaceTaskReviewSubmission";
-import { notifyTaskLifecycle, TaskLifecycleNotificationFailure } from "@server/usecases/tasks/taskLifecycleNotifications";
+import { notifyTaskLifecycle } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { Hono } from "hono";
 
 export function registerTaskReviewRoutes(api: Hono<{ Bindings: Env }>): void {
@@ -204,10 +204,6 @@ function readReviewSubmissionVersion(body: object, c: TaskContext, type: string,
 }
 
 function mapReviewDecisionFailure(c: TaskContext, error: unknown): Response {
-  if (error instanceof TaskLifecycleNotificationFailure) {
-    c.header("Retry-After", "5");
-    return v2Problem(c, 503, "task-notification-unavailable", "Task notification unavailable", error.message);
-  }
   if (!(error instanceof TaskReviewDecisionFailure)) throw error;
   if (error.code === "TASK_NOT_FOUND") return taskNotFound(c, error.message);
   if (error.code === "TASK_REVIEW_DECISION_FORBIDDEN") {

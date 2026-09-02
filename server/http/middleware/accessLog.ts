@@ -22,11 +22,37 @@ export function createAccessLogMiddleware(logger: AccessLogger) {
       trace_id: c.get("traceId"),
       span_id: c.get("spanId"),
       result: status >= 500 ? "server_error" : status >= 400 ? "client_error" : "success",
-      ...c.get("requestError"),
+      ...(status >= 500 ? errorDiagnosticFields(c.get("requestError")) : {}),
     };
 
     if (status >= 500) logger.error("request completed", fields);
     else if (status >= 400) logger.warn("request completed", fields);
     else logger.info("request completed", fields);
+  };
+}
+
+function errorDiagnosticFields(error: Error | undefined): Record<string, unknown> {
+  if (!error) return {};
+  const kind = "kind" in error && typeof error.kind === "string" ? error.kind : undefined;
+  return {
+    error_name: error.name,
+    error_kind: kind,
+    error_message: error.message,
+    error_stack: error.stack,
+    error_cause: serializeCause(error.cause),
+  };
+}
+
+function serializeCause(cause: unknown, seen = new Set<Error>()): unknown {
+  if (!(cause instanceof Error)) return cause === undefined ? undefined : String(cause);
+  if (seen.has(cause)) return { name: cause.name, message: cause.message, circular: true };
+  seen.add(cause);
+  const kind = "kind" in cause && typeof cause.kind === "string" ? cause.kind : undefined;
+  return {
+    name: cause.name,
+    kind,
+    message: cause.message,
+    stack: cause.stack,
+    cause: serializeCause(cause.cause, seen),
   };
 }

@@ -1,4 +1,4 @@
-import { AgencySessionObservationFailure, agencySessionObservationClient } from "@server/adapters/agency/sessionObservation";
+import { agencySessionObservationClient } from "@server/adapters/agency/sessionObservation";
 import {
   addTaskAction,
   assertTaskOwner,
@@ -307,9 +307,6 @@ function mapSessionObservationFailure(c: TaskContext, error: unknown): Response 
       return c.json({ error: { code: "AMA_SESSION_NOT_FOUND", message: error.message } }, 404);
     }
     return c.json({ error: { code: "AMA_SESSION_AMBIGUOUS", message: error.message } }, 409);
-  }
-  if (error instanceof AgencySessionObservationFailure) {
-    return c.json({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
   }
   throw error;
 }

@@ -1,23 +1,14 @@
-import { RealmrootClientCredentialsFailure, realmrootClientCredentialsToken } from "@server/adapters/realmroot/clientCredentials";
+import { realmrootClientCredentialsToken } from "@server/adapters/realmroot/clientCredentials";
 import { amaResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
-import { createLogger } from "@server/observability/logger";
-import type { AgencySession, AgencySessionObservationPort, TaskSessionBindingLookup } from "@server/usecases/tasks/observeTaskSession";
+import {
+  type AgencySession,
+  AgencySessionObservationFailure,
+  type AgencySessionObservationPort,
+  type TaskSessionBindingLookup,
+} from "@server/usecases/tasks/observeTaskSession";
 
-const logger = createLogger("agency-session-observation");
-
-export type AgencySessionObservationFailureCode = "UNAVAILABLE" | "INVALID_RESPONSE";
-
-export class AgencySessionObservationFailure extends Error {
-  constructor(
-    readonly code: AgencySessionObservationFailureCode,
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = "AgencySessionObservationFailure";
-  }
-}
+export { AgencySessionObservationFailure } from "@server/usecases/tasks/observeTaskSession";
 
 export interface AgencySessionObservationClient extends AgencySessionObservationPort {
   connectSessionSocket(sessionId: string, binding: TaskSessionBindingLookup): Promise<WebSocket>;
@@ -33,26 +24,15 @@ export function agencySessionObservationClient(env: Env): AgencySessionObservati
       url.searchParams.set("runtime", binding.runtime);
       url.searchParams.set("runtimeSessionId", binding.runtimeSessionId);
       url.searchParams.set("limit", "2");
-      const response = await dependencyFetch("findByRuntimeBinding", url, {
+      const response = await dependencyFetch(url, {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
       if (!response.ok) {
-        logger.error("Agency Session lookup failed", {
-          operation: "findByRuntimeBinding",
-          status: response.status,
-          errorKind: "http",
-        });
         throw unavailable(`Agency Session lookup failed with HTTP ${response.status}`);
       }
       try {
         return decodeSessionList(await response.json());
       } catch (error) {
-        const errorKind = error instanceof AgencySessionObservationFailure ? "invalid-payload" : "invalid-json";
-        logger.error("Agency Session lookup failed", {
-          operation: "findByRuntimeBinding",
-          status: response.status,
-          errorKind,
-        });
         if (error instanceof AgencySessionObservationFailure) throw error;
         throw new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned malformed Session JSON", { cause: error });
       }
@@ -64,15 +44,10 @@ export function agencySessionObservationClient(env: Env): AgencySessionObservati
       url.searchParams.set("agentActorId", binding.agentActorId);
       url.searchParams.set("runtime", binding.runtime);
       url.searchParams.set("runtimeSessionId", binding.runtimeSessionId);
-      const response = await dependencyFetch("connectSessionSocket", url, {
+      const response = await dependencyFetch(url, {
         headers: { Authorization: `Bearer ${token}`, Upgrade: "websocket" },
       });
       if (response.status !== 101 || !response.webSocket) {
-        logger.error("Agency Session socket connection failed", {
-          operation: "connectSessionSocket",
-          status: response.status,
-          errorKind: response.status === 101 ? "missing-websocket" : "http",
-        });
         throw unavailable(`Agency Session socket failed with HTTP ${response.status}`);
       }
       return response.webSocket;
@@ -102,23 +77,14 @@ async function accessToken(
   try {
     return await realmrootClientCredentialsToken({ ...configuration, scope });
   } catch (error) {
-    logger.error("Agency authorization failed", {
-      operation: "clientCredentials",
-      scope,
-      errorKind: error instanceof RealmrootClientCredentialsFailure ? error.name : "unknown",
-    });
     throw unavailable("Agency authorization failed", error);
   }
 }
 
-async function dependencyFetch(operation: "findByRuntimeBinding" | "connectSessionSocket", input: URL, init: RequestInit): Promise<Response> {
+async function dependencyFetch(input: URL, init: RequestInit): Promise<Response> {
   try {
     return await fetch(input, { ...init, signal: AbortSignal.timeout(10_000) });
   } catch (error) {
-    logger.error("Agency request failed", {
-      operation,
-      errorKind: error instanceof DOMException && error.name === "TimeoutError" ? "timeout" : "network",
-    });
     throw unavailable("Agency request failed", error);
   }
 }

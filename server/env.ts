@@ -26,9 +26,7 @@ declare module "hono" {
     traceId: string;
     spanId: string;
     traceparent: string;
-    requestError?: {
-      error_name: string;
-    };
+    requestError?: Error;
     ownerId: string;
     identityType: "user" | "machine" | "realmroot:agent" | "service";
     principal: {

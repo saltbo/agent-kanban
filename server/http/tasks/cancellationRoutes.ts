@@ -11,7 +11,7 @@ import {
   taskWorkflowActor,
 } from "@server/http/tasks/workflowSupport";
 import { replaceTaskCancellation, TaskCancellationFailure } from "@server/usecases/tasks/replaceTaskCancellation";
-import { notifyTaskLifecycle, TaskLifecycleNotificationFailure } from "@server/usecases/tasks/taskLifecycleNotifications";
+import { notifyTaskLifecycle } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { Hono } from "hono";
 
 export function registerTaskCancellationRoutes(api: Hono<{ Bindings: Env }>): void {
@@ -46,10 +46,6 @@ async function replaceCancellation(c: TaskContext): Promise<Response> {
     c.header("ETag", `"${result.version}"`);
     return c.json(result.cancellation, result.created ? 201 : 200);
   } catch (error) {
-    if (error instanceof TaskLifecycleNotificationFailure) {
-      c.header("Retry-After", "5");
-      return v2Problem(c, 503, "task-notification-unavailable", "Task notification unavailable", error.message);
-    }
     if (!(error instanceof TaskCancellationFailure)) throw error;
     if (error.code === "TASK_NOT_FOUND") return taskNotFound(c, error.message);
     return v2Problem(c, 409, "task-cancellation-conflict", "Task cancellation conflict", error.message);

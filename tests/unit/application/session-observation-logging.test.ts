@@ -1,7 +1,7 @@
 import type { Env } from "@server/env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { clientCredentialsToken, loggerError, ClientCredentialsFailure } = vi.hoisted(() => {
+const { clientCredentialsToken, ClientCredentialsFailure } = vi.hoisted(() => {
   class ClientCredentialsFailure extends Error {
     constructor(message: string) {
       super(message);
@@ -10,7 +10,6 @@ const { clientCredentialsToken, loggerError, ClientCredentialsFailure } = vi.hoi
   }
   return {
     clientCredentialsToken: vi.fn(),
-    loggerError: vi.fn(),
     ClientCredentialsFailure,
   };
 });
@@ -18,16 +17,6 @@ const { clientCredentialsToken, loggerError, ClientCredentialsFailure } = vi.hoi
 vi.mock("@server/adapters/realmroot/clientCredentials", () => ({
   RealmrootClientCredentialsFailure: ClientCredentialsFailure,
   realmrootClientCredentialsToken: clientCredentialsToken,
-}));
-
-vi.mock("@server/observability/logger", () => ({
-  createLogger: () => ({
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: loggerError,
-    fatal: vi.fn(),
-  }),
 }));
 
 import { agencySessionObservationClient } from "@server/adapters/agency/sessionObservation";
@@ -54,15 +43,7 @@ function env(): Env {
   } as Env;
 }
 
-function expectNoCredentialLeak() {
-  const logged = JSON.stringify(loggerError.mock.calls);
-  expect(logged).not.toContain(accessToken);
-  expect(logged).not.toContain(clientSecret);
-  expect(logged).not.toContain(upstreamCredential);
-  expect(logged).not.toContain("Authorization");
-}
-
-describe("Agency Session observation failure logging", () => {
+describe("Agency Session observation boundary failures", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clientCredentialsToken.mockResolvedValue(accessToken);
@@ -109,9 +90,10 @@ describe("Agency Session observation failure logging", () => {
   });
 
   it("redacts Inbox network error details from the lifecycle notification failure", async () => {
+    const cause = new Error(`network failed: ${upstreamCredential}`);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Promise.reject(new Error(`network failed: ${upstreamCredential}`))),
+      vi.fn(async () => Promise.reject(cause)),
     );
 
     const error = await inboxTaskLifecycleNotifier(env())
@@ -126,26 +108,24 @@ describe("Agency Session observation failure logging", () => {
     expect(error).toMatchObject({
       name: "TaskLifecycleNotificationFailure",
       message: "Inbox task notification is unavailable",
+      cause,
     });
     expect(String(error)).not.toContain(upstreamCredential);
   });
 
-  it("logs structured Agency token failure operation and scope without credentials", async () => {
-    clientCredentialsToken.mockRejectedValueOnce(new ClientCredentialsFailure("token endpoint unavailable"));
+  it("preserves the stable Agency token failure and its diagnostic cause", async () => {
+    const cause = new ClientCredentialsFailure("token endpoint unavailable");
+    clientCredentialsToken.mockRejectedValueOnce(cause);
 
     await expect(agencySessionObservationClient(env()).findByRuntimeBinding(binding)).rejects.toMatchObject({
+      name: "AgencySessionObservationFailure",
       code: "UNAVAILABLE",
+      message: "Agency authorization failed",
+      cause,
     });
-
-    expect(loggerError).toHaveBeenCalledWith("Agency authorization failed", {
-      operation: "clientCredentials",
-      scope: "sessions:read",
-      errorKind: "RealmrootClientCredentialsFailure",
-    });
-    expectNoCredentialLeak();
   });
 
-  it("logs structured Agency lookup failure operation and status without credentials", async () => {
+  it("keeps an Agency lookup HTTP failure stable without consuming its response body", async () => {
     const response = new Response(upstreamCredential, { status: 503 });
     vi.stubGlobal(
       "fetch",
@@ -154,18 +134,13 @@ describe("Agency Session observation failure logging", () => {
 
     await expect(agencySessionObservationClient(env()).findByRuntimeBinding(binding)).rejects.toMatchObject({
       code: "UNAVAILABLE",
+      message: "Agency Session lookup failed with HTTP 503",
     });
 
-    expect(loggerError).toHaveBeenCalledWith("Agency Session lookup failed", {
-      operation: "findByRuntimeBinding",
-      status: 503,
-      errorKind: "http",
-    });
     expect(response.bodyUsed).toBe(false);
-    expectNoCredentialLeak();
   });
 
-  it("logs structured Agency socket failure operation and status without credentials", async () => {
+  it("keeps an Agency socket HTTP failure stable without consuming its response body", async () => {
     const response = new Response(upstreamCredential, { status: 502 });
     vi.stubGlobal(
       "fetch",
@@ -174,15 +149,10 @@ describe("Agency Session observation failure logging", () => {
 
     await expect(agencySessionObservationClient(env()).connectSessionSocket("session_1", binding)).rejects.toMatchObject({
       code: "UNAVAILABLE",
+      message: "Agency Session socket failed with HTTP 502",
     });
 
-    expect(loggerError).toHaveBeenCalledWith("Agency Session socket connection failed", {
-      operation: "connectSessionSocket",
-      status: 502,
-      errorKind: "http",
-    });
     expect(response.bodyUsed).toBe(false);
-    expectNoCredentialLeak();
   });
 
   it.each([
@@ -194,40 +164,39 @@ describe("Agency Session observation failure logging", () => {
       operation: "connectSessionSocket" as const,
       invoke: () => agencySessionObservationClient(env()).connectSessionSocket("session_1", binding),
     },
-  ])("logs structured Agency $operation network failure without credentials", async ({ operation, invoke }) => {
+  ])("preserves the stable Agency $operation network failure and its cause", async ({ invoke }) => {
+    const cause = new Error(`network failed: ${upstreamCredential}`);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Promise.reject(new Error(`network failed: ${upstreamCredential}`))),
+      vi.fn(async () => Promise.reject(cause)),
     );
 
-    await expect(invoke()).rejects.toMatchObject({ code: "UNAVAILABLE" });
-
-    expect(loggerError).toHaveBeenCalledWith("Agency request failed", {
-      operation,
-      errorKind: "network",
+    await expect(invoke()).rejects.toMatchObject({
+      name: "AgencySessionObservationFailure",
+      code: "UNAVAILABLE",
+      message: "Agency request failed",
+      cause,
     });
-    expectNoCredentialLeak();
   });
 
-  it("logs structured Agency malformed lookup JSON without credentials", async () => {
+  it("preserves the stable malformed Agency lookup failure and its parse cause", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("{", { status: 200 })),
     );
 
-    await expect(agencySessionObservationClient(env()).findByRuntimeBinding(binding)).rejects.toMatchObject({
+    const error = await agencySessionObservationClient(env())
+      .findByRuntimeBinding(binding)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "AgencySessionObservationFailure",
       code: "INVALID_RESPONSE",
+      message: "Agency returned malformed Session JSON",
+      cause: expect.any(SyntaxError),
     });
-
-    expect(loggerError).toHaveBeenCalledWith("Agency Session lookup failed", {
-      operation: "findByRuntimeBinding",
-      status: 200,
-      errorKind: "invalid-json",
-    });
-    expectNoCredentialLeak();
   });
 
-  it("logs structured Agency invalid lookup payload without credentials", async () => {
+  it("returns a stable failure for an invalid Agency lookup payload", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => Response.json({ data: "invalid", pagination: { hasMore: false } })),
@@ -235,13 +204,7 @@ describe("Agency Session observation failure logging", () => {
 
     await expect(agencySessionObservationClient(env()).findByRuntimeBinding(binding)).rejects.toMatchObject({
       code: "INVALID_RESPONSE",
+      message: "Agency returned an invalid Session response",
     });
-
-    expect(loggerError).toHaveBeenCalledWith("Agency Session lookup failed", {
-      operation: "findByRuntimeBinding",
-      status: 200,
-      errorKind: "invalid-payload",
-    });
-    expectNoCredentialLeak();
   });
 });

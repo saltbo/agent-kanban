@@ -29,7 +29,7 @@ function createTestApp(logger: ReturnType<typeof createTestLogger>) {
   app.get("/native", () => new Response("native response"));
   app.get("/invalid", (c) => c.json({ error: "invalid" }, 422));
   app.get("/failure", () => {
-    throw new Error("unexpected failure credential sentinel", { cause: new Error("cause credential sentinel") });
+    throw new Error("unexpected request processing failure", { cause: new Error("downstream diagnostic cause") });
   });
 
   return app;
@@ -101,8 +101,12 @@ describe("HTTP access completion events", () => {
     const app = createTestApp(logger);
 
     await app.request("/ok", { headers: { "Request-Id": "request-ok" } });
-    await app.request("/invalid", { headers: { "Request-Id": "request-invalid" } });
-    await app.request("/failure", { headers: { "Request-Id": "request-error" } });
+    const invalidResponse = await app.request("/invalid", { headers: { "Request-Id": "request-invalid" } });
+    const failureResponse = await app.request("/failure", { headers: { "Request-Id": "request-error" } });
+
+    expect(invalidResponse.status).toBe(422);
+    expect(failureResponse.status).toBe(500);
+    await expect(failureResponse.json()).resolves.toEqual({ error: { code: "INTERNAL_ERROR", message: "Internal server error" } });
 
     expect(logger.info).toHaveBeenCalledTimes(1);
     expect(logger.info).toHaveBeenCalledWith(
@@ -120,6 +124,12 @@ describe("HTTP access completion events", () => {
         result: "client_error",
       }),
     );
+    const clientErrorFields = logger.warn.mock.calls[0]?.[1];
+    expect(clientErrorFields).not.toHaveProperty("error_name");
+    expect(clientErrorFields).not.toHaveProperty("error_kind");
+    expect(clientErrorFields).not.toHaveProperty("error_message");
+    expect(clientErrorFields).not.toHaveProperty("error_stack");
+    expect(clientErrorFields).not.toHaveProperty("error_cause");
     expect(logger.error).toHaveBeenCalledTimes(1);
     const [message, fields] = logger.error.mock.calls[0];
     expect(message).toBe("request completed");
@@ -131,12 +141,15 @@ describe("HTTP access completion events", () => {
         request_id: "00000000-0000-4000-8000-000000000007",
         result: "server_error",
         error_name: "Error",
+        error_message: "unexpected request processing failure",
+        error_stack: expect.stringContaining("unexpected request processing failure"),
+        error_cause: expect.objectContaining({
+          name: "Error",
+          message: "downstream diagnostic cause",
+          stack: expect.stringContaining("downstream diagnostic cause"),
+        }),
       }),
     );
-    expect(fields).not.toHaveProperty("error_message");
-    expect(fields).not.toHaveProperty("error_stack");
-    expect(fields).not.toHaveProperty("cause");
-    expect(JSON.stringify(fields)).not.toContain("credential sentinel");
   });
 
   it("wires a server-generated Request-Id through a real API route", async () => {

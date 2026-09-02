@@ -4,7 +4,7 @@ import type { Env } from "@server/env";
 import { v2Problem } from "@server/http/middleware/v2Contract";
 import { actorRequired, mediaType, resourceLocation, type TaskContext, taskNotFound, taskWorkflowActor } from "@server/http/tasks/workflowSupport";
 import { replaceTaskAssignment, TaskAssignmentFailure } from "@server/usecases/tasks/replaceTaskAssignment";
-import { notifyTaskLifecycle, TaskLifecycleNotificationFailure } from "@server/usecases/tasks/taskLifecycleNotifications";
+import { notifyTaskLifecycle } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { Hono } from "hono";
 
 export function registerTaskAssignmentRoutes(api: Hono<{ Bindings: Env }>): void {
@@ -52,10 +52,6 @@ async function replaceAssignment(c: TaskContext): Promise<Response> {
     c.header("ETag", `"${result.version}"`);
     return c.json(result.assignment, result.created ? 201 : 200);
   } catch (error) {
-    if (error instanceof TaskLifecycleNotificationFailure) {
-      c.header("Retry-After", "5");
-      return v2Problem(c, 503, "task-notification-unavailable", "Task notification unavailable", error.message);
-    }
     if (!(error instanceof TaskAssignmentFailure)) throw error;
     if (error.code === "TASK_NOT_FOUND") return taskNotFound(c, error.message);
     return v2Problem(c, 409, "task-assignment-conflict", "Task assignment conflict", error.message);

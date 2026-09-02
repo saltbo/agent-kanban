@@ -133,6 +133,7 @@ describe("verified Task runtime provenance", () => {
   });
 
   it("[spec: session-observation/exact-session] resolves the stored binding exactly and maps missing, ambiguous, and upstream results", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const board = await createBoard(db, tenantId, "Exact Session observation", "ops");
     const task = await createTask(db, tenantId, { title: "Observe exact Agency Session", board_id: board.id });
     await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
@@ -213,8 +214,34 @@ describe("verified Task runtime provenance", () => {
       outcome = nextOutcome;
       const response = await observe();
       expect(response.status, nextOutcome).toBe(status);
-      await expect(response.json()).resolves.toMatchObject({ error: { code } });
+      const responseBody = await response.json();
+      expect(responseBody).toMatchObject({ error: { code } });
+      if (status === 503) {
+        expect(responseBody).toEqual({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } });
+      }
     }
+
+    const completionEvents = consoleError.mock.calls
+      .map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>)
+      .filter((entry) => entry.name === "api" && entry.msg === "request completed" && entry.status === 503);
+    expect(completionEvents).toHaveLength(2);
+    expect(completionEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          result: "server_error",
+          error_name: "AgencySessionObservationFailure",
+          error_message: "Agency Session lookup failed with HTTP 502",
+          error_stack: expect.stringContaining("Agency Session lookup failed with HTTP 502"),
+        }),
+        expect.objectContaining({
+          result: "server_error",
+          error_name: "AgencySessionObservationFailure",
+          error_message: "Agency returned malformed Session JSON",
+          error_stack: expect.stringContaining("Agency returned malformed Session JSON"),
+          error_cause: expect.objectContaining({ name: "SyntaxError", message: expect.any(String), stack: expect.any(String) }),
+        }),
+      ]),
+    );
   });
 
   it("[spec: session-observation/exact-session] relays only read-only backfill frames to the exact Agency Session socket", async () => {

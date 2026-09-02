@@ -3,11 +3,14 @@ import { isPublishedV2Operation, v2Problem } from "@server/http/middleware/v2Con
 import { AmaProjectInitializationBusy } from "@server/usecases/ama/ensureAmaProject";
 import { AmaProjectionError, RealmrootDelegationFailure } from "@server/usecases/ama/failures";
 import { ApplicationError } from "@server/usecases/applicationError";
+import { AgencySessionObservationFailure } from "@server/usecases/tasks/observeTaskSession";
+import { TaskLifecycleNotificationFailure } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { ErrorHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 
 export const apiErrorHandler: ErrorHandler = (error, c) => {
   applyRequestIdHeader(c);
+  c.set("requestError", error);
   const published = isPublishedV2Operation(c.req.method, c.req.path);
   if (error instanceof RealmrootDelegationFailure) {
     const status = delegationStatus(error.kind);
@@ -26,6 +29,13 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
   if (error instanceof AmaProjectionError) {
     const status = amaProjectionStatus(error.kind);
     return v2Problem(c, status, "ama-projection-failed", status === 503 ? "AMA unavailable" : "AMA projection failed", error.message);
+  }
+  if (error instanceof TaskLifecycleNotificationFailure) {
+    c.header("Retry-After", "5");
+    return v2Problem(c, 503, "task-notification-unavailable", "Task notification unavailable", error.message);
+  }
+  if (error instanceof AgencySessionObservationFailure) {
+    return c.json({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
   }
   if (error instanceof ApplicationError) {
     const status = applicationStatus(error.kind);
@@ -52,9 +62,6 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
     }
     return c.json({ error: { code: error.message, message: error.message } }, error.status);
   }
-  c.set("requestError", {
-    error_name: error.name,
-  });
   if (published) {
     const invalidJson = error instanceof SyntaxError;
     return v2Problem(

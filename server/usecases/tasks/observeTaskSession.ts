@@ -21,6 +21,19 @@ export interface AgencySessionObservationPort {
   findByRuntimeBinding(binding: TaskSessionBindingLookup): Promise<AgencySession[]>;
 }
 
+export type AgencySessionObservationFailureCode = "UNAVAILABLE" | "INVALID_RESPONSE";
+
+export class AgencySessionObservationFailure extends Error {
+  constructor(
+    readonly code: AgencySessionObservationFailureCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "AgencySessionObservationFailure";
+  }
+}
+
 export type TaskSessionObservationFailureCode = "SESSION_NOT_FOUND" | "SESSION_AMBIGUOUS";
 
 export class TaskSessionObservationFailure extends Error {

@@ -48,6 +48,7 @@ afterEach(async () => {
 
 describe("Realmroot Agent generic Toolbox operations", () => {
   it("[spec: tasks/cancel] notifies Inbox after Task lifecycle writes, retries notification on idempotent replay, and maps failure to 503", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     env = {
       ...env,
       OIDC_ISSUER: issuer,
@@ -151,6 +152,26 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       if (kind === "cancellation") {
         await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({ status: "cancelled" });
       }
+    }
+
+    const completionEvents = consoleError.mock.calls
+      .map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>)
+      .filter((entry) => entry.name === "api" && entry.msg === "request completed" && entry.status === 503);
+    expect(completionEvents).toHaveLength(4);
+    for (const event of completionEvents) {
+      expect(event).toEqual(
+        expect.objectContaining({
+          result: "server_error",
+          error_name: "TaskLifecycleNotificationFailure",
+          error_message: "Inbox rejected the task notification",
+          error_stack: expect.stringContaining("Inbox rejected the task notification"),
+          error_cause: expect.objectContaining({
+            name: "Error",
+            message: "Inbox responded with HTTP 503",
+            stack: expect.stringContaining("Inbox responded with HTTP 503"),
+          }),
+        }),
+      );
     }
   });
 
