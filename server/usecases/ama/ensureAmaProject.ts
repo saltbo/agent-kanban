@@ -1,4 +1,4 @@
-import { AmaApiError, type AmaClient, type Project } from "@realmroot/enbor-sdk";
+import { EnborApiError, type EnborClient, type Project } from "@realmroot/enbor-sdk";
 
 export interface AmaProjectBindingPort {
   findProjectId(tenantId: string): Promise<string | null>;
@@ -20,7 +20,7 @@ export class AmaProjectInitializationBusy extends Error {
   }
 }
 
-export async function ensureAmaProject(bindings: AmaProjectBindingPort, client: AmaClient, tenantId: string): Promise<string> {
+export async function ensureAmaProject(bindings: AmaProjectBindingPort, client: EnborClient, tenantId: string): Promise<string> {
   const existing = await bindings.findProjectId(tenantId);
   if (existing) return existing;
 
@@ -67,7 +67,7 @@ export async function ensureAmaProject(bindings: AmaProjectBindingPort, client: 
   }
 }
 
-async function waitForProject(bindings: AmaProjectBindingPort, client: AmaClient, tenantId: string): Promise<string> {
+async function waitForProject(bindings: AmaProjectBindingPort, client: EnborClient, tenantId: string): Promise<string> {
   for (let attempt = 0; attempt < WAIT_ATTEMPTS; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, WAIT_MS));
     const projectId = await bindings.findProjectId(tenantId);
@@ -80,6 +80,6 @@ async function waitForProject(bindings: AmaProjectBindingPort, client: AmaClient
 
 class AmaProjectClaimLost extends Error {}
 
-function invalidPagination(message: string): AmaApiError {
-  return new AmaApiError(502, message, null);
+function invalidPagination(message: string): EnborApiError {
+  return new EnborApiError(502, message, null);
 }

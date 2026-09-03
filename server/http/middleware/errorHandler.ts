@@ -1,4 +1,4 @@
-import { AmaApiError } from "@realmroot/enbor-sdk";
+import { EnborApiError } from "@realmroot/enbor-sdk";
 import { applyRequestIdHeader } from "@server/http/middleware/requestContext";
 import { isPublishedV2Operation, v2Problem } from "@server/http/middleware/v2Contract";
 import { AmaProjectInitializationBusy } from "@server/usecases/ama/ensureAmaProject";
@@ -26,7 +26,7 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
     c.header("Retry-After", "1");
     return v2Problem(c, 503, "ama-initialization-busy", "AMA initialization in progress", error.message);
   }
-  if (error instanceof AmaApiError) {
+  if (error instanceof EnborApiError) {
     const status = amaStatus(error.status);
     return v2Problem(
       c,

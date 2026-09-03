@@ -1,4 +1,4 @@
-import { type AmaClient, createAmaClient } from "@realmroot/enbor-sdk";
+import { createEnborClient, type EnborClient } from "@realmroot/enbor-sdk";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -6,8 +6,8 @@ export function createAgencyClient(
   baseUrl: string,
   authorization: { token: string; projectId?: string; traceparent?: string },
   headers: Record<string, string> = {},
-): AmaClient {
-  const client = createAmaClient({
+): EnborClient {
+  const client = createEnborClient({
     baseUrl,
     projectId: authorization.projectId,
     headers: {

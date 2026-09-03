@@ -1,4 +1,4 @@
-import { type Agent, AmaApiError, type AmaClient, type Identity } from "@realmroot/enbor-sdk";
+import { type Agent, EnborApiError, type EnborClient, type Identity } from "@realmroot/enbor-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { createAgencyAgent } from "../../../server/usecases/agents/projectAgents";
 
@@ -12,7 +12,7 @@ function harness() {
   const client = {
     identities: { create: createIdentity, delete: deleteIdentity },
     agents: { create: createAgent },
-  } as unknown as AmaClient;
+  } as unknown as EnborClient;
   return { client, createIdentity, deleteIdentity, createAgent };
 }
 
@@ -56,7 +56,7 @@ describe("Agent SDK orchestration", () => {
 
   it("[spec: agents/create-bound-agent] deletes the created Identity when SDK Agent creation is permanently rejected", async () => {
     const { client, createAgent, deleteIdentity } = harness();
-    const rejection = new AmaApiError(422, "invalid Agent", { type: "validation" });
+    const rejection = new EnborApiError(422, "invalid Agent", { type: "validation" });
     createAgent.mockRejectedValue(rejection);
 
     await expect(createAgencyAgent(client, input)).rejects.toBe(rejection);
@@ -65,11 +65,11 @@ describe("Agent SDK orchestration", () => {
 
   it.each([
     ["network failure", new Error("network unavailable")],
-    ["unknown SDK failure", new AmaApiError(undefined, "network unavailable", null)],
-    ["HTTP 408", new AmaApiError(408, "request timeout", null)],
-    ["HTTP 429", new AmaApiError(429, "rate limited", null)],
-    ["HTTP 503", new AmaApiError(503, "upstream unavailable", null)],
-    ["malformed HTTP 200", new AmaApiError(200, "invalid response", null)],
+    ["unknown SDK failure", new EnborApiError(undefined, "network unavailable", null)],
+    ["HTTP 408", new EnborApiError(408, "request timeout", null)],
+    ["HTTP 429", new EnborApiError(429, "rate limited", null)],
+    ["HTTP 503", new EnborApiError(503, "upstream unavailable", null)],
+    ["malformed HTTP 200", new EnborApiError(200, "invalid response", null)],
   ])("preserves the Identity after a transient %s", async (_scenario, rejection) => {
     const { client, createAgent, deleteIdentity } = harness();
     createAgent.mockRejectedValue(rejection);

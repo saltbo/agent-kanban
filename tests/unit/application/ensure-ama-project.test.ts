@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { AmaApiError, type AmaClient, type Project } from "@realmroot/enbor-sdk";
+import { EnborApiError, type EnborClient, type Project } from "@realmroot/enbor-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AmaProjectBindingPort, ensureAmaProject } from "../../../server/usecases/ama/ensureAmaProject";
 
@@ -25,7 +25,7 @@ function ports() {
     list: vi.fn().mockResolvedValue({ data: [], pagination: { nextCursor: null } }),
     create: vi.fn().mockResolvedValue({ id: "project-created", name: projectName } as Project),
   };
-  const client = { projects } as unknown as AmaClient;
+  const client = { projects } as unknown as EnborClient;
   return { bindings, client, projects };
 }
 
@@ -141,7 +141,7 @@ describe("transparent AMA project initialization", () => {
       .mockResolvedValueOnce({ data: [], pagination: { nextCursor: "repeated" } });
 
     const error = await ensureAmaProject(bindings, client, tenantId).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(AmaApiError);
+    expect(error).toBeInstanceOf(EnborApiError);
     expect(error).toMatchObject({ status: 502, responseText: "AMA Project pagination did not advance" });
     expect(bindings.release).toHaveBeenCalledWith(tenantId, expect.any(String));
     expect(projects.create).not.toHaveBeenCalled();

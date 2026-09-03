@@ -1,4 +1,4 @@
-import { AmaApiError, type AmaClient, type Environment, type Runner } from "@realmroot/enbor-sdk";
+import { EnborApiError, type EnborClient, type Environment, type Runner } from "@realmroot/enbor-sdk";
 import type { MachineSetup } from "@shared";
 
 export interface MachineProjection {
@@ -7,7 +7,7 @@ export interface MachineProjection {
 }
 
 export async function listMachinesPage(
-  client: AmaClient,
+  client: EnborClient,
   page: { limit: number; cursor: string | null },
 ): Promise<{ items: MachineProjection[]; nextCursor: string | null }> {
   const environments = await client.environments.list({ limit: page.limit, cursor: page.cursor ?? undefined });
@@ -20,14 +20,14 @@ export async function listMachinesPage(
   };
 }
 
-export async function getMachine(client: AmaClient, machineId: string): Promise<MachineProjection | null> {
+export async function getMachine(client: EnborClient, machineId: string): Promise<MachineProjection | null> {
   const environment = await client.environments.get(machineId);
   if (environment.spec.type !== "self_hosted") return null;
   return { environment, runners: await listAllRunners(client, machineId) };
 }
 
 export async function createMachine(
-  client: AmaClient,
+  client: EnborClient,
   projectId: string,
   idempotencyKey: string,
   runnerCommand: (projectId: string, environmentId: string) => string,
@@ -40,7 +40,7 @@ export async function createMachine(
   };
 }
 
-async function listAllRunners(client: AmaClient, environmentId?: string): Promise<Runner[]> {
+async function listAllRunners(client: EnborClient, environmentId?: string): Promise<Runner[]> {
   const runners: Runner[] = [];
   let cursor: string | undefined;
   for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
@@ -67,6 +67,6 @@ async function derivedKey(parent: string, stage: string): Promise<string> {
   return `ak-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function invalidPagination(message: string): AmaApiError {
-  return new AmaApiError(502, message, null);
+function invalidPagination(message: string): EnborApiError {
+  return new EnborApiError(502, message, null);
 }

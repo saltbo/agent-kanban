@@ -1,4 +1,4 @@
-import { AmaApiError, type AmaClient, connectSessionSocket, type Session } from "@realmroot/enbor-sdk";
+import { connectSessionSocket, EnborApiError, type EnborClient, type Session } from "@realmroot/enbor-sdk";
 import { createAgencyClient } from "@server/adapters/agency/client";
 import {
   addTaskAction,
@@ -222,7 +222,7 @@ async function getTaskSessionWebSocket(c: TaskContext): Promise<Response> {
       parseAs: "stream",
     });
     if (response?.status !== 101 || !response.webSocket) {
-      throw new AmaApiError(response?.status, "Session socket upgrade failed", null);
+      throw new EnborApiError(response?.status, "Session socket upgrade failed", null);
     }
     return relayReadOnlyAgencySocket(response.webSocket);
   } catch (error) {
@@ -245,11 +245,11 @@ async function taskSessionClient(c: TaskContext, scopes: readonly string[]) {
   };
 }
 
-async function readAgencySession(client: AmaClient, sessionId: string, projectId: string): Promise<Session> {
+async function readAgencySession(client: EnborClient, sessionId: string, projectId: string): Promise<Session> {
   const session = await client.sessions.get(sessionId);
-  if (!session?.metadata) throw new AmaApiError(502, "Agency returned an invalid Session response", session);
+  if (!session?.metadata) throw new EnborApiError(502, "Agency returned an invalid Session response", session);
   if (session.metadata.uid !== sessionId || session.metadata.projectId !== projectId) {
-    throw new AmaApiError(502, "Agency returned a Session outside the requested identity or Project", session);
+    throw new EnborApiError(502, "Agency returned a Session outside the requested identity or Project", session);
   }
   return session;
 }
@@ -327,10 +327,10 @@ function isBackfillRequest(value: string | ArrayBuffer): value is string {
 }
 
 function mapSessionObservationFailure(c: TaskContext, error: unknown): Response {
-  if (error instanceof AmaApiError && error.status === 404) {
+  if (error instanceof EnborApiError && error.status === 404) {
     return c.json({ error: { code: "AMA_SESSION_NOT_FOUND", message: "Agency Session not found for the Task" } }, 404);
   }
-  if (error instanceof AmaApiError) {
+  if (error instanceof EnborApiError) {
     return c.json({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
   }
   throw error;

@@ -1,4 +1,4 @@
-import { AmaApiError } from "@realmroot/enbor-sdk";
+import { EnborApiError } from "@realmroot/enbor-sdk";
 import { createAgencyClient } from "@server/adapters/agency/client";
 import { D1AmaProjectBindingAdapter } from "@server/adapters/d1/amaProjectBinding";
 import { delegatedAmaToken } from "@server/adapters/realmroot/delegatedAmaToken";
@@ -35,6 +35,6 @@ export async function amaAuthorization(c: Context<{ Bindings: Env }>, scopes: re
 }
 
 export function requiredAmaOrigin(env: Env): string {
-  if (!env.AMA_ORIGIN) throw new AmaApiError(undefined, "AMA_ORIGIN is required", null);
+  if (!env.AMA_ORIGIN) throw new EnborApiError(undefined, "AMA_ORIGIN is required", null);
   return env.AMA_ORIGIN;
 }

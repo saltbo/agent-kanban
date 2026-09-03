@@ -1,13 +1,13 @@
 // @vitest-environment node
 
-import { AmaApiError } from "@realmroot/enbor-sdk";
+import { EnborApiError } from "@realmroot/enbor-sdk";
 import type { Env } from "@server/env";
 import { apiErrorHandler } from "@server/http/middleware/errorHandler";
 import { requestContextMiddleware } from "@server/http/middleware/requestContext";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 
-function appFor(error: AmaApiError) {
+function appFor(error: EnborApiError) {
   const app = new Hono<{ Bindings: Env }>();
   app.use("*", requestContextMiddleware);
   app.onError(apiErrorHandler);
@@ -29,7 +29,7 @@ describe("AMA SDK HTTP error mapping", () => {
     { upstream: 503, expected: 503, title: "AMA unavailable" },
     { upstream: undefined, expected: 503, title: "AMA unavailable" },
   ])("maps SDK HTTP $upstream to stable $expected Problem Details", async ({ upstream, expected, title }) => {
-    const response = await appFor(new AmaApiError(upstream, "provider-secret-SENTINEL", { secret: true })).request("/api/agents");
+    const response = await appFor(new EnborApiError(upstream, "provider-secret-SENTINEL", { secret: true })).request("/api/agents");
 
     expect(response.status).toBe(expected);
     expect(response.headers.get("content-type")).toContain("application/problem+json");

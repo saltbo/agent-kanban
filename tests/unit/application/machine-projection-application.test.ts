@@ -1,4 +1,4 @@
-import { AmaApiError, type AmaClient, type Environment, type Runner } from "@realmroot/enbor-sdk";
+import { EnborApiError, type EnborClient, type Environment, type Runner } from "@realmroot/enbor-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { createMachine, listMachinesPage } from "../../../server/usecases/machines/projectMachines";
 
@@ -31,7 +31,7 @@ describe("Machine SDK orchestration", () => {
     const client = {
       environments: { list: environmentsList },
       runners: { list: runnersList },
-    } as unknown as AmaClient;
+    } as unknown as EnborClient;
 
     await expect(listMachinesPage(client, { limit: 20, cursor: "environment-cursor" })).resolves.toEqual({
       items: [{ environment: selfHosted, runners: [selfHostedRunnerA, selfHostedRunnerB] }],
@@ -47,7 +47,7 @@ describe("Machine SDK orchestration", () => {
   it("[spec: machines/create-runner-setup] creates a self-hosted SDK Environment and returns Runner setup", async () => {
     const created = environment("environment-created", "self_hosted");
     const environmentsCreate = vi.fn().mockResolvedValue(created);
-    const client = { environments: { create: environmentsCreate } } as unknown as AmaClient;
+    const client = { environments: { create: environmentsCreate } } as unknown as EnborClient;
 
     await expect(
       createMachine(
@@ -85,10 +85,10 @@ describe("Machine SDK orchestration", () => {
           .mockResolvedValueOnce({ data: [], pagination: { nextCursor: "repeated" } })
           .mockResolvedValueOnce({ data: [], pagination: { nextCursor: "repeated" } }),
       },
-    } as unknown as AmaClient;
+    } as unknown as EnborClient;
 
     const error = await listMachinesPage(client, { limit: 20, cursor: null }).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(AmaApiError);
+    expect(error).toBeInstanceOf(EnborApiError);
     expect(error).toMatchObject({ status: 502, responseText: "AMA Runner pagination did not advance" });
   });
 });

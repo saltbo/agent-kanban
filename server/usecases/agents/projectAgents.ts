@@ -1,4 +1,4 @@
-import { type Agent, AmaApiError, type AmaClient, type RuntimeName } from "@realmroot/enbor-sdk";
+import { type Agent, EnborApiError, type EnborClient, type RuntimeName } from "@realmroot/enbor-sdk";
 
 export interface CreateAgencyAgentInput {
   name: string;
@@ -12,7 +12,7 @@ export interface CreateAgencyAgentInput {
   idempotencyKey: string;
 }
 
-export async function createAgencyAgent(client: AmaClient, input: CreateAgencyAgentInput): Promise<Agent> {
+export async function createAgencyAgent(client: EnborClient, input: CreateAgencyAgentInput): Promise<Agent> {
   const identity = await client.identities.create(
     {
       metadata: { name: input.name },
@@ -36,7 +36,7 @@ export async function createAgencyAgent(client: AmaClient, input: CreateAgencyAg
     );
   } catch (error) {
     if (
-      error instanceof AmaApiError &&
+      error instanceof EnborApiError &&
       error.status !== undefined &&
       error.status >= 400 &&
       error.status < 500 &&
