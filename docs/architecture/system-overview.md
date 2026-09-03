@@ -3,7 +3,7 @@
 Agent Kanban is a React SPA and Hono API deployed together as one Cloudflare
 Worker. D1 stores AK-owned business state. Human sign-in uses standard OIDC;
 Realmroot is the current provider and supplies the additional Agent identity
-and Toolbox integration. Agency provides runtime infrastructure, and AMA Runner
+and Toolbox integration. Agency provides runtime infrastructure, and Enbor Runner
 hosts self-hosted execution.
 
 ```text
@@ -12,7 +12,7 @@ Browser ───────────────► Agent Kanban Worker ─
 Realmroot Toolbox ─────────┘       ├────────► Agency
                                    └────────► Realmroot Inbox
 
-AMA Runner ───────────► Agency
+Enbor Runner ─────────► Agency
 ```
 
 AK owns Boards, Repositories, Tasks, Notes, lifecycle state, review policy,

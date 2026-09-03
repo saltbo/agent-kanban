@@ -55,7 +55,7 @@ describe("Machine projection application", () => {
       projection,
       "project-1",
       "machine-create-key",
-      (projectId, environmentId) => `ama-runner start --project-id ${projectId} --environment-id ${environmentId}`,
+      (projectId, environmentId) => `enbor-runner start --project-id ${projectId} --environment-id ${environmentId}`,
     );
 
     expect(projection.createMachine).toHaveBeenCalledWith(
@@ -66,7 +66,7 @@ describe("Machine projection application", () => {
     expect(result).toEqual({
       machine,
       setup: {
-        command: "ama-runner start --project-id project-1 --environment-id environment-1",
+        command: "enbor-runner start --project-id project-1 --environment-id environment-1",
         project_id: "project-1",
         environment_id: "environment-1",
       },

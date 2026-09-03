@@ -276,7 +276,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     });
   }, 30_000);
 
-  it("[spec: machines/environment-projection] returns runtime usage grouped by AMA Runner", async () => {
+  it("[spec: machines/environment-projection] returns runtime usage grouped by Runner", async () => {
     vi.stubGlobal(
       "fetch",
       delegatedAmaFetch(["environments:read", "runners:read"], async (request) => {
@@ -401,9 +401,9 @@ describe("Agent and Machine projection HTTP resources", () => {
       status: "offline",
       runnerCount: 0,
       runners: [],
-      authCommand: 'ama-runner auth login --api-server "https://ama.projection.test"',
+      authCommand: 'enbor-runner auth login --api-server "https://ama.projection.test"',
       startCommand:
-        'ama-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-empty" --allow-unsafe-process',
+        'enbor-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-empty" --allow-unsafe-process',
     });
   });
 
@@ -440,9 +440,9 @@ describe("Agent and Machine projection HTTP resources", () => {
     const created = await response.json();
     expect(created).toMatchObject({
       machine: { id: "environment-created", status: "offline" },
-      authCommand: 'ama-runner auth login --api-server "https://ama.projection.test"',
+      authCommand: 'enbor-runner auth login --api-server "https://ama.projection.test"',
       startCommand:
-        'ama-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-created" --allow-unsafe-process',
+        'enbor-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-created" --allow-unsafe-process',
     });
     expect(created.machine).not.toHaveProperty("runners");
   });

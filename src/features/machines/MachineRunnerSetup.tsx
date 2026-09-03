@@ -10,12 +10,22 @@ interface MachineRunnerSetupProps {
 export function MachineRunnerSetup({ authCommand, startCommand }: MachineRunnerSetupProps) {
   return (
     <div className="flex flex-col gap-3">
-      <Command label="1. Authenticate" value={authCommand} />
-      <Command label="2. Start this Machine" value={startCommand} />
+      <Command label="1. Install with Homebrew (macOS/Linux)" value="brew install realmroot/tap/enbor-runner" />
+      <Command label="2. Authenticate" value={authCommand} />
+      <Command label="3. Start this Machine" value={startCommand} />
       <p className="text-xs leading-5 text-content-tertiary">
-        AMA Runner must already be installed. If it is not, install the latest release from{" "}
+        On Windows, download <code>enbor-runner.exe</code> from the{" "}
         <a className="text-accent underline underline-offset-2" href="https://github.com/realmroot/agency/releases" target="_blank" rel="noreferrer">
-          Realmroot Agency releases
+          Enbor Runner releases
+        </a>
+        . Prefer a container? Follow the{" "}
+        <a
+          className="text-accent underline underline-offset-2"
+          href="https://github.com/realmroot/agency/blob/main/docs/infra/self-hosted-runner.md#docker"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Enbor Runner Docker guide
         </a>
         .
       </p>

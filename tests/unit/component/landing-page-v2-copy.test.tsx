@@ -8,12 +8,12 @@ import { LandingPage } from "../../../src/features/landing/LandingPage";
 vi.mock("../../../src/features/landing/DemoBoard", () => ({ DemoBoard: () => React.createElement("div", null, "Board demo") }));
 
 describe("LandingPage v2 product copy", () => {
-  it("presents Agency, AMA Runner, Realmroot Toolbox, and independent review without legacy architecture copy", () => {
+  it("presents Agency, Enbor Runner, Realmroot Toolbox, and independent review without legacy architecture copy", () => {
     render(React.createElement(MemoryRouter, null, React.createElement(LandingPage)));
 
     expect(
       screen.getByText(
-        /Agency coordinates your Agents, and AMA Runner hosts self-hosted execution\. Realmroot gives them identity and Toolbox access\./,
+        /Agency coordinates your Agents, and Enbor Runner hosts self-hosted execution\. Realmroot gives them identity and Toolbox access\./,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Toolbox-Native Workflow")).toBeInTheDocument();

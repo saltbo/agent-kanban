@@ -207,13 +207,13 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
       if (cursor) url.searchParams.set("cursor", cursor);
       const page = decodeList(await this.request<unknown>(projectId, `${url.pathname}${url.search}`), decodeRunner, 100);
       rows.push(...page.data);
-      if (rows.length > 10_000) throw invalidResponse("AMA Runner result exceeded the safety bound");
+      if (rows.length > 10_000) throw invalidResponse("Enbor Runner result exceeded the safety bound");
       const next = page.pagination.hasMore ? page.pagination.nextCursor : null;
       if (!next) return rows;
-      if (next === cursor) throw invalidResponse("AMA Runner pagination did not advance");
+      if (next === cursor) throw invalidResponse("Enbor Runner pagination did not advance");
       cursor = next;
     }
-    throw invalidResponse("AMA Runner pagination exceeded the safety bound");
+    throw invalidResponse("Enbor Runner pagination exceeded the safety bound");
   }
 
   private async request<T>(

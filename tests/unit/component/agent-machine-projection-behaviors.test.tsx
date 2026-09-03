@@ -200,8 +200,8 @@ describe("Machine projection browser mutations", () => {
           return json(
             {
               machine,
-              authCommand: 'ama-runner auth login --api-server "https://ama.example"',
-              startCommand: 'ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"',
+              authCommand: 'enbor-runner auth login --api-server "https://ama.example"',
+              startCommand: 'enbor-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"',
             },
             201,
           );
@@ -213,13 +213,25 @@ describe("Machine projection browser mutations", () => {
     const view = wrapper(<MachinesPage />);
     await screen.findByText("No Machines registered.");
     fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
+    expect(screen.getByRole("button", { name: /Run Enbor Runner on this computer/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
 
-    await screen.findByRole("heading", { name: "Start AMA Runner" });
-    expect(screen.getByText(/must already be installed/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Realmroot Agency releases" })).toHaveAttribute("href", "https://github.com/realmroot/agency/releases");
-    expect(screen.getByText("1. Authenticate")).toBeInTheDocument();
-    expect(screen.getByText("2. Start this Machine")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Start Enbor Runner" });
+    expect(screen.getByText("1. Install with Homebrew (macOS/Linux)")).toBeInTheDocument();
+    expect(screen.getByText("brew install realmroot/tap/enbor-runner", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("2. Authenticate")).toBeInTheDocument();
+    expect(screen.getByText('enbor-runner auth login --api-server "https://ama.example"', { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("3. Start this Machine")).toBeInTheDocument();
+    expect(
+      screen.getByText('enbor-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"', {
+        exact: true,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Enbor Runner releases" })).toHaveAttribute("href", "https://github.com/realmroot/agency/releases");
+    expect(screen.getByRole("link", { name: "Enbor Runner Docker guide" })).toHaveAttribute(
+      "href",
+      "https://github.com/realmroot/agency/blob/main/docs/infra/self-hosted-runner.md#docker",
+    );
     await waitFor(() => {
       expect(interval).toHaveBeenCalledWith(expect.any(Function), 2_000);
       expect(timeout).toHaveBeenCalledWith(expect.any(Function), 30_000);
@@ -354,7 +366,7 @@ describe("Machine detail Runner usage", () => {
       "/machines/environment-empty",
     );
 
-    expect(await screen.findByText("Start AMA Runner")).toBeInTheDocument();
+    expect(await screen.findByText("Start Enbor Runner")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Waiting for computer" })).toBeInTheDocument();
     expect(screen.getByText(authCommand)).toBeInTheDocument();
     expect(screen.getByText(startCommand)).toBeInTheDocument();

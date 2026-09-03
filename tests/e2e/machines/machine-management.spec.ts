@@ -27,9 +27,10 @@ const machine = {
   updatedAt: "2026-09-01T12:00:00.000Z",
 };
 
-const authCommand = 'ama-runner auth login --api-server "https://ama.example.test"';
+const installCommand = "brew install realmroot/tap/enbor-runner";
+const authCommand = 'enbor-runner auth login --api-server "https://ama.example.test"';
 const startCommand =
-  'ama-runner start --api-server "https://ama.example.test" --project-id "project-123" --environment-id "environment-build-01" --allow-unsafe-process';
+  'enbor-runner start --api-server "https://ama.example.test" --project-id "project-123" --environment-id "environment-build-01" --allow-unsafe-process';
 
 test("[spec: machines/create-runner-setup] Add Machine offers a local computer and copies its setup commands", async ({ page }) => {
   await page.addInitScript(() => {
@@ -62,13 +63,28 @@ test("[spec: machines/create-runner-setup] Add Machine offers a local computer a
   await expect(createDialog.getByLabel("Machine name")).toHaveCount(0);
   await computer.click();
 
-  const setupDialog = page.getByRole("dialog", { name: "Start AMA Runner" });
+  const setupDialog = page.getByRole("dialog", { name: "Start Enbor Runner" });
+  await expect(setupDialog.getByText(installCommand, { exact: true })).toBeVisible();
   await expect(setupDialog.getByText(authCommand, { exact: true })).toBeVisible();
   await expect(setupDialog.getByText(startCommand, { exact: true })).toBeVisible();
+  const homebrewCopy = setupDialog.getByRole("button", {
+    name: "Copy 1. Install with Homebrew (macOS/Linux)",
+  });
+  await expect(homebrewCopy).toBeVisible();
+  await expect(setupDialog.getByRole("link", { name: "Enbor Runner releases" })).toHaveAttribute(
+    "href",
+    "https://github.com/realmroot/agency/releases",
+  );
+  await expect(setupDialog.getByRole("link", { name: "Enbor Runner Docker guide" })).toHaveAttribute(
+    "href",
+    "https://github.com/realmroot/agency/blob/main/docs/infra/self-hosted-runner.md#docker",
+  );
 
-  await setupDialog.getByRole("button", { name: "Copy 1. Authenticate" }).click();
+  await homebrewCopy.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(installCommand);
+  await setupDialog.getByRole("button", { name: "Copy 2. Authenticate" }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(authCommand);
-  await setupDialog.getByRole("button", { name: "Copy 2. Start this Machine" }).click();
+  await setupDialog.getByRole("button", { name: "Copy 3. Start this Machine" }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(startCommand);
 });
 
@@ -114,7 +130,7 @@ test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup co
   const createDialog = page.getByRole("dialog", { name: "Add Machine" });
   await createDialog.getByRole("button", { name: /Your Computer/ }).click();
 
-  const setupDialog = page.getByRole("dialog", { name: "Start AMA Runner" });
+  const setupDialog = page.getByRole("dialog", { name: "Start Enbor Runner" });
   await setupDialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(setupDialog).not.toBeVisible();
   await page.getByRole("link", { name: /Waiting for computer/ }).click();
@@ -122,9 +138,9 @@ test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup co
   await expect(page).toHaveURL(/\/machines\/environment-build-01$/);
   await expect(page.getByText(authCommand, { exact: true })).toBeVisible();
   await expect(page.getByText(startCommand, { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Copy 1. Authenticate" }).click();
+  await page.getByRole("button", { name: "Copy 2. Authenticate" }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(authCommand);
-  await page.getByRole("button", { name: "Copy 2. Start this Machine" }).click();
+  await page.getByRole("button", { name: "Copy 3. Start this Machine" }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(startCommand);
 });
 
@@ -152,7 +168,7 @@ test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses i
   await expect(dialog.getByRole("alert")).toHaveText("AMA Project binding is unavailable");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: /Your Computer/ }).click();
-  await expect(page.getByRole("dialog", { name: "Start AMA Runner" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Start Enbor Runner" })).toBeVisible();
   expect(idempotencyKeys).toHaveLength(2);
   expect(idempotencyKeys[0]).not.toBe("");
   expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
@@ -186,7 +202,7 @@ test("[spec: machines/create-runner-setup] Changing Machine data cannot extend t
   const createDialog = page.getByRole("dialog", { name: "Add Machine" });
   await createDialog.getByRole("button", { name: /Your Computer/ }).click();
 
-  const setupDialog = page.getByRole("dialog", { name: "Start AMA Runner" });
+  const setupDialog = page.getByRole("dialog", { name: "Start Enbor Runner" });
   const waiting = setupDialog.getByText("Waiting up to 30 seconds for this Machine to report online…", { exact: true });
   await expect(waiting).toBeVisible();
   await page.clock.fastForward(29_000);

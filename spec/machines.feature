@@ -13,7 +13,7 @@ Feature: Machine projections
     Given the tenant has an authoritative AMA Project
     When an authorized caller creates a Machine
     Then AK creates a real self-hosted AMA Environment
-    And returns an ama-runner auth command and start command containing AMA origin, Project id, and Environment id
+    And returns an enbor-runner auth command and start command containing AMA origin, Project id, and Environment id
     And retrying the same Idempotency-Key does not duplicate the Environment
     And AK stores no local Machine entity
 
@@ -24,7 +24,7 @@ Feature: Machine projections
     When the human chooses Your Computer or retries an uncertain attempt
     And AK creates the self-hosted Environment with a generated internal name instead of asking the human for one
     Then the browser reuses that attempt's Idempotency-Key
-    And the browser distinguishes installing AMA Runner from starting this Machine
+    And the browser offers Homebrew installation and Docker guidance separately from starting Enbor Runner on this Machine
     And the Machine detail keeps the auth and start commands available until a Runner connects
     And the browser follows the Machine against one absolute 30 second deadline while it comes online
     And an offline timeout offers another explicit status check
