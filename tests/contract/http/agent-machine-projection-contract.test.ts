@@ -49,7 +49,7 @@ describe("Agent and Machine projection HTTP contract", () => {
     expect(openapi.components.schemas.TaskAssignmentWrite.properties).not.toHaveProperty("agentId");
   });
 
-  it("[spec: machines/environment-projection] publishes per-Runner runtime usage on Machine resources", async () => {
+  it("[spec: machines/environment-projection] [spec: machines/create-runner-setup] publishes per-Runner usage and setup commands on Machine detail", async () => {
     const openapi = await document();
     expect(openapi.paths["/machines"].get.security).toContainEqual({ realmroot: ["machine:read"] });
     expect(openapi.paths["/machines"].post.security).toContainEqual({ realmroot: ["machine:write"] });
@@ -70,8 +70,12 @@ describe("Agent and Machine projection HTTP contract", () => {
     expect(openapi.components.schemas.MachineDetail).toMatchObject({
       type: "object",
       additionalProperties: false,
-      required: expect.arrayContaining(["runnerCount", "runners"]),
-      properties: { runners: { type: "array", items: { $ref: "#/components/schemas/MachineRunner" } } },
+      required: expect.arrayContaining(["runnerCount", "runners", "authCommand", "startCommand"]),
+      properties: {
+        runners: { type: "array", items: { $ref: "#/components/schemas/MachineRunner" } },
+        authCommand: { type: "string" },
+        startCommand: { type: "string" },
+      },
     });
     expect(openapi.components.schemas.MachineRunner).toMatchObject({
       type: "object",

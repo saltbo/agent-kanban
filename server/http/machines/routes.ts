@@ -54,7 +54,11 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
     const { adapter, projectId } = await amaProjectionDependencies(c, ["environments:read", "runners:read"]);
     const machine = await getProjectedMachine(adapter, projectId, c.req.param("machineId"));
     if (!machine) throw new HTTPException(404, { message: "Machine not found" });
-    const represented = machineDetailRepresentation(machine, c.req.url);
+    const represented = {
+      ...machineDetailRepresentation(machine, c.req.url),
+      authCommand: runnerAuthCommand(c.env),
+      startCommand: runnerStartCommand(c.env, projectId, machine.id),
+    };
     c.header("ETag", await representationEtag(represented));
     return c.json(represented);
   });

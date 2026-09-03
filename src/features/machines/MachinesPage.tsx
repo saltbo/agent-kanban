@@ -1,10 +1,11 @@
-import { Check, Cloud, Copy, Cpu, Monitor, Plus, Trash2 } from "lucide-react";
+import { Cloud, Cpu, Monitor, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Header } from "@/features/boards/components/Header";
+import { MachineRunnerSetup } from "@/features/machines/MachineRunnerSetup";
 import { type MachineCreateResult, type MachineProjection, useCreateMachine, useDeleteMachine, useMachines } from "@/features/machines/useMachines";
 
 export function MachinesPage() {
@@ -175,21 +176,8 @@ export function MachinesPage() {
             <DialogDescription>Run these commands on the machine. Project and Environment are already selected.</DialogDescription>
           </DialogHeader>
           {setup && (
-            <div className="space-y-3">
-              <Command label="1. Authenticate" value={setup.authCommand} />
-              <Command label="2. Start this Machine" value={setup.startCommand} />
-              <p className="text-xs leading-5 text-content-tertiary">
-                AMA Runner must already be installed. If it is not, install the latest release from{" "}
-                <a
-                  className="text-accent underline underline-offset-2"
-                  href="https://github.com/realmroot/agency/releases"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Realmroot Agency releases
-                </a>
-                .
-              </p>
+            <div className="flex flex-col gap-3">
+              <MachineRunnerSetup authCommand={setup.authCommand} startCommand={setup.startCommand} />
               {tracking?.machineId === setup.machine.id && (
                 <p className="text-xs text-content-tertiary">Waiting up to 30 seconds for this Machine to report online…</p>
               )}
@@ -250,25 +238,5 @@ function Status({ value }: { value: MachineProjection["status"] }) {
     <Badge variant="outline" className={value === "online" ? "border-success/30 text-success" : "text-content-tertiary"}>
       {value}
     </Badge>
-  );
-}
-
-function Command({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  }
-  return (
-    <div className="space-y-1.5">
-      <div className="text-xs font-medium text-content-secondary">{label}</div>
-      <div className="flex items-start gap-2 rounded-md border border-border bg-surface-primary p-3">
-        <code className="min-w-0 flex-1 break-all font-mono text-xs leading-5 text-content-primary">{value}</code>
-        <Button variant="ghost" size="icon-sm" aria-label={`Copy ${label}`} onClick={copy}>
-          {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-        </Button>
-      </div>
-    </div>
   );
 }

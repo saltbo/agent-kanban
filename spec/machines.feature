@@ -25,6 +25,7 @@ Feature: Machine projections
     And AK creates the self-hosted Environment with a generated internal name instead of asking the human for one
     Then the browser reuses that attempt's Idempotency-Key
     And the browser distinguishes installing AMA Runner from starting this Machine
+    And the Machine detail keeps the auth and start commands available until a Runner connects
     And the browser follows the Machine against one absolute 30 second deadline while it comes online
     And an offline timeout offers another explicit status check
     And creation failures remain actionable in the Add Machine dialog

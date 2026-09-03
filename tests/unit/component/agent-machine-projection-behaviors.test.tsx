@@ -103,7 +103,7 @@ describe("Agent projection browser queries", () => {
 describe("Machine projection browser mutations", () => {
   const machine = {
     id: "environment-1",
-    name: "Build host",
+    name: "Waiting for computer",
     description: null,
     status: "offline",
     currentLoad: 0,
@@ -131,7 +131,7 @@ describe("Machine projection browser mutations", () => {
     );
 
     wrapper(<MachinesPage />);
-    await screen.findByText("Build host");
+    await screen.findByText("Waiting for computer");
     fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
     expect(screen.getByRole("button", { name: /Your Computer/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /Cloud Sandbox/ })).toBeDisabled();
@@ -141,7 +141,7 @@ describe("Machine projection browser mutations", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment creation unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete Build host" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Waiting for computer" }));
     fireEvent.click(screen.getByRole("button", { name: "Archive" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment archive unavailable");
   });
@@ -229,7 +229,7 @@ describe("Machine projection browser mutations", () => {
 });
 
 describe("Machine detail Runner usage", () => {
-  it("[spec: machines/runner-aggregation] renders each runtime usage window within its owning Runner", async () => {
+  it("[spec: machines/runner-aggregation] [spec: machines/create-runner-setup] renders each runtime usage window within its owning Runner and hides setup commands", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -239,12 +239,14 @@ describe("Machine detail Runner usage", () => {
         if (url === "/api/machines/environment-1") {
           return json({
             id: "environment-1",
-            name: "Build host",
+            name: "Runner east + 1 runner",
             description: null,
             status: "online",
             currentLoad: 2,
             maxLoad: 4,
             runnerCount: 2,
+            authCommand: 'ama-runner auth login --api-server "https://ama.example"',
+            startCommand: 'ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"',
             runners: [
               {
                 id: "runner-east",
@@ -307,9 +309,16 @@ describe("Machine detail Runner usage", () => {
     expect(within(east).getByText("claude-code")).toBeInTheDocument();
     expect(within(east).getByText("Runtime inventory not reported")).toBeInTheDocument();
     expect(within(east).getByText("40% used · 60% remaining")).toBeInTheDocument();
+    expect(screen.queryByText("Start AMA Runner")).not.toBeInTheDocument();
+    expect(screen.queryByText('ama-runner auth login --api-server "https://ama.example"')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"'),
+    ).not.toBeInTheDocument();
   });
 
-  it("[spec: machines/runner-aggregation] renders the Machine empty state when no Runners have reported", async () => {
+  it("[spec: machines/create-runner-setup] keeps setup commands available on Machine detail until a Runner connects", async () => {
+    const authCommand = 'ama-runner auth login --api-server "https://ama.example"';
+    const startCommand = 'ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-empty"';
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -319,13 +328,15 @@ describe("Machine detail Runner usage", () => {
         if (url === "/api/machines/environment-empty") {
           return json({
             id: "environment-empty",
-            name: "Empty host",
+            name: "Waiting for computer",
             description: null,
             status: "offline",
             currentLoad: 0,
             maxLoad: 0,
             runnerCount: 0,
             runners: [],
+            authCommand,
+            startCommand,
             runtimes: [],
             lastHeartbeatAt: null,
             createdAt: "2026-09-01T12:00:00.000Z",
@@ -343,7 +354,11 @@ describe("Machine detail Runner usage", () => {
       "/machines/environment-empty",
     );
 
-    expect(await screen.findByText("No Runners reported yet.")).toBeInTheDocument();
+    expect(await screen.findByText("Start AMA Runner")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Waiting for computer" })).toBeInTheDocument();
+    expect(screen.getByText(authCommand)).toBeInTheDocument();
+    expect(screen.getByText(startCommand)).toBeInTheDocument();
+    expect(screen.queryByText("No Runners reported yet.")).not.toBeInTheDocument();
   });
 
   it("[spec: machines/runner-aggregation] distinguishes an empty Runner from a runtime without usage", async () => {
@@ -356,7 +371,7 @@ describe("Machine detail Runner usage", () => {
         if (url === "/api/machines/environment-partial") {
           return json({
             id: "environment-partial",
-            name: "Partial host",
+            name: "Runner empty + 1 runner",
             description: null,
             status: "online",
             currentLoad: 0,
