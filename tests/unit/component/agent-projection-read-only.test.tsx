@@ -1,5 +1,7 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { AgentDetail, AgentList } from "../../../src/features/agents/AgentProjectionPages";
@@ -21,7 +23,7 @@ const agent: AgentProjection = {
 
 describe("read-only Agent projection pages", () => {
   it("[spec: agents/read-only-browser] renders Agent list and detail without management controls", () => {
-    const list = render(
+    const list = renderWithQuery(
       <MemoryRouter>
         <AgentList agents={[agent]} />
       </MemoryRouter>,
@@ -30,7 +32,7 @@ describe("read-only Agent projection pages", () => {
     expect(screen.queryByRole("button", { name: /create|edit|archive/i })).not.toBeInTheDocument();
     list.unmount();
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <AgentDetail agent={agent} />
       </MemoryRouter>,
@@ -39,3 +41,8 @@ describe("read-only Agent projection pages", () => {
     expect(screen.queryByRole("button", { name: /create|edit|archive/i })).not.toBeInTheDocument();
   });
 });
+
+function renderWithQuery(children: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
+}

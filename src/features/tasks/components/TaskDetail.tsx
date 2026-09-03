@@ -14,11 +14,11 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AgentAvatar, useAgentProfile } from "@/features/agent-identity";
 import { LabelChip } from "@/features/boards/components/LabelChip";
 import { api } from "@/lib/api";
 import { useSSE } from "../hooks/useSSE";
 import { ActivityLog } from "./ActivityLog";
-import { AgentIdenticon } from "./AgentIdenticon";
 import { SubtaskList } from "./SubtaskList";
 import { TaskChatDrawer } from "./TaskChatDrawer";
 import { Field, FieldLabel, formatRelative } from "./TaskDetailFields";
@@ -98,6 +98,7 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
     queryFn: () => api.repositories.list(),
     staleTime: 60_000,
   });
+  const agentProfile = useAgentProfile(task?.assigned_to).data;
 
   const dependsOn: string[] = task?.depends_on || [];
 
@@ -154,11 +155,12 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
   }
 
   const repo = repositories.find((r: any) => r.id === task.repository_id);
+  const agentName = agentProfile?.name || task.assignee_name || task.assigned_to;
 
-  const agentDisplay = task.assignee_name ? (
+  const agentDisplay = task.assigned_to ? (
     <button className="flex items-center gap-1.5 cursor-pointer group" onClick={() => setChatOpen(true)} type="button">
-      {task.assigned_to && <AgentIdenticon seed={task.assigned_to} size={20} />}
-      <span className="font-mono text-[13px] text-accent group-hover:underline">{task.assignee_name}</span>
+      <AgentAvatar subject={task.assigned_to} profile={agentProfile} fallbackName={task.assignee_name} size={20} />
+      <span className="font-mono text-[13px] text-accent group-hover:underline">{agentName}</span>
     </button>
   ) : (
     <span className="text-content-tertiary">—</span>

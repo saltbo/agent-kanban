@@ -1,6 +1,6 @@
 import { agentColor, agentIdenticon } from "@/lib/agentIdentity";
 
-interface AgentIdenticonProps {
+export interface AgentIdenticonProps {
   seed: string;
   size?: number;
   glow?: boolean;

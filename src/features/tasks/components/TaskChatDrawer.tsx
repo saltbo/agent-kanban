@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AgentAvatar, useAgentProfile } from "@/features/agent-identity";
 import { api } from "@/lib/api";
-import { AgentIdenticon } from "./AgentIdenticon";
 import { ChatPanel } from "./ChatPanel";
 
 interface TaskChatDrawerProps {
@@ -26,11 +26,11 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
     queryFn: () => api.tasks.get(taskId!),
     enabled: requiresFetch,
   });
+  const currentTask = fetchedTask ?? task;
+  const profile = useAgentProfile(currentTask?.assigned_to).data;
+  const agentName = profile?.name ?? currentTask?.assignee_name ?? currentTask?.assigned_to ?? "agent";
 
   if (!taskId) return null;
-
-  const currentTask = fetchedTask ?? task;
-  const agentName = currentTask?.assignee_name ?? "agent";
 
   // AMA is the sole runtime source for task chat.
   const hasRuntimeSession = !!currentTask?.session_binding;
@@ -42,7 +42,11 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
         <SheetDescription className="sr-only">Chat panel</SheetDescription>
 
         <div className="flex items-center gap-3 p-4 border-b border-border shrink-0">
-          {currentTask?.assigned_to ? <AgentIdenticon seed={currentTask.assigned_to} size={28} /> : <Skeleton className="size-7 rounded-full" />}
+          {currentTask?.assigned_to ? (
+            <AgentAvatar subject={currentTask.assigned_to} profile={profile} fallbackName={currentTask.assignee_name} size={28} />
+          ) : (
+            <Skeleton className="size-7 rounded-full" />
+          )}
           <span className="font-mono text-[13px] text-accent flex-1">{agentName}</span>
           <Button variant="ghost" size="icon-sm" onClick={() => onOpenChange(false)}>
             ✕

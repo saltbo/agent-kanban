@@ -37,3 +37,12 @@ Feature: Agent projections
     And the list filters by search, runtime, and authoritative schedulable state
     And the detail lists AK Tasks whose assignee is the Agent's Realmroot subject
     And the pages offer no create, edit, or archive controls
+
+  @journey:agents/public-identity-profile @entrypoint:product-ui @proof:unit
+  Scenario: Display current Agent identity details
+    Given an Agent or assigned Task exposes a stable Agent subject
+    And the configured identity provider publishes public Agent profiles
+    When the browser presents that Agent identity
+    Then it shows the current profile name and picture
+    And repeated appearances of the same subject reuse the cached profile
+    And an unavailable profile falls back to the existing Agent name or subject

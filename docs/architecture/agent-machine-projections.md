@@ -9,6 +9,13 @@ runtime, model, Skills, Realmroot subject, and Agency's authoritative
 `schedulable` state. The browser pages are read-only and the detail page finds
 AK Tasks by the projected subject.
 
+The browser treats the subject as the stable identity key. It discovers the
+configured authorization server from AK's protected-resource metadata and, when
+that server advertises an `agent_profile_uri_template`, reads the public Agent
+profile for the current name, username, and picture. Profiles are query-cached
+per subject and are display-only: failure falls back to the Agency projection or
+subject and never changes assignment or authorization behavior.
+
 `POST /agents` validates the complete request, creates a same-tenant Realmroot
 Identity through Agency, creates the bound Agent, and returns the projection.
 Derived upstream idempotency keys make the compound operation replayable. AK

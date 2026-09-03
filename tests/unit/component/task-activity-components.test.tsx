@@ -1,4 +1,6 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ActivityLog } from "@/features/tasks/components/ActivityLog";
@@ -20,7 +22,7 @@ describe("TaskCard activity entry point", () => {
     const onClick = vi.fn();
     const onAgentClick = vi.fn();
 
-    render(<TaskCard task={task} onClick={onClick} onAgentClick={onAgentClick} />);
+    renderWithQuery(<TaskCard task={task} onClick={onClick} onAgentClick={onAgentClick} />);
     fireEvent.click(screen.getByRole("button", { name: "Open chat with flint" }));
 
     expect(onAgentClick).toHaveBeenCalledWith(task);
@@ -30,7 +32,7 @@ describe("TaskCard activity entry point", () => {
 
 describe("Task ActivityLog", () => {
   it("merges notes oldest-to-newest and removes a duplicate SSE note", () => {
-    const { container } = render(
+    const { container } = renderWithQuery(
       <ActivityLog
         reconnecting={false}
         initialNotes={[
@@ -72,7 +74,7 @@ describe("Task ActivityLog", () => {
   });
 
   it("does not create a nested vertical scroll region", () => {
-    render(<ActivityLog reconnecting={false} initialNotes={[note({ id: "created", action: "created" })]} sseNotes={[]} />);
+    renderWithQuery(<ActivityLog reconnecting={false} initialNotes={[note({ id: "created", action: "created" })]} sseNotes={[]} />);
 
     const liveRegion = screen.getByText("created this task").closest("[aria-live='polite']");
     expect(liveRegion).not.toBeNull();
@@ -100,7 +102,7 @@ describe("Task ActivityLog", () => {
       "```",
     ].join("\n");
 
-    const { container } = render(
+    const { container } = renderWithQuery(
       <ActivityLog
         reconnecting={false}
         initialNotes={[
@@ -127,6 +129,11 @@ describe("Task ActivityLog", () => {
     expect(container.querySelector("pre code")?.textContent).toContain("const ok = true;");
   });
 });
+
+function renderWithQuery(children: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
+}
 
 function note(overrides: Record<string, unknown>) {
   return {
