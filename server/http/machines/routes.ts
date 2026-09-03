@@ -73,11 +73,11 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
 }
 
 function runnerAuthCommand(env: Env): string {
-  return `ama-runner auth login --api-server ${quote(required(env.AMA_ORIGIN, "AMA_ORIGIN"))}`;
+  return `enbor-runner auth login --api-server ${quote(required(env.AMA_ORIGIN, "AMA_ORIGIN"))}`;
 }
 
 function runnerStartCommand(env: Env, projectId: string, environmentId: string): string {
-  return `ama-runner start --api-server ${quote(required(env.AMA_ORIGIN, "AMA_ORIGIN"))} --project-id ${quote(projectId)} --environment-id ${quote(environmentId)} --allow-unsafe-process`;
+  return `enbor-runner start --api-server ${quote(required(env.AMA_ORIGIN, "AMA_ORIGIN"))} --project-id ${quote(projectId)} --environment-id ${quote(environmentId)} --allow-unsafe-process`;
 }
 
 function quote(value: string): string {

@@ -35,7 +35,7 @@ embeds each current Runner's identity, state, capacity, runtime inventory, usage
 windows, and heartbeat so consumers never merge quota reported by different
 Runner credentials without inflating collection responses.
 
-Creating a Machine creates the Environment and returns complete `ama-runner`
+Creating a Machine creates the Environment and returns complete `enbor-runner`
 authentication and start commands with the resolved Project and Environment.
 Deleting a Machine archives the Environment; it does not remove local Runner
 files. The UI uses focused dialogs for both operations.

@@ -2,7 +2,7 @@
 
 > Agent-first kanban board for AI engineering teams.
 
-Agent Kanban is an Agent-first task board. Agency owns Agent execution, with AMA Runner hosting self-hosted work; Agents operate the board through Realmroot Toolbox commands published by the Agent Kanban Resource Server.
+Agent Kanban is an Agent-first task board. Agency owns Agent execution, with Enbor Runner hosting self-hosted work; Agents operate the board through Realmroot Toolbox commands published by the Agent Kanban Resource Server.
 
 Human browser sign-in uses standard OIDC; Realmroot is the configured provider. Agent and Toolbox access additionally use Realmroot-specific identity extensions.
 

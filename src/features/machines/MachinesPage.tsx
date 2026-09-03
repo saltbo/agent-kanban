@@ -142,7 +142,7 @@ export function MachinesPage() {
               <Monitor data-icon="inline-start" />
               <span className="flex flex-col items-start gap-1">
                 <span>{create.isPending ? "Creating…" : "Your Computer"}</span>
-                <span className="font-normal text-muted-foreground">Run AMA Runner on this computer</span>
+                <span className="font-normal text-muted-foreground">Run Enbor Runner on this computer</span>
               </span>
             </Button>
             <Button variant="outline" className="h-auto min-h-20 justify-start whitespace-normal p-4 text-left" disabled>
@@ -172,7 +172,7 @@ export function MachinesPage() {
       <Dialog open={Boolean(setup)} onOpenChange={(open) => !open && setSetup(null)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Start AMA Runner</DialogTitle>
+            <DialogTitle>Start Enbor Runner</DialogTitle>
             <DialogDescription>Run these commands on the machine. Project and Environment are already selected.</DialogDescription>
           </DialogHeader>
           {setup && (
@@ -183,7 +183,7 @@ export function MachinesPage() {
               )}
               {trackingTimedOut === setup.machine.id && (
                 <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface-primary p-3">
-                  <p className="text-xs leading-5 text-content-tertiary">Still offline. Check AMA Runner output, then try another status check.</p>
+                  <p className="text-xs leading-5 text-content-tertiary">Still offline. Check Enbor Runner output, then try another status check.</p>
                   <Button
                     variant="outline"
                     size="sm"

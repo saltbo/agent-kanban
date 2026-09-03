@@ -49,7 +49,7 @@ export function MachineDetailPage() {
             {data.runners.length === 0 ? (
               <Card className="rounded-lg border-border bg-surface-secondary">
                 <CardHeader>
-                  <CardTitle>Start AMA Runner</CardTitle>
+                  <CardTitle>Start Enbor Runner</CardTitle>
                   <CardDescription>No Runner has connected yet. Run these commands on this Machine to bring it online.</CardDescription>
                 </CardHeader>
                 <CardContent>

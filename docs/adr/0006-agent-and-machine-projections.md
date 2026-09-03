@@ -18,7 +18,7 @@ precondition.
 
 A Machine is an Agency self-hosted Environment enriched with live Runner state.
 AK supports list, detail, creation, and archival. Creation returns complete
-AMA Runner authentication and start commands containing the resolved Project
+Enbor Runner authentication and start commands containing the resolved Project
 and Environment identifiers. Cloud capacity is not represented as a Machine.
 
 Agency's `schedulable` value is authoritative and infrastructure-only. Task

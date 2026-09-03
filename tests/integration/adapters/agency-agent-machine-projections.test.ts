@@ -610,6 +610,23 @@ describe("Agency Agent and Machine projection adapter", () => {
     expect(runnerRequests.every((url) => !url.searchParams.has("environmentId"))).toBe(true);
     expect(runnerRequests.map((url) => url.searchParams.get("limit"))).toEqual(["100", "100"]);
 
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/api/v1/environments") {
+          return Response.json({
+            data: [{ metadata: metadata("environment-1", "One"), spec: { type: "self_hosted" }, status: { phase: "active" } }],
+            pagination: { nextCursor: null, hasMore: false },
+          });
+        }
+        return Response.json({ data: [], pagination: { nextCursor: "repeated", hasMore: true } });
+      }),
+    );
+    await expect(
+      new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "Enbor Runner pagination did not advance" });
+
     let resultBoundRequests = 0;
     vi.stubGlobal(
       "fetch",
@@ -660,7 +677,7 @@ describe("Agency Agent and Machine projection adapter", () => {
     );
     await expect(
       new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
-    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA Runner pagination exceeded the safety bound" });
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "Enbor Runner pagination exceeded the safety bound" });
     expect(pageBoundRequests).toBe(100);
   });
 

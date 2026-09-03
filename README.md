@@ -7,7 +7,7 @@ Toolbox.
 v2 is a breaking architecture change:
 
 - Agency owns Agent identity, configuration, execution, Sessions, Environments,
-  Runners, health, quota, and usage. AMA Runner hosts self-hosted execution.
+  Runners, health, quota, and usage. Enbor Runner hosts self-hosted execution.
 - Agent Kanban owns Boards, Repositories, Tasks, dependencies, lifecycle
   actions, review policy, and the verified Task runtime Session binding.
 - Human sign-in uses standard OIDC authorization code flow with PKCE; the
