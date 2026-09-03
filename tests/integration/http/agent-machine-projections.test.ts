@@ -397,6 +397,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(response.status, await response.clone().text()).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       id: "environment-empty",
+      name: "Waiting for computer",
       status: "offline",
       runnerCount: 0,
       runners: [],

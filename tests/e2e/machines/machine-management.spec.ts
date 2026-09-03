@@ -75,7 +75,16 @@ test("[spec: machines/create-runner-setup] Add Machine offers a local computer a
 test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup commands available after the create dialog closes", async ({
   page,
 }) => {
-  const offlineMachine = { ...machine, status: "offline", currentLoad: 0, maxLoad: 0, runnerCount: 0, runtimes: [], runners: [] };
+  const offlineMachine = {
+    ...machine,
+    name: "Waiting for computer",
+    status: "offline",
+    currentLoad: 0,
+    maxLoad: 0,
+    runnerCount: 0,
+    runtimes: [],
+    runners: [],
+  };
   let created = false;
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
@@ -88,6 +97,7 @@ test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup co
   });
   await page.route(/\/api\/machines$/, async (route) => {
     if (route.request().method() === "POST") {
+      expect(route.request().postData()).toBeNull();
       created = true;
       await route.fulfill({ status: 201, json: { machine: offlineMachine, authCommand, startCommand } });
       return;
@@ -102,13 +112,12 @@ test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup co
 
   await page.getByRole("button", { name: "Add Machine" }).click();
   const createDialog = page.getByRole("dialog", { name: "Add Machine" });
-  await createDialog.getByLabel("Machine name").fill("mac-mini-build");
-  await createDialog.getByRole("button", { name: "Create", exact: true }).click();
+  await createDialog.getByRole("button", { name: /Your Computer/ }).click();
 
   const setupDialog = page.getByRole("dialog", { name: "Start AMA Runner" });
   await setupDialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(setupDialog).not.toBeVisible();
-  await page.getByRole("link", { name: /mac-mini-build/ }).click();
+  await page.getByRole("link", { name: /Waiting for computer/ }).click();
 
   await expect(page).toHaveURL(/\/machines\/environment-build-01$/);
   await expect(page.getByText(authCommand, { exact: true })).toBeVisible();

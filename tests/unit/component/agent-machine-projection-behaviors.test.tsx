@@ -103,7 +103,7 @@ describe("Agent projection browser queries", () => {
 describe("Machine projection browser mutations", () => {
   const machine = {
     id: "environment-1",
-    name: "Build host",
+    name: "Waiting for computer",
     description: null,
     status: "offline",
     currentLoad: 0,
@@ -131,7 +131,7 @@ describe("Machine projection browser mutations", () => {
     );
 
     wrapper(<MachinesPage />);
-    await screen.findByText("Build host");
+    await screen.findByText("Waiting for computer");
     fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
     expect(screen.getByRole("button", { name: /Your Computer/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /Cloud Sandbox/ })).toBeDisabled();
@@ -141,7 +141,7 @@ describe("Machine projection browser mutations", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment creation unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete Build host" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Waiting for computer" }));
     fireEvent.click(screen.getByRole("button", { name: "Archive" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment archive unavailable");
   });
@@ -239,7 +239,7 @@ describe("Machine detail Runner usage", () => {
         if (url === "/api/machines/environment-1") {
           return json({
             id: "environment-1",
-            name: "Build host",
+            name: "Runner east + 1 runner",
             description: null,
             status: "online",
             currentLoad: 2,
@@ -328,7 +328,7 @@ describe("Machine detail Runner usage", () => {
         if (url === "/api/machines/environment-empty") {
           return json({
             id: "environment-empty",
-            name: "Empty host",
+            name: "Waiting for computer",
             description: null,
             status: "offline",
             currentLoad: 0,
@@ -355,6 +355,7 @@ describe("Machine detail Runner usage", () => {
     );
 
     expect(await screen.findByText("Start AMA Runner")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Waiting for computer" })).toBeInTheDocument();
     expect(screen.getByText(authCommand)).toBeInTheDocument();
     expect(screen.getByText(startCommand)).toBeInTheDocument();
     expect(screen.queryByText("No Runners reported yet.")).not.toBeInTheDocument();
@@ -370,7 +371,7 @@ describe("Machine detail Runner usage", () => {
         if (url === "/api/machines/environment-partial") {
           return json({
             id: "environment-partial",
-            name: "Partial host",
+            name: "Runner empty + 1 runner",
             description: null,
             status: "online",
             currentLoad: 0,
