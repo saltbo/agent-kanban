@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="./public/Logo.png" alt="Agent Kanban" width="520" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./public/Logo-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="./public/Logo.png" />
+    <img src="./public/Logo.png" alt="Agent Kanban" width="520" />
+  </picture>
 </p>
 
 <p align="center">
