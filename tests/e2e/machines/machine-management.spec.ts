@@ -129,7 +129,7 @@ test("[spec: machines/create-runner-setup] Changing Machine data cannot extend t
   expect(listRequests).toBe(requestsAtTimeout);
 });
 
-test("[spec: machines/archive-environment] Archive requires confirmation naming the Machine and its current load", async ({ page }) => {
+test("[spec: machines/archive-machine-ui] Archive requires confirmation naming the Machine and its current load", async ({ page }) => {
   let deleteRequests = 0;
   await page.route(/\/api\/machines$/, (route) => route.fulfill({ json: { items: [machine], pagination: { pageSize: 1, nextPageToken: null } } }));
   await page.route(/\/api\/machines\/environment-build-01$/, async (route) => {
@@ -155,7 +155,7 @@ test("[spec: machines/archive-environment] Archive requires confirmation naming 
   await expect(dialog).not.toBeVisible();
 });
 
-test("[spec: machines/archive-environment] Archive failure remains actionable in the confirmation dialog", async ({ page }) => {
+test("[spec: machines/archive-machine-ui] Archive failure remains actionable in the confirmation dialog", async ({ page }) => {
   await page.route(/\/api\/machines$/, (route) => route.fulfill({ json: { items: [machine], pagination: { pageSize: 1, nextPageToken: null } } }));
   await page.route(/\/api\/machines\/environment-build-01$/, (route) =>
     route.fulfill({ status: 502, json: { detail: "AMA Environment could not be archived" } }),

@@ -5,10 +5,11 @@ executable specifications in structure, but AK does not run them through
 Cucumber. Ordinary Vitest and Playwright tests prove each scenario at the
 cheapest useful layer.
 
-Each scenario has exactly one stable id and one proof layer:
+Each scenario has exactly one stable journey id, one product entry point, and
+one canonical proof layer:
 
 ```gherkin
-@tasks/claim @api
+@journey:tasks/claim @entrypoint:toolbox @proof:integration
 Scenario: The assigned Agent claims a Task
 ```
 
@@ -18,17 +19,20 @@ The proving test includes the same id in its name:
 it("[spec: tasks/claim] claims the assigned Task", async () => {})
 ```
 
+Entry points identify the surface through which behavior is observed. Current
+values are `product-ui`, `toolbox`, `public-http`, `http`, `webhook`, and
+`deployment`.
+
 Proof layers:
 
 | Tag | Home | Purpose |
 | --- | --- | --- |
-| `@domain` | `server/domain/**/*.test.ts` | Pure state and authority rules |
-| `@usecase` | `server/usecases/**/*.test.ts` | Application orchestration with port fakes |
-| `@api` | `server/http/**/*.test.ts` or `tests/integration/http/**/*.test.ts` | Assembled HTTP contract and real D1 boundaries |
-| `@web` | `src/**/*.test.tsx` | Component behaviour with a mocked API boundary |
-| `@e2e` | `tests/**/*.spec.ts` | A small number of real browser journeys |
+| `@proof:unit` | `tests/unit/` or owning source unit test | Pure rules, use cases, and component behavior |
+| `@proof:integration` | `tests/integration/`, `tests/contract/`, or a retained root integration test | Real adapters, storage, HTTP, schema, and boundary contracts |
+| `@proof:e2e` | `tests/e2e/` | A small number of real browser journeys |
 
-Scenario ids never change. If product behaviour is replaced, remove the old
-scenario and add a new id. `pnpm lint:spec` checks ids, tags, duplicates, and
-test breadcrumbs. Keep this directory pure: only this README and `.feature`
-files belong here.
+Journey ids never change. If product behaviour is replaced, remove the old
+scenario and add a new id. `pnpm lint:spec` checks the metadata, duplicate ids,
+proof placement, and orphaned test breadcrumbs. A scenario may have additional
+tests at other layers, but exactly one layer is its canonical proof. Keep this
+directory pure: only this README and `.feature` files belong here.

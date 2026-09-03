@@ -92,7 +92,7 @@ describe("HTTP request correlation", () => {
 });
 
 describe("HTTP access completion events", () => {
-  it("emits exactly one structured event at the status-appropriate level for each request", async () => {
+  it("[spec: operations/request-observability] emits exactly one structured event at the status-appropriate level for each request", async () => {
     vi.spyOn(crypto, "randomUUID")
       .mockReturnValueOnce("00000000-0000-4000-8000-000000000005")
       .mockReturnValueOnce("00000000-0000-4000-8000-000000000006")
@@ -185,7 +185,7 @@ describe("HTTP access completion events", () => {
 });
 
 describe("structured logger event identity", () => {
-  it("does not allow extension fields to override reserved event fields", () => {
+  it("[spec: operations/request-observability] does not allow extension fields to override reserved event fields", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-29T12:00:00.000Z"));
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);

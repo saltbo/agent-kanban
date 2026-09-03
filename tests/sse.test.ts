@@ -74,7 +74,7 @@ describe("createSSEResponse", () => {
     expect(text).toContain("data: ");
   });
 
-  it("streams only Task Notes even when a retained legacy message row exists", async () => {
+  it("[spec: tasks/notes-and-stream] streams only Task Notes even when a retained legacy message row exists", async () => {
     await env.DB.prepare("INSERT INTO messages (id, task_id, sender_type, sender_id, content) VALUES (?, ?, 'user', ?, ?)")
       .bind("legacy-message-sse", taskId, "sse-user", "Legacy message must stay out of SSE")
       .run();

@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signInWithRealmrootSession } from "../../helpers/auth";
 
 test.describe("Board Page", () => {
-  test("Realmroot session completes first-board onboarding without browser credentials", async ({ page }) => {
+  test("[spec: boards/onboarding] Realmroot session completes first-board onboarding without browser credentials", async ({ page }) => {
     await signInWithRealmrootSession(page, `onboarding_${Date.now()}@example.com`, "New User");
 
     await expect(page.getByRole("button", { name: "Skip demo" })).toBeVisible();

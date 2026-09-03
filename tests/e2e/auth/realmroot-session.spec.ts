@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Realmroot web session", () => {
-  test("uses an HttpOnly AK session cookie without browser token storage", async ({ page, context }) => {
+  test("[spec: authentication/server-session] uses an HttpOnly AK session cookie without browser token storage", async ({ page, context }) => {
     const email = `realmroot_session_${Date.now()}@example.com`;
     await signUpAndGetBoard(page, email, "Realmroot User");
 
@@ -22,7 +22,10 @@ test.describe("Realmroot web session", () => {
     expect(await page.evaluate(() => localStorage.getItem("auth-token"))).toBeNull();
   });
 
-  test("requires CSRF and destroys the local AK session before Realmroot logout", async ({ page, context }) => {
+  test("[spec: authentication/server-session] [spec: authentication/logout] requires CSRF and destroys the local AK session before Realmroot logout", async ({
+    page,
+    context,
+  }) => {
     await signUpAndGetBoard(page, `realmroot_logout_${Date.now()}@example.com`, "Realmroot Logout User");
 
     const result = await page.evaluate(async () => {
@@ -60,7 +63,7 @@ test.describe("Realmroot web session", () => {
     });
     const logoutUrl = new URL(result.logoutUrl);
     expect(logoutUrl.origin + logoutUrl.pathname).toBe("https://id.realmroot.dev/api/auth/oauth2/end-session");
-    expect(logoutUrl.searchParams.get("post_logout_redirect_uri")).toBe(new URL("/", page.url()).toString());
+    expect(logoutUrl.searchParams.get("post_logout_redirect_uri")).toBe("https://bodev.agent-kanban.dev/");
     expect((await context.cookies()).some((cookie) => cookie.name === "ak_session")).toBe(false);
   });
 

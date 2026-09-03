@@ -66,7 +66,7 @@ wire types in `shared/`, and BDD-lite product specifications in `spec/`.
 
 During development, the Agent states the observable behavior at risk and runs
 only the smallest exact cases that prove it. See
-`docs/designs/next/05-test-pyramid.md` for layer ownership and the decision
+`docs/architecture/test-pyramid.md` for layer ownership and the decision
 rule.
 
 The v2 implementation leaves legacy Agent/Machine/runtime rows unchanged and
@@ -75,14 +75,10 @@ is terminal before enabling v2.
 
 ## Documentation
 
-- `docs/designs/next/README.md`: v2 scope and implementation sequence.
-- `docs/designs/next/01-toolbox-command-surface.md`: Resource Server and
-  Toolbox command design.
-- `docs/designs/next/02-agent-role-and-authority.md`: assignment and review
-  authority.
-- `docs/designs/next/08-single-package-bdd-cutover.md`: current repository,
-  Remote execution, and Session observation boundary.
-- `docs/designs/next/06-v1-to-v2-upgrade.md`: deferred upgrade scope and its
-  terminal-Task precondition.
+- [`docs/architecture/`](docs/architecture/): how the deployed system works
+  now.
+- [`docs/adr/`](docs/adr/): accepted architectural decisions and trade-offs.
+- [`spec/`](spec/): executable product behavior and test traceability.
+- [`docs/operations/`](docs/operations/): deployment and upgrade procedures.
 
 License: FSL-1.1-ALv2.

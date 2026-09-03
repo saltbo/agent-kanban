@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Settings Page", () => {
-  test("Board labels page creates and deletes labels", async ({ page }) => {
+  test("[spec: boards/labels] Board labels page creates and deletes labels", async ({ page }) => {
     await signUpAndGetBoard(page, `settings_labels_${Date.now()}@example.com`);
     const boardId = page.url().split("/boards/")[1];
     await page.goto(`/boards/${boardId}/labels`);

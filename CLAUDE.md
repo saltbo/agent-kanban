@@ -65,7 +65,7 @@ After every significant code change, follow this sequence:
    - PASS → proceed to step 3.
 
 **Ownership rule**: you (main agent) only modify source code. Test code is owned by test agents — all test modifications go through them.
-3. **Agent development verification** — follow `docs/designs/next/05-test-pyramid.md`.
+3. **Agent development verification** — follow `docs/architecture/test-pyramid.md`.
    Before running anything, identify the observable behavior changed and the
    smallest set of exact cases that proves it. Run only those cases. Do not
    default to a whole test file, package, layer, or repository suite.
@@ -76,7 +76,7 @@ After every significant code change, follow this sequence:
 ## Testing
 - Framework: vitest (root `vitest.config.ts`)
 - Normative layer and case-placement rules:
-  `docs/designs/next/05-test-pyramid.md`
+  `docs/architecture/test-pyramid.md`
 - Default run: exact named cases selected from the changed behavior. Use an
   owning file only when every case in it is relevant. Do not run a complete
   layer or default to `npx vitest run`.

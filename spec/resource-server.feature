@@ -1,12 +1,12 @@
 Feature: Realmroot Resource Server
   AK exposes Board and Task capabilities to Agents through Realmroot Toolbox.
 
-  @resource-server/discovery @api
+  @journey:resource-server/discovery @entrypoint:toolbox @proof:integration
   Scenario: Publish protected-resource and OpenAPI discovery
     When Realmroot discovers AK
     Then AK publishes protected-resource metadata and its Toolbox OpenAPI document
 
-  @resource-server/generic-operations @api
+  @journey:resource-server/generic-operations @entrypoint:toolbox @proof:integration
   Scenario: Use Toolbox generic resource operations
     Given an authorized Realmroot actor
     When the actor reads or writes an ordinary published Board, Task, Note, or Repository resource
@@ -16,7 +16,7 @@ Feature: Realmroot Resource Server
     And Board and Repository creation does not require an Idempotency-Key
     And Task, Task Note, Agent, and Machine creation requires an RFC 8941 string Idempotency-Key
 
-  @resource-server/workflow-commands @api
+  @journey:resource-server/workflow-commands @entrypoint:toolbox @proof:integration
   Scenario: Publish only AK-specific resource-first commands
     When Toolbox reads the AK OpenAPI document
     Then claim, release, review, reject, complete, cancel, and wait have stable resource-first command names

@@ -2,12 +2,16 @@
 // section: 3.1 Board page renders five kanban columns
 
 import { expect, test } from "@playwright/test";
-import { signUpAndGetBoard } from "../../helpers/auth";
+import { seedTask, signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Board Page", () => {
-  test("Board page renders five kanban columns", async ({ page }) => {
+  test("[spec: boards/observe-work] Board page renders Tasks in five lifecycle columns", async ({ page }) => {
     // 1. Sign in with valid credentials and navigate to a board at /boards/:boardId
     await signUpAndGetBoard(page, `boardcolumns_${Date.now()}@example.com`);
+    const boardId = page.url().split("/boards/")[1];
+    const taskTitle = `Observed Task ${Date.now()}`;
+    seedTask(boardId, taskTitle, "todo");
+    await page.reload();
 
     // expect: The board page is displayed
     await expect(page).toHaveURL(/\/boards\/.+/);
@@ -23,6 +27,7 @@ test.describe("Board Page", () => {
     await expect(columnGrid.getByText("In Review")).toBeVisible();
     await expect(columnGrid.getByText("Done")).toBeVisible();
     await expect(columnGrid.getByText("Cancelled")).toBeVisible();
+    await expect(columnGrid.getByText(taskTitle)).toBeVisible();
 
     // Five column dividers should be present
     const columns = columnGrid.locator("> div");

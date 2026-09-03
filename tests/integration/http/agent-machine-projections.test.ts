@@ -278,7 +278,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     });
   });
 
-  it("[spec: machines/create-runner-setup] returns complete auth and start commands for the created AMA Environment", async () => {
+  it("[spec: machines/create-environment] returns complete auth and start commands for the created AMA Environment", async () => {
     vi.stubGlobal(
       "fetch",
       delegatedAmaFetch(["environments:write"], async (request) => {
@@ -306,7 +306,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     });
   });
 
-  it("[spec: agents/authoritative-projection] replays the winning Agent response when identical external creations complete concurrently", async () => {
+  it("[spec: agents/authoritative-projection] [spec: agents/create-bound-agent] replays the winning Agent response when identical external creations complete concurrently", async () => {
     const synchronizeAgentCreations = twoRequestBarrier();
     let identityCreates = 0;
     let agentCreates = 0;
@@ -395,7 +395,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     ).resolves.toEqual({ count: 2 });
   });
 
-  it("[spec: machines/create-runner-setup] replays the winning Machine response when identical external creations complete concurrently", async () => {
+  it("[spec: machines/create-environment] replays the winning Machine response when identical external creations complete concurrently", async () => {
     const synchronizeMachineCreations = twoRequestBarrier();
     let machineCreates = 0;
     const upstreamKeys: string[] = [];
@@ -512,6 +512,30 @@ describe("Agent and Machine projection HTTP resources", () => {
       env,
     );
     expect(response.status, await response.clone().text()).toBe(200);
+  });
+
+  it("[spec: machines/archive-environment] archives the authoritative AMA Environment without a local Machine entity", async () => {
+    await fixture.db.prepare("DROP TABLE machines").run();
+    vi.stubGlobal(
+      "fetch",
+      delegatedAmaFetch(["environments:write"], async (request) => {
+        expect(request.method).toBe("PATCH");
+        expect(new URL(request.url).pathname).toBe("/api/v1/environments/environment-1");
+        expect(request.headers.get("authorization")).toBe("Bearer ama-access-token");
+        expect(request.headers.get("x-ama-project-id")).toBe(projectId);
+        await expect(request.json()).resolves.toEqual({ archived: true });
+        return Response.json({
+          metadata: { ...metadata("environment-1", "Machine"), archivedAt: "2026-09-01T13:00:00.000Z" },
+          spec: { type: "self_hosted" },
+          status: { phase: "archived" },
+        });
+      }),
+    );
+
+    const response = await browserDelete("/machines/environment-1");
+
+    expect(response.status, await response.clone().text()).toBe(204);
+    expect(await response.text()).toBe("");
   });
 
   it("[spec: agents/authoritative-projection] [spec: machines/archive-environment] maps invalid AMA success responses to 502", async () => {

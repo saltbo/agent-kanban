@@ -326,7 +326,7 @@ describe("verified Task runtime provenance", () => {
     expect(browser.received.at(-1)).toBe(JSON.stringify({ type: "event", sequence: 1 }));
   });
 
-  it("forbids another same-tenant Agent from releasing the Claim and lets the assignee release it", async () => {
+  it("[spec: tasks/release] forbids another same-tenant Agent from releasing the Claim and lets the assignee release it", async () => {
     const board = await createBoard(db, tenantId, "Release authority", "ops");
     const task = await createTask(db, tenantId, { title: "Assignee-owned Claim", board_id: board.id });
     await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
@@ -349,6 +349,18 @@ describe("verified Task runtime provenance", () => {
     });
     expect(foreignRelease.status).toBe(403);
     await expect(foreignRelease.json()).resolves.toMatchObject({ type: expect.stringContaining("task-claim-deletion-forbidden") });
+    await expect(db.prepare("SELECT status, active_claim_id FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
+      status: "in_progress",
+      active_claim_id: etag!.replaceAll('"', ""),
+    });
+    await expect(
+      db.prepare("SELECT agent_actor_id, runtime_session_id FROM task_session_bindings WHERE task_id = ?").bind(task.id).first(),
+    ).resolves.toEqual({ agent_actor_id: actorId, runtime_session_id: "resume-owned" });
+
+    const staleRelease = await agentRequest("DELETE", `/task-claims/${task.id}`, "task:release", undefined, {
+      ifMatch: '"stale-claim-id"',
+    });
+    expect(staleRelease.status).toBe(412);
     await expect(db.prepare("SELECT status, active_claim_id FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
       status: "in_progress",
       active_claim_id: etag!.replaceAll('"', ""),

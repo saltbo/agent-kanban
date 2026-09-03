@@ -45,7 +45,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
       .run();
   });
 
-  it("createTask returns labels as array and input as object", async () => {
+  it("[spec: tasks/structured-fields] createTask returns labels and input in typed representations", async () => {
     const { createTask } = await import("../server/adapters/d1/taskRepo");
     const task = await createTask(db, ownerId, {
       title: "Test labels and input",
@@ -146,7 +146,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
     expect(task.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
   });
 
-  it("deleteBoardLabel removes the label from tasks on the same board", async () => {
+  it("[spec: boards/labels] deleteBoardLabel removes the label from tasks on the same board", async () => {
     const { createTask, getTask } = await import("../server/adapters/d1/taskRepo");
     const { deleteBoardLabel } = await import("../server/adapters/d1/boardRepo");
     const task = await createTask(db, ownerId, {

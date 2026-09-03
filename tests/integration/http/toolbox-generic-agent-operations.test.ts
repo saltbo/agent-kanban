@@ -629,7 +629,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     });
   });
 
-  it("returns only commented Notes and exposes one Agent Note with lowerCamel fields and ETag", async () => {
+  it("[spec: tasks/notes-and-stream] returns only commented Notes and exposes one Agent Note with lowerCamel fields and ETag", async () => {
     const board = await createBoard(db, tenantId, "Task Note resources", "ops");
     const task = await createTask(db, tenantId, { title: "Task Note parent", board_id: board.id });
     const claim = await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "claimed", null, "remote-session");

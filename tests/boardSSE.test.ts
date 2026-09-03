@@ -51,7 +51,7 @@ describe("getBoardActions", () => {
     await env.DB.prepare("UPDATE task_actions SET actor_name = 'SSE Unit Agent' WHERE task_id = ? AND actor_id = ?").bind(taskId, agentId).run();
   });
 
-  it("returns stored actor display snapshots without legacy Agent enrichment fields", async () => {
+  it("[spec: boards/live-notes] returns stored actor display snapshots without legacy Agent enrichment fields", async () => {
     const since = new Date(Date.now() - 60 * 1000).toISOString();
     const { getBoardActions } = await import("../server/adapters/d1/taskRepo");
     const notes = await getBoardActions(env.DB, boardId, userId, since);
@@ -72,7 +72,7 @@ describe("getBoardActions", () => {
     expect(notes).toEqual([]);
   });
 
-  it("does not return notes from a different board", async () => {
+  it("[spec: boards/live-notes] does not return notes from a different board", async () => {
     const { createBoard } = await import("../server/adapters/d1/boardRepo");
     const otherBoard = await createBoard(env.DB, userId, "board-sse-other-board", "ops");
 
@@ -116,7 +116,7 @@ describe("GET /api/boards/:id/stream", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-cache");
   });
 
-  it("emits board_note events for existing notes in the stream body", async () => {
+  it("[spec: boards/live-notes] emits board_note events for existing notes in the stream body", async () => {
     const { createTask } = await import("../server/adapters/d1/taskRepo");
     await createTask(env.DB, userId, {
       title: "SSE Stream Task",

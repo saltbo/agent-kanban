@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Repositories Page", () => {
-  test("Add Repository — successfully add a new repository", async ({ page }) => {
+  test("[spec: repositories/manual-management] Add Repository — successfully add a new repository from a focused dialog", async ({ page }) => {
     // 1. Sign in, navigate to /repositories, and open the Add Repository dialog
     await signUpAndGetBoard(page, `repos_add_${Date.now()}@example.com`);
     await page.goto("/repositories");

@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Board Page", () => {
-  test("Board columns have no task creation UI", async ({ page }) => {
+  test("[spec: boards/observe-work] Board columns have no task creation or drag-and-drop UI", async ({ page }) => {
     await signUpAndGetBoard(page, `notaskcreate_${Date.now()}@example.com`);
 
     // expect: Board is loaded with columns
@@ -15,5 +15,6 @@ test.describe("Board Page", () => {
 
     // expect: No task creation input field
     await expect(page.locator('input[placeholder="Task title..."]')).not.toBeVisible();
+    await expect(page.locator('[draggable="true"]')).toHaveCount(0);
   });
 });

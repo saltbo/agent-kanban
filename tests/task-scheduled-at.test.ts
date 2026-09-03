@@ -25,7 +25,7 @@ describe("scheduled_at field — taskRepo", () => {
     boardId = board.id;
   });
 
-  it("createTask stores scheduled_at when provided", async () => {
+  it("[spec: tasks/structured-fields] createTask stores scheduled_at when provided", async () => {
     const { createTask } = await import("../server/adapters/d1/taskRepo");
     const scheduledAt = "2099-01-01T00:00:00.000Z";
     const task = await createTask(env.DB, "sched-test-user", {
