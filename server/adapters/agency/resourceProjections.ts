@@ -1,55 +1,10 @@
+import { type Agent, type Environment, type Runner, type RuntimeName, type RuntimeUsage } from "@realmroot/enbor-sdk";
+import { createAgencyClient, isAgencyNotFound, toAmaProjectionError } from "@server/adapters/agency/client";
 import type { Env } from "@server/env";
 import type { AgentProjectionPort } from "@server/usecases/agents/projectAgents";
 import { AmaProjectionError } from "@server/usecases/ama/failures";
 import type { MachineProjectionPort } from "@server/usecases/machines/projectMachines";
 import type { MachineRuntime, MachineRuntimeUsage, ProjectedAgent, ProjectedMachine, ProjectedMachineRunner } from "@shared";
-import { parseScheduledAt } from "@shared";
-
-type AmaMetadata = {
-  uid: string;
-  projectId: string | null;
-  name: string;
-  description: string | null;
-  createdAt: string;
-  updatedAt: string;
-  archivedAt: string | null;
-};
-
-type AmaAgent = {
-  metadata: AmaMetadata;
-  spec: {
-    systemPrompt: string;
-    provider: string | null;
-    model: string | null;
-    skills: string[];
-    allowedTools: string[];
-    identity: { subject: string; username: string; runtime: string } | null;
-  };
-  status: { phase: "active" | "archived"; schedulable: boolean };
-};
-
-type AmaEnvironment = {
-  metadata: AmaMetadata;
-  spec: { type: string };
-  status: { phase: "active" | "archived" };
-};
-
-type AmaRunner = {
-  id: string;
-  name: string;
-  environmentId: string | null;
-  state: "active" | "draining" | "disabled" | "offline";
-  currentLoad: number;
-  maxConcurrent: number;
-  runtimeUsage: Array<{
-    runtime: string;
-    windows: Array<{ label: string; utilization: number; resetsAt: string }>;
-  }>;
-  runtimes: MachineRuntime[];
-  lastHeartbeatAt: string | null;
-};
-
-type AmaIdentity = { metadata: AmaMetadata };
 
 export { AmaProjectionError } from "@server/usecases/ama/failures";
 
@@ -66,40 +21,40 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
     cursor: string | null;
     filters: { runtime?: string; schedulable?: boolean; search?: string };
   }): Promise<{ items: ProjectedAgent[]; nextCursor: string | null }> {
-    const url = new URL("/api/v1/agents", required(this.env.AMA_ORIGIN, "AMA_ORIGIN"));
-    url.searchParams.set("limit", String(input.limit));
-    if (input.cursor) url.searchParams.set("cursor", input.cursor);
-    if (input.filters.runtime) url.searchParams.set("runtime", input.filters.runtime);
-    if (input.filters.schedulable !== undefined) url.searchParams.set("schedulable", String(input.filters.schedulable));
-    if (input.filters.search) url.searchParams.set("search", input.filters.search);
-    const page = decodeList(await this.request<unknown>(input.projectId, `${url.pathname}${url.search}`), decodeAgent, input.limit);
-    return {
-      items: page.data.map(projectAgent),
-      nextCursor: page.pagination.hasMore ? page.pagination.nextCursor : null,
-    };
+    return this.call(async () => {
+      const page = await this.client(input.projectId).agents.list({
+        limit: input.limit,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+        ...(input.filters.runtime ? { runtime: input.filters.runtime as RuntimeName } : {}),
+        ...(input.filters.schedulable !== undefined ? { schedulable: String(input.filters.schedulable) as "true" | "false" } : {}),
+        ...(input.filters.search ? { search: input.filters.search } : {}),
+      });
+      assertPage(page.data, page.pagination, input.limit);
+      page.data.forEach(assertAgent);
+      return {
+        items: page.data.map(projectAgent),
+        nextCursor: page.pagination.hasMore ? page.pagination.nextCursor : null,
+      };
+    });
   }
 
   async getAgent(projectId: string, agentId: string): Promise<ProjectedAgent | null> {
-    const value = await this.request<unknown>(projectId, `/api/v1/agents/${encodeURIComponent(agentId)}`, { allowNotFound: true });
-    return value ? projectAgent(decodeAgent(value)) : null;
+    return this.callOrNotFound(async () => projectAgent(await this.client(projectId).agents.get(agentId)));
   }
 
   async createIdentity(projectId: string, input: { name: string; username: string; runtime: string; idempotencyKey: string }): Promise<string> {
-    const identity = decodeIdentity(
-      await this.request<unknown>(projectId, "/api/v1/identities", {
-        method: "POST",
-        idempotencyKey: input.idempotencyKey,
-        body: JSON.stringify({ metadata: { name: input.name }, spec: { username: input.username, runtime: input.runtime } }),
-      }),
-    );
-    return identity.metadata.uid;
+    return this.call(async () => {
+      const identity = await this.client(projectId).identities.create(
+        { metadata: { name: input.name }, spec: { username: input.username, runtime: input.runtime as RuntimeName } },
+        input.idempotencyKey,
+      );
+      assertMetadata(identity.metadata);
+      return identity.metadata.uid;
+    });
   }
 
   async archiveIdentity(projectId: string, identityId: string): Promise<void> {
-    await this.request<unknown>(projectId, `/api/v1/identities/${encodeURIComponent(identityId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ archived: true }),
-    });
+    await this.call(() => this.client(projectId).identities.delete(identityId));
   }
 
   isPermanentFailure(error: unknown): boolean {
@@ -119,11 +74,9 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
       idempotencyKey: string;
     },
   ): Promise<ProjectedAgent> {
-    const agent = decodeAgent(
-      await this.request<unknown>(projectId, "/api/v1/agents", {
-        method: "POST",
-        idempotencyKey: input.idempotencyKey,
-        body: JSON.stringify({
+    return this.call(async () => {
+      const agent = await this.client(projectId).agents.create(
+        {
           metadata: { name: input.name, description: input.description },
           spec: {
             systemPrompt: input.systemPrompt,
@@ -132,11 +85,12 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
             skills: input.skills,
             identityRef: input.identityRef,
           },
-        }),
-      }),
-    );
-    if (!agent.spec.identity) throw new AmaProjectionError("invalid-response", "AMA created an Agent without a bound identity");
-    return projectAgent(agent);
+        },
+        input.idempotencyKey,
+      );
+      if (!agent.spec.identity) throw invalidResponse("AMA created an Agent without a bound identity");
+      return projectAgent(agent);
+    });
   }
 
   async listMachinesPage(input: {
@@ -144,68 +98,76 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
     limit: number;
     cursor: string | null;
   }): Promise<{ items: ProjectedMachine[]; nextCursor: string | null }> {
-    const url = new URL("/api/v1/environments", required(this.env.AMA_ORIGIN, "AMA_ORIGIN"));
-    url.searchParams.set("limit", String(input.limit));
-    if (input.cursor) url.searchParams.set("cursor", input.cursor);
-    const page = decodeList(await this.request<unknown>(input.projectId, `${url.pathname}${url.search}`), decodeEnvironment, input.limit);
-    const environments = page.data.filter((environment) => environment.spec.type === "self_hosted" && environment.status.phase === "active");
-    const relevant = new Set(environments.map((environment) => environment.metadata.uid));
-    const runnersByEnvironment = new Map<string, AmaRunner[]>();
-    for (const runner of await this.listAllRunners(input.projectId)) {
-      if (!runner.environmentId || !relevant.has(runner.environmentId)) continue;
-      const current = runnersByEnvironment.get(runner.environmentId) ?? [];
-      current.push(runner);
-      runnersByEnvironment.set(runner.environmentId, current);
-    }
-    return {
-      items: environments.map((environment) => projectMachine(environment, runnersByEnvironment.get(environment.metadata.uid) ?? [])),
-      nextCursor: page.pagination.hasMore ? page.pagination.nextCursor : null,
-    };
+    return this.call(async () => {
+      const page = await this.client(input.projectId).environments.list({
+        limit: input.limit,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+      });
+      assertPage(page.data, page.pagination, input.limit);
+      page.data.forEach(assertEnvironment);
+      const environments = page.data.filter((environment) => environment.spec.type === "self_hosted");
+      const relevant = new Set(environments.map((environment) => environment.metadata.uid));
+      const runnersByEnvironment = new Map<string, Runner[]>();
+      for (const runner of await this.listAllRunners(input.projectId)) {
+        if (!runner.environmentId || !relevant.has(runner.environmentId)) continue;
+        const current = runnersByEnvironment.get(runner.environmentId) ?? [];
+        current.push(runner);
+        runnersByEnvironment.set(runner.environmentId, current);
+      }
+      return {
+        items: environments.map((environment) => projectMachine(environment, runnersByEnvironment.get(environment.metadata.uid) ?? [])),
+        nextCursor: page.pagination.hasMore ? page.pagination.nextCursor : null,
+      };
+    });
   }
 
   async getMachine(projectId: string, machineId: string): Promise<ProjectedMachine | null> {
-    const value = await this.request<unknown>(projectId, `/api/v1/environments/${encodeURIComponent(machineId)}`, {
-      allowNotFound: true,
+    const environment = await this.callOrNotFound(() => this.client(projectId).environments.get(machineId));
+    if (!environment) return null;
+    return this.call(async () => {
+      assertEnvironment(environment);
+      if (environment.spec.type !== "self_hosted") return null;
+      return projectMachine(environment, await this.listAllRunners(projectId, machineId));
     });
-    if (!value) return null;
-    const environment = decodeEnvironment(value);
-    if (environment.spec.type !== "self_hosted") return null;
-    const runners = await this.listAllRunners(projectId, machineId);
-    return projectMachine(environment, runners);
   }
 
   async createMachine(projectId: string, name: string, idempotencyKey: string): Promise<ProjectedMachine> {
-    const environment = decodeEnvironment(
-      await this.request<unknown>(projectId, "/api/v1/environments", {
-        method: "POST",
+    return this.call(async () => {
+      const environment = await this.client(projectId).environments.create(
+        { metadata: { name }, spec: { scope: "project", type: "self_hosted" } },
         idempotencyKey,
-        body: JSON.stringify({ metadata: { name }, spec: { scope: "project", type: "self_hosted" } }),
-      }),
-    );
-    return projectMachine(environment, []);
+      );
+      return projectMachine(environment, []);
+    });
   }
 
   async archiveMachine(projectId: string, machineId: string): Promise<boolean> {
-    const value = await this.request<unknown>(projectId, `/api/v1/environments/${encodeURIComponent(machineId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ archived: true }),
-      allowNotFound: true,
+    const deleted = await this.callOrNotFound(async () => {
+      await this.client(projectId).environments.delete(machineId);
+      return true;
     });
-    if (value === null) return false;
-    const environment = decodeEnvironment(value);
-    if (environment.status.phase !== "archived") throw invalidResponse("AMA did not confirm Machine archival");
-    return true;
+    return deleted ?? false;
   }
 
-  private async listAllRunners(projectId: string, environmentId?: string): Promise<AmaRunner[]> {
-    const rows: AmaRunner[] = [];
+  private client(projectId: string) {
+    return createAgencyClient(required(this.env.AMA_ORIGIN, "AMA_ORIGIN"), {
+      token: this.token,
+      projectId,
+      traceparent: this.traceparent,
+    });
+  }
+
+  private async listAllRunners(projectId: string, environmentId?: string): Promise<Runner[]> {
+    const rows: Runner[] = [];
     let cursor: string | null = null;
     for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
-      const url = new URL("/api/v1/runners", required(this.env.AMA_ORIGIN, "AMA_ORIGIN"));
-      if (environmentId) url.searchParams.set("environmentId", environmentId);
-      url.searchParams.set("limit", "100");
-      if (cursor) url.searchParams.set("cursor", cursor);
-      const page = decodeList(await this.request<unknown>(projectId, `${url.pathname}${url.search}`), decodeRunner, 100);
+      const page = await this.client(projectId).runners.list({
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+        ...(environmentId ? { environmentId } : {}),
+      });
+      assertPage(page.data, page.pagination, 100);
+      page.data.forEach(assertRunner);
       rows.push(...page.data);
       if (rows.length > 10_000) throw invalidResponse("Enbor Runner result exceeded the safety bound");
       const next = page.pagination.hasMore ? page.pagination.nextCursor : null;
@@ -216,56 +178,26 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
     throw invalidResponse("Enbor Runner pagination exceeded the safety bound");
   }
 
-  private async request<T>(
-    projectId: string,
-    path: string,
-    options: { method?: string; body?: string; allowNotFound?: boolean; idempotencyKey?: string } = {},
-  ): Promise<T | null> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
+  private async call<T>(operation: () => Promise<T>): Promise<T> {
     try {
-      const response = await fetch(new URL(path, required(this.env.AMA_ORIGIN, "AMA_ORIGIN")), {
-        method: options.method ?? "GET",
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${this.token}`,
-          "x-ama-project-id": projectId,
-          ...(options.body ? { "content-type": "application/json" } : {}),
-          ...(options.idempotencyKey ? { "idempotency-key": options.idempotencyKey } : {}),
-          ...(this.traceparent ? { traceparent: this.traceparent } : {}),
-        },
-        body: options.body,
-        signal: controller.signal,
-      });
-      if (response.status === 404 && options.allowNotFound) return null;
-      if (!response.ok) {
-        const kind = amaFailureKind(response.status);
-        throw new AmaProjectionError(kind, kind === "unavailable" ? "AMA is unavailable" : "AMA request was rejected");
-      }
-      let value: unknown;
-      try {
-        value = await response.json();
-      } catch {
-        throw invalidResponse("AMA returned invalid JSON");
-      }
-      return value as T;
+      return await operation();
     } catch (error) {
-      if (error instanceof AmaProjectionError) throw error;
-      throw new AmaProjectionError("unavailable", "AMA is unavailable");
-    } finally {
-      clearTimeout(timeout);
+      throw toAmaProjectionError(error);
+    }
+  }
+
+  private async callOrNotFound<T>(operation: () => Promise<T>): Promise<T | null> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (isAgencyNotFound(error)) return null;
+      throw toAmaProjectionError(error);
     }
   }
 }
 
-function amaFailureKind(status: number): "not-found" | "denied" | "rejected" | "invalid-response" | "unavailable" {
-  if (status === 404) return "not-found";
-  if (status === 401 || status === 403) return "denied";
-  if (status === 408 || status === 429 || (status >= 500 && status !== 502)) return "unavailable";
-  return status === 502 ? "invalid-response" : "rejected";
-}
-
-function projectAgent(agent: AmaAgent): ProjectedAgent {
+function projectAgent(agent: Agent): ProjectedAgent {
+  assertAgent(agent);
   return {
     id: agent.metadata.uid,
     subject: agent.spec.identity?.subject ?? null,
@@ -273,7 +205,7 @@ function projectAgent(agent: AmaAgent): ProjectedAgent {
     description: agent.metadata.description,
     username: agent.spec.identity?.username ?? null,
     runtime: agent.spec.identity?.runtime ?? null,
-    phase: agent.status.phase,
+    phase: "active",
     schedulable: agent.status.schedulable,
     provider: agent.spec.provider,
     model: agent.spec.model,
@@ -285,18 +217,18 @@ function projectAgent(agent: AmaAgent): ProjectedAgent {
   };
 }
 
-function projectMachine(environment: AmaEnvironment, runners: AmaRunner[]): ProjectedMachine {
+function projectMachine(environment: Environment, runners: Runner[]): ProjectedMachine {
+  assertEnvironment(environment);
+  runners.forEach(assertRunner);
   const active = runners.filter((runner) => runner.state === "active");
   const state =
-    environment.status.phase === "archived"
-      ? "disabled"
-      : active.length > 0
-        ? "online"
-        : runners.some((runner) => runner.state === "draining")
-          ? "draining"
-          : runners.some((runner) => runner.state === "disabled")
-            ? "disabled"
-            : "offline";
+    active.length > 0
+      ? "online"
+      : runners.some((runner) => runner.state === "draining")
+        ? "draining"
+        : runners.some((runner) => runner.state === "disabled")
+          ? "disabled"
+          : "offline";
   const runtimeByName = new Map<string, MachineRuntime>();
   for (const runner of runners) {
     for (const runtime of runner.runtimes) {
@@ -325,10 +257,10 @@ function projectMachine(environment: AmaEnvironment, runners: AmaRunner[]): Proj
   };
 }
 
-function projectMachineRunner(runner: AmaRunner): ProjectedMachineRunner {
+function projectMachineRunner(runner: Runner): ProjectedMachineRunner {
   return {
     id: runner.id,
-    name: runner.name,
+    name: runner.name.trim(),
     state: runner.state,
     current_load: runner.currentLoad,
     max_concurrent: runner.maxConcurrent,
@@ -338,7 +270,7 @@ function projectMachineRunner(runner: AmaRunner): ProjectedMachineRunner {
   };
 }
 
-function projectRuntimeUsage(usage: AmaRunner["runtimeUsage"][number]): MachineRuntimeUsage {
+function projectRuntimeUsage(usage: RuntimeUsage): MachineRuntimeUsage {
   return {
     runtime: usage.runtime,
     windows: usage.windows.map((window) => ({
@@ -349,9 +281,9 @@ function projectRuntimeUsage(usage: AmaRunner["runtimeUsage"][number]): MachineR
   };
 }
 
-function projectedMachineName(runners: AmaRunner[]): string {
+function projectedMachineName(runners: Runner[]): string {
   if (runners.length === 0) return "Waiting for computer";
-  const names = runners.map((runner) => runner.name).sort();
+  const names = runners.map((runner) => runner.name.trim()).sort();
   if (runners.length === 1) return names[0];
   const additionalRunners = runners.length - 1;
   return `${names[0]} + ${additionalRunners} runner${additionalRunners === 1 ? "" : "s"}`;
@@ -366,129 +298,95 @@ function required(value: string | undefined, name: string): string {
   return value;
 }
 
-function decodeList<T>(
-  value: unknown,
-  decodeItem: (value: unknown) => T,
-  requestedLimit: number,
-): { data: T[]; pagination: { nextCursor: string | null; hasMore: boolean } } {
-  if (!isRecord(value) || !Array.isArray(value.data) || !isRecord(value.pagination)) throw invalidResponse();
-  if (value.data.length > requestedLimit) throw invalidResponse("AMA returned more resources than requested");
-  const nextCursor = value.pagination.nextCursor;
-  const hasMore = value.pagination.hasMore;
-  if ((nextCursor !== null && typeof nextCursor !== "string") || typeof hasMore !== "boolean" || (hasMore && !nextCursor)) {
-    throw invalidResponse();
-  }
-  return { data: value.data.map(decodeItem), pagination: { nextCursor, hasMore } };
-}
-
-function decodeAgent(value: unknown): AmaAgent {
-  if (!isRecord(value) || !isRecord(value.metadata) || !isRecord(value.spec) || !isRecord(value.status)) throw invalidResponse();
-  const identity = value.spec.identity;
-  if (identity !== null && (!isRecord(identity) || !strings(identity, ["subject", "username", "runtime"]))) throw invalidResponse();
+function assertPage(data: unknown[], pagination: { nextCursor: string | null; hasMore: boolean }, requestedLimit: number): void {
+  if (!Array.isArray(data) || data.length > requestedLimit) throw invalidResponse("AMA returned more resources than requested");
   if (
-    !strings(value.spec, ["systemPrompt"]) ||
-    !nullableStrings(value.spec, ["provider", "model"]) ||
-    !stringArray(value.spec.skills) ||
-    !stringArray(value.spec.allowedTools) ||
-    (value.status.phase !== "active" && value.status.phase !== "archived") ||
-    typeof value.status.schedulable !== "boolean"
-  )
-    throw invalidResponse();
-  return {
-    metadata: decodeMetadata(value.metadata),
-    spec: {
-      systemPrompt: value.spec.systemPrompt as string,
-      provider: value.spec.provider as string | null,
-      model: value.spec.model as string | null,
-      skills: value.spec.skills,
-      allowedTools: value.spec.allowedTools,
-      identity: identity as AmaAgent["spec"]["identity"],
-    },
-    status: { phase: value.status.phase, schedulable: value.status.schedulable },
-  };
-}
-
-function decodeIdentity(value: unknown): AmaIdentity {
-  if (!isRecord(value) || !isRecord(value.metadata)) throw invalidResponse();
-  return { metadata: decodeMetadata(value.metadata) };
-}
-
-function decodeEnvironment(value: unknown): AmaEnvironment {
-  if (!isRecord(value) || !isRecord(value.metadata) || !isRecord(value.spec) || !isRecord(value.status) || typeof value.spec.type !== "string") {
-    throw invalidResponse();
-  }
-  if (value.status.phase !== "active" && value.status.phase !== "archived") throw invalidResponse();
-  return { metadata: decodeMetadata(value.metadata), spec: { type: value.spec.type }, status: { phase: value.status.phase } };
-}
-
-function decodeRunner(value: unknown): AmaRunner {
-  if (
-    !isRecord(value) ||
-    !strings(value, ["id", "name"]) ||
-    (value.name as string).trim().length === 0 ||
-    (value.environmentId !== null && typeof value.environmentId !== "string") ||
-    !["active", "draining", "disabled", "offline"].includes(String(value.state)) ||
-    !Number.isInteger(value.currentLoad) ||
-    !Number.isInteger(value.maxConcurrent) ||
-    !Array.isArray(value.runtimeUsage) ||
-    !Array.isArray(value.runtimes) ||
-    (value.lastHeartbeatAt !== null && typeof value.lastHeartbeatAt !== "string")
-  )
-    throw invalidResponse();
-  return {
-    id: value.id as string,
-    name: (value.name as string).trim(),
-    environmentId: value.environmentId as string | null,
-    state: value.state as AmaRunner["state"],
-    currentLoad: value.currentLoad as number,
-    maxConcurrent: value.maxConcurrent as number,
-    runtimeUsage: value.runtimeUsage.map(decodeRuntimeUsage),
-    runtimes: value.runtimes.map(decodeRuntime),
-    lastHeartbeatAt: value.lastHeartbeatAt as string | null,
-  };
-}
-
-function decodeRuntimeUsage(value: unknown): AmaRunner["runtimeUsage"][number] {
-  if (!isRecord(value) || !strings(value, ["runtime"]) || !Array.isArray(value.windows)) throw invalidResponse();
-  return { runtime: value.runtime as string, windows: value.windows.map(decodeRuntimeUsageWindow) };
-}
-
-function decodeRuntimeUsageWindow(value: unknown): AmaRunner["runtimeUsage"][number]["windows"][number] {
-  if (
-    !isRecord(value) ||
-    !strings(value, ["label", "resetsAt"]) ||
-    parseScheduledAt(value.resetsAt as string) === null ||
-    typeof value.utilization !== "number" ||
-    !Number.isFinite(value.utilization)
+    typeof pagination?.hasMore !== "boolean" ||
+    (pagination.nextCursor !== null && typeof pagination.nextCursor !== "string") ||
+    (pagination.hasMore && !pagination.nextCursor)
   ) {
     throw invalidResponse();
   }
-  return { label: value.label as string, utilization: value.utilization, resetsAt: value.resetsAt as string };
 }
 
-function decodeRuntime(value: unknown): MachineRuntime {
-  if (!isRecord(value) || !strings(value, ["runtime", "state"]) || !stringArray(value.models)) throw invalidResponse();
-  if (value.version !== undefined && typeof value.version !== "string") throw invalidResponse();
-  if (value.detail !== undefined && typeof value.detail !== "string") throw invalidResponse();
-  return value as unknown as MachineRuntime;
-}
-
-function decodeMetadata(value: Record<string, unknown>): AmaMetadata {
-  if (!strings(value, ["uid", "name", "createdAt", "updatedAt"]) || !nullableStrings(value, ["projectId", "description", "archivedAt"]))
+function assertAgent(agent: Agent): void {
+  assertMetadata(agent?.metadata);
+  const identity = agent.spec?.identity;
+  if (
+    typeof agent.spec?.systemPrompt !== "string" ||
+    !nullableString(agent.spec.provider) ||
+    !nullableString(agent.spec.model) ||
+    !stringArray(agent.spec.skills) ||
+    !stringArray(agent.spec.allowedTools) ||
+    agent.status?.phase !== "active" ||
+    typeof agent.status?.schedulable !== "boolean" ||
+    (identity !== null && (!nonEmptyString(identity?.subject) || !nonEmptyString(identity.username) || !nonEmptyString(identity.runtime)))
+  ) {
     throw invalidResponse();
-  return value as unknown as AmaMetadata;
+  }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function assertEnvironment(environment: Environment): void {
+  assertMetadata(environment?.metadata);
+  if ((environment.spec?.type !== "self_hosted" && environment.spec?.type !== "cloud") || environment.status?.phase !== "active") {
+    throw invalidResponse();
+  }
 }
 
-function strings(value: Record<string, unknown>, fields: string[]): boolean {
-  return fields.every((field) => typeof value[field] === "string");
+function assertRunner(runner: Runner): void {
+  if (
+    !nonEmptyString(runner?.id) ||
+    !nonBlankString(runner.name) ||
+    !nullableString(runner.environmentId) ||
+    !["active", "draining", "disabled", "offline"].includes(runner.state) ||
+    !Number.isInteger(runner.currentLoad) ||
+    !Number.isInteger(runner.maxConcurrent) ||
+    !Array.isArray(runner.runtimes) ||
+    !Array.isArray(runner.runtimeUsage) ||
+    !nullableString(runner.lastHeartbeatAt)
+  ) {
+    throw invalidResponse();
+  }
+  for (const runtime of runner.runtimes) {
+    if (!nonEmptyString(runtime?.runtime) || !stringArray(runtime.models) || !nonEmptyString(runtime.state)) throw invalidResponse();
+  }
+  for (const usage of runner.runtimeUsage) {
+    if (!nonEmptyString(usage?.runtime) || !Array.isArray(usage.windows)) throw invalidResponse();
+    for (const window of usage.windows) {
+      if (
+        !nonEmptyString(window?.label) ||
+        !Number.isFinite(window.utilization) ||
+        !nonEmptyString(window.resetsAt) ||
+        Number.isNaN(Date.parse(window.resetsAt))
+      ) {
+        throw invalidResponse();
+      }
+    }
+  }
 }
 
-function nullableStrings(value: Record<string, unknown>, fields: string[]): boolean {
-  return fields.every((field) => value[field] === null || typeof value[field] === "string");
+function assertMetadata(metadata: Agent["metadata"]): void {
+  if (
+    !nonEmptyString(metadata?.uid) ||
+    !nonEmptyString(metadata.name) ||
+    !nullableString(metadata.description) ||
+    !nonEmptyString(metadata.createdAt) ||
+    !nonEmptyString(metadata.updatedAt)
+  ) {
+    throw invalidResponse();
+  }
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function nonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
 }
 
 function stringArray(value: unknown): value is string[] {

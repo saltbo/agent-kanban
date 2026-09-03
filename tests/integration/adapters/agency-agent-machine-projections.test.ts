@@ -15,9 +15,11 @@ const metadata = (uid: string, name: string) => ({
   projectId: "project-1",
   name,
   description: null,
+  labels: {},
+  annotations: {},
+  createdBy: null,
   createdAt: "2026-09-01T12:00:00.000Z",
   updatedAt: "2026-09-01T12:00:01.000Z",
-  archivedAt: null,
 });
 
 const project = (id = "project-1", name = "Agent Kanban") => ({
@@ -27,7 +29,214 @@ const project = (id = "project-1", name = "Agent Kanban") => ({
   updatedAt: "2026-09-01T12:00:01.000Z",
 });
 
+const agent = (uid = "agent-1", name = "Backend") => ({
+  metadata: metadata(uid, name),
+  spec: {
+    systemPrompt: "Build APIs",
+    provider: "openai",
+    model: "gpt-5.6",
+    skills: ["agent-kanban"],
+    subagents: [],
+    allowedTools: ["bash"],
+    mcpConnectors: [],
+    identity: {
+      identityId: "identity-1",
+      agentId: "realmroot-agent-1",
+      issuer: "https://realmroot.test",
+      subject: "realmroot-agent-subject",
+      username: "backend",
+      runtime: "codex",
+    },
+  },
+  status: { phase: "active", currentVersionId: "agent-version-1", version: 1, schedulable: true },
+});
+
+const environment = (uid = "environment-1", name = "Build host") => ({
+  metadata: metadata(uid, name),
+  spec: {
+    scope: "project",
+    type: "self_hosted",
+    networking: { type: "closed", allowMcpServers: false, allowPackageManagers: false },
+    packages: { type: "packages", apt: [], cargo: [], gem: [], go: [], npm: [], pip: [], webi: [] },
+    variables: {},
+  },
+  status: { phase: "active", currentVersionId: "environment-version-1", version: 1 },
+});
+
+const runner = (id = "runner-1", name = "build.local") => ({
+  id,
+  projectId: "project-1",
+  name,
+  environmentId: "environment-1",
+  secretRef: null,
+  authMode: "realmroot",
+  state: "active",
+  currentLoad: 0,
+  maxConcurrent: 1,
+  runtimeUsage: [],
+  runtimes: [],
+  metadata: {},
+  lastHeartbeatAt: null,
+  createdAt: "2026-09-01T12:00:00.000Z",
+  updatedAt: "2026-09-01T12:00:01.000Z",
+});
+
 describe("Agency Agent and Machine projection adapter", () => {
+  it("uses the SDK Project contract for pagination, authorization, tracing, and creation", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        requests.push(request);
+        return request.method === "POST"
+          ? Response.json(project("project-created", "Agent Kanban"), { status: 201 })
+          : Response.json({ data: [project()], pagination: { limit: 100, nextCursor: null, hasMore: false } });
+      }),
+    );
+    const adapter = new AmaProjectCatalogAdapter(env, "ama-token", "00-project-trace");
+
+    await expect(adapter.listProjects(vi.fn())).resolves.toEqual([{ id: "project-1", name: "Agent Kanban" }]);
+    await expect(adapter.createProject("Agent Kanban")).resolves.toEqual({ id: "project-created", name: "Agent Kanban" });
+
+    expect(requests.map((request) => [request.method, new URL(request.url).pathname])).toEqual([
+      ["GET", "/api/v1/projects"],
+      ["POST", "/api/v1/projects"],
+    ]);
+    expect([...new URL(requests[0]!.url).searchParams]).toEqual([["limit", "100"]]);
+    expect(await requests[1]!.clone().json()).toEqual({ name: "Agent Kanban" });
+    for (const request of requests) {
+      expect(request.headers.get("authorization")).toBe("Bearer ama-token");
+      expect(request.headers.get("traceparent")).toBe("00-project-trace");
+      expect(request.headers.has("x-ama-project-id")).toBe(false);
+    }
+  });
+
+  it("uses the SDK Agent and Identity contracts for filters, idempotent writes, and soft deletion", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        requests.push(request);
+        const { pathname } = new URL(request.url);
+        if (request.method === "GET" && pathname === "/api/v1/agents") {
+          return Response.json({ data: [agent()], pagination: { limit: 20, nextCursor: null, hasMore: false } });
+        }
+        if (request.method === "GET") return Response.json(agent("agent/encoded", "Encoded"));
+        if (request.method === "POST" && pathname === "/api/v1/identities") {
+          return Response.json({ metadata: metadata("identity-1", "Backend identity"), spec: {}, status: {} }, { status: 201 });
+        }
+        if (request.method === "POST") return Response.json(agent("agent-created", "Backend"), { status: 201 });
+        return new Response(null, { status: 204 });
+      }),
+    );
+    const adapter = new AmaResourceProjectionAdapter(env, "ama-token", "00-resource-trace");
+
+    await adapter.listAgentsPage({
+      projectId: "project-1",
+      limit: 20,
+      cursor: "agent-cursor",
+      filters: { runtime: "codex", schedulable: false, search: "backend" },
+    });
+    await adapter.getAgent("project-1", "agent/encoded");
+    await expect(
+      adapter.createIdentity("project-1", {
+        name: "Backend identity",
+        username: "backend",
+        runtime: "codex",
+        idempotencyKey: "identity-key",
+      }),
+    ).resolves.toBe("identity-1");
+    await adapter.archiveIdentity("project-1", "identity/encoded");
+    await adapter.createAgent("project-1", {
+      name: "Backend",
+      description: "Builds APIs",
+      systemPrompt: "Build APIs",
+      provider: "openai",
+      model: "gpt-5.6",
+      skills: ["agent-kanban"],
+      identityRef: "identity-1",
+      idempotencyKey: "agent-key",
+    });
+
+    expect(new URL(requests[0]!.url).pathname).toBe("/api/v1/agents");
+    expect(Object.fromEntries(new URL(requests[0]!.url).searchParams)).toEqual({
+      limit: "20",
+      cursor: "agent-cursor",
+      runtime: "codex",
+      schedulable: "false",
+      search: "backend",
+    });
+    expect(new URL(requests[1]!.url).pathname).toBe("/api/v1/agents/agent%2Fencoded");
+    expect(await requests[2]!.clone().json()).toEqual({
+      metadata: { name: "Backend identity" },
+      spec: { username: "backend", runtime: "codex" },
+    });
+    expect(requests[2]!.headers.get("idempotency-key")).toBe("identity-key");
+    expect([requests[3]!.method, new URL(requests[3]!.url).pathname]).toEqual(["DELETE", "/api/v1/identities/identity%2Fencoded"]);
+    expect(await requests[4]!.clone().json()).toEqual({
+      metadata: { name: "Backend", description: "Builds APIs" },
+      spec: {
+        systemPrompt: "Build APIs",
+        provider: "openai",
+        model: "gpt-5.6",
+        skills: ["agent-kanban"],
+        identityRef: "identity-1",
+      },
+    });
+    expect(requests[4]!.headers.get("idempotency-key")).toBe("agent-key");
+    for (const request of requests) {
+      expect(request.headers.get("authorization")).toBe("Bearer ama-token");
+      expect(request.headers.get("x-ama-project-id")).toBe("project-1");
+      expect(request.headers.get("traceparent")).toBe("00-resource-trace");
+    }
+  });
+
+  it("uses the SDK Environment and Runner contracts and accepts DELETE 204 soft deletion", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        requests.push(request);
+        const { pathname } = new URL(request.url);
+        if (request.method === "GET" && pathname === "/api/v1/environments") {
+          return Response.json({ data: [environment()], pagination: { limit: 10, nextCursor: null, hasMore: false } });
+        }
+        if (request.method === "GET" && pathname === "/api/v1/runners") {
+          return Response.json({ data: [], pagination: { limit: 100, nextCursor: null, hasMore: false } });
+        }
+        if (request.method === "POST") return Response.json(environment("environment-created", "New computer"), { status: 201 });
+        return new Response(null, { status: 204 });
+      }),
+    );
+    const adapter = new AmaResourceProjectionAdapter(env, "ama-token", "00-machine-trace");
+
+    await adapter.listMachinesPage({ projectId: "project-1", limit: 10, cursor: "environment-cursor" });
+    await adapter.createMachine("project-1", "New computer", "environment-key");
+    await expect(adapter.archiveMachine("project-1", "environment/encoded")).resolves.toBe(true);
+
+    expect([requests[0]!.method, new URL(requests[0]!.url).pathname, Object.fromEntries(new URL(requests[0]!.url).searchParams)]).toEqual([
+      "GET",
+      "/api/v1/environments",
+      { limit: "10", cursor: "environment-cursor" },
+    ]);
+    expect([requests[1]!.method, new URL(requests[1]!.url).pathname]).toEqual(["GET", "/api/v1/runners"]);
+    expect(Object.fromEntries(new URL(requests[1]!.url).searchParams)).toEqual({ limit: "100" });
+    expect(await requests[2]!.clone().json()).toEqual({
+      metadata: { name: "New computer" },
+      spec: { scope: "project", type: "self_hosted" },
+    });
+    expect(requests[2]!.headers.get("idempotency-key")).toBe("environment-key");
+    expect([requests[3]!.method, new URL(requests[3]!.url).pathname]).toEqual(["DELETE", "/api/v1/environments/environment%2Fencoded"]);
+    for (const request of requests) {
+      expect(request.headers.get("authorization")).toBe("Bearer ama-token");
+      expect(request.headers.get("x-ama-project-id")).toBe("project-1");
+      expect(request.headers.get("traceparent")).toBe("00-machine-trace");
+    }
+  });
+
   it("redacts AMA response and network error details from projection failures and API Problems", async () => {
     const credentialSentinel = "ama-upstream-credential-sentinel";
     const failures = [
@@ -94,8 +303,166 @@ describe("Agency Agent and Machine projection adapter", () => {
     expect(JSON.stringify(problem)).not.toContain(credentialSentinel);
   });
 
+  it("preserves SDK 404 and upstream failure mappings at the projection boundary", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { type: "not_found", message: "missing" } }, { status: 404 })),
+    );
+    const adapter = new AmaResourceProjectionAdapter(env, "ama-token");
+
+    await expect(adapter.getAgent("project-1", "missing-agent")).resolves.toBeNull();
+    await expect(adapter.getMachine("project-1", "missing-environment")).resolves.toBeNull();
+    await expect(adapter.archiveMachine("project-1", "missing-environment")).resolves.toBe(false);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: { type: "unavailable", message: "provider detail" } }, { status: 503 })),
+    );
+    await expect(adapter.archiveIdentity("project-1", "identity-1")).rejects.toMatchObject({
+      kind: "unavailable",
+      message: "AMA is unavailable",
+    });
+  });
+
+  it("does not turn a Runner list 404 into a missing Environment", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(input);
+        return new URL(request.url).pathname === "/api/v1/environments/environment-1"
+          ? Response.json(environment())
+          : Response.json({ error: { type: "not_found", message: "Runner collection unavailable" } }, { status: 404 });
+      }),
+    );
+
+    await expect(new AmaResourceProjectionAdapter(env, "ama-token").getMachine("project-1", "environment-1")).rejects.toMatchObject({
+      kind: "not-found",
+      message: "AMA request was rejected",
+    });
+  });
+
   it.each([
-    { name: "non-array data", value: { data: "not-an-array", pagination: {} }, message: "AMA returned an invalid Project page" },
+    {
+      resource: "Project",
+      response: () => Response.json({ data: [{ ...project(), name: undefined }], pagination: { nextCursor: null, hasMore: false } }),
+      invoke: () => new AmaProjectCatalogAdapter(env, "ama-token").listProjects(vi.fn()),
+    },
+    {
+      resource: "Identity",
+      response: () => Response.json({ metadata: { ...metadata("identity-1", "Identity"), uid: undefined }, spec: {}, status: {} }, { status: 201 }),
+      invoke: () =>
+        new AmaResourceProjectionAdapter(env, "ama-token").createIdentity("project-1", {
+          name: "Identity",
+          username: "identity",
+          runtime: "codex",
+          idempotencyKey: "identity-key",
+        }),
+    },
+    {
+      resource: "Agent",
+      response: () => Response.json({ ...agent(), spec: { ...agent().spec, systemPrompt: undefined } }),
+      invoke: () => new AmaResourceProjectionAdapter(env, "ama-token").getAgent("project-1", "agent-1"),
+    },
+    {
+      resource: "Environment",
+      response: () => Response.json({ ...environment(), metadata: { ...environment().metadata, uid: undefined } }),
+      invoke: () => new AmaResourceProjectionAdapter(env, "ama-token").getMachine("project-1", "environment-1"),
+    },
+  ])("maps a valid JSON $resource response missing a required field to invalid-response", async ({ response, invoke }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response()),
+    );
+
+    await expect(invoke()).rejects.toMatchObject({
+      kind: "invalid-response",
+      message: expect.stringContaining("invalid"),
+    });
+  });
+
+  it("maps a valid JSON Runner response missing a required field to invalid-response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(input);
+        if (new URL(request.url).pathname === "/api/v1/environments") {
+          return Response.json({ data: [environment()], pagination: { nextCursor: null, hasMore: false } });
+        }
+        return Response.json({ data: [{ ...runner(), name: undefined }], pagination: { nextCursor: null, hasMore: false } });
+      }),
+    );
+
+    await expect(
+      new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned an invalid resource representation" });
+  });
+
+  it.each([
+    {
+      resource: "Agent",
+      response: { ...agent(), status: { ...agent().status, phase: "archived" } },
+      invoke: () => new AmaResourceProjectionAdapter(env, "ama-token").getAgent("project-1", "agent-1"),
+    },
+    {
+      resource: "Environment",
+      response: { ...environment(), status: { ...environment().status, phase: "archived" } },
+      invoke: () => new AmaResourceProjectionAdapter(env, "ama-token").getMachine("project-1", "environment-1"),
+    },
+  ])("maps a non-active $resource phase to invalid-response", async ({ response, invoke }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(response)),
+    );
+
+    await expect(invoke()).rejects.toMatchObject({
+      kind: "invalid-response",
+      message: "AMA returned an invalid resource representation",
+    });
+  });
+
+  it("rejects a blank Runner name and trims a usable Runner name in the Machine projection", async () => {
+    const adapter = new AmaResourceProjectionAdapter(env, "ama-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(input);
+        if (new URL(request.url).pathname === "/api/v1/environments") {
+          return Response.json({ data: [environment()], pagination: { nextCursor: null, hasMore: false } });
+        }
+        return Response.json({ data: [runner("runner-blank", "   ")], pagination: { nextCursor: null, hasMore: false } });
+      }),
+    );
+    await expect(adapter.listMachinesPage({ projectId: "project-1", limit: 20, cursor: null })).rejects.toMatchObject({
+      kind: "invalid-response",
+      message: "AMA returned an invalid resource representation",
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(input);
+        if (new URL(request.url).pathname === "/api/v1/environments") {
+          return Response.json({ data: [environment()], pagination: { nextCursor: null, hasMore: false } });
+        }
+        return Response.json({ data: [runner("runner-trimmed", "  build.local  ")], pagination: { nextCursor: null, hasMore: false } });
+      }),
+    );
+    await expect(adapter.listMachinesPage({ projectId: "project-1", limit: 20, cursor: null })).resolves.toMatchObject({
+      items: [
+        {
+          name: "build.local",
+          runners: [expect.objectContaining({ id: "runner-trimmed", name: "build.local" })],
+        },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      name: "non-array data",
+      value: { data: "not-an-array", pagination: {} },
+      message: "AMA Project page exceeded the requested limit",
+    },
     {
       name: "hasMore with null cursor",
       value: { data: [], pagination: { hasMore: true, nextCursor: null } },
@@ -107,34 +474,9 @@ describe("Agency Agent and Machine projection adapter", () => {
       message: "AMA returned invalid Project pagination",
     },
     {
-      name: "terminal page with cursor",
-      value: { data: [], pagination: { hasMore: false, nextCursor: "unexpected" } },
-      message: "AMA returned invalid Project pagination",
-    },
-    {
       name: "more than the requested limit",
       value: { data: Array.from({ length: 101 }, (_, index) => project(`project-${index}`)), pagination: { hasMore: false, nextCursor: null } },
       message: "AMA Project page exceeded the requested limit",
-    },
-    {
-      name: "missing createdAt",
-      value: { data: [{ ...project(), createdAt: undefined }], pagination: { hasMore: false, nextCursor: null } },
-      message: "AMA returned an invalid Project",
-    },
-    {
-      name: "invalid createdAt",
-      value: { data: [{ ...project(), createdAt: "not-a-date" }], pagination: { hasMore: false, nextCursor: null } },
-      message: "AMA returned an invalid Project",
-    },
-    {
-      name: "missing updatedAt",
-      value: { data: [{ ...project(), updatedAt: undefined }], pagination: { hasMore: false, nextCursor: null } },
-      message: "AMA returned an invalid Project",
-    },
-    {
-      name: "invalid updatedAt",
-      value: { data: [{ ...project(), updatedAt: "not-a-date" }], pagination: { hasMore: false, nextCursor: null } },
-      message: "AMA returned an invalid Project",
     },
   ])("[spec: agents/transparent-ama-project] rejects $name", async ({ value, message }) => {
     vi.stubGlobal(
@@ -196,10 +538,19 @@ describe("Agency Agent and Machine projection adapter", () => {
                 provider: "openai",
                 model: "gpt-5.6",
                 skills: ["agent-kanban"],
+                subagents: [],
                 allowedTools: ["bash"],
-                identity: { subject: "realmroot-agent-subject", username: "backend", runtime: "codex" },
+                mcpConnectors: [],
+                identity: {
+                  identityId: "identity-1",
+                  agentId: "realmroot-agent-1",
+                  issuer: "https://realmroot.test",
+                  subject: "realmroot-agent-subject",
+                  username: "backend",
+                  runtime: "codex",
+                },
               },
-              status: { phase: "active", schedulable: true },
+              status: { phase: "active", currentVersionId: "agent-version-1", version: 1, schedulable: true },
             },
             {
               metadata: metadata("agent-2", "Unbound"),
@@ -208,10 +559,12 @@ describe("Agency Agent and Machine projection adapter", () => {
                 provider: null,
                 model: null,
                 skills: [],
+                subagents: [],
                 allowedTools: [],
+                mcpConnectors: [],
                 identity: null,
               },
-              status: { phase: "archived", schedulable: false },
+              status: { phase: "active", currentVersionId: "agent-version-2", version: 1, schedulable: false },
             },
           ],
           pagination: { nextCursor: "agent-page-2", hasMore: true },
@@ -243,7 +596,7 @@ describe("Agency Agent and Machine projection adapter", () => {
           username: null,
           runtime: null,
           subject: null,
-          phase: "archived",
+          phase: "active",
           schedulable: false,
         }),
       ],
@@ -265,10 +618,12 @@ describe("Agency Agent and Machine projection adapter", () => {
             provider: null,
             model: null,
             skills: [],
+            subagents: [],
             allowedTools: [],
+            mcpConnectors: [],
             identity: null,
           },
-          status: { phase: "active", schedulable: false },
+          status: { phase: "active", currentVersionId: "agent-version-unbound", version: 1, schedulable: false },
         });
       }),
     );
@@ -384,41 +739,6 @@ describe("Agency Agent and Machine projection adapter", () => {
     });
   });
 
-  it("[spec: machines/runner-aggregation] rejects a Runner usage window with an invalid reset timestamp", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        if (url.pathname === "/api/v1/environments") {
-          return Response.json({
-            data: [{ metadata: metadata("environment-self", "Build host"), spec: { type: "self_hosted" }, status: { phase: "active" } }],
-            pagination: { nextCursor: null, hasMore: false },
-          });
-        }
-        return Response.json({
-          data: [
-            {
-              id: "runner-invalid-reset",
-              name: "Runner invalid reset",
-              environmentId: "environment-self",
-              state: "active",
-              currentLoad: 0,
-              maxConcurrent: 1,
-              runtimeUsage: [{ runtime: "codex", windows: [{ label: "5 hours", utilization: 25, resetsAt: "not-a-date" }] }],
-              runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
-              lastHeartbeatAt: "2026-09-01T12:01:00.000Z",
-            },
-          ],
-          pagination: { nextCursor: null, hasMore: false },
-        });
-      }),
-    );
-
-    await expect(
-      new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
-    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned an invalid resource representation" });
-  });
-
   it("[spec: machines/runner-aggregation] derives the Machine display name from deterministic usable Runner names", async () => {
     vi.stubGlobal(
       "fetch",
@@ -482,88 +802,6 @@ describe("Agency Agent and Machine projection adapter", () => {
       { id: "environment-one", name: "solo.local" },
       { id: "environment-many", name: "alpha.local + 1 runner" },
     ]);
-  });
-
-  it("[spec: machines/runner-aggregation] rejects an attached Runner with a blank name", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        if (url.pathname === "/api/v1/environments") {
-          return Response.json({
-            data: [{ metadata: metadata("environment-1", "computer-internal"), spec: { type: "self_hosted" }, status: { phase: "active" } }],
-            pagination: { nextCursor: null, hasMore: false },
-          });
-        }
-        return Response.json({
-          data: [
-            {
-              id: "runner-blank",
-              name: "   ",
-              environmentId: "environment-1",
-              state: "active",
-              currentLoad: 0,
-              maxConcurrent: 1,
-              runtimeUsage: [],
-              runtimes: [],
-              lastHeartbeatAt: null,
-            },
-          ],
-          pagination: { nextCursor: null, hasMore: false },
-        });
-      }),
-    );
-
-    await expect(
-      new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
-    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned an invalid resource representation" });
-  });
-
-  it("[spec: agents/authoritative-projection] [spec: machines/environment-projection] preserves AMA Agent pages while hiding archived Machines", async () => {
-    const archivedAgent = {
-      metadata: { ...metadata("agent-archived", "Archived Agent"), archivedAt: "2026-09-01T13:00:00.000Z" },
-      spec: {
-        systemPrompt: "Archived",
-        provider: null,
-        model: null,
-        skills: [],
-        allowedTools: [],
-        identity: { subject: "agent-subject", username: "archived", runtime: "codex" },
-      },
-      status: { phase: "archived", schedulable: false },
-    };
-    const archivedEnvironment = {
-      metadata: { ...metadata("environment-archived", "Archived Machine"), archivedAt: "2026-09-01T13:00:00.000Z" },
-      spec: { type: "self_hosted" },
-      status: { phase: "archived" },
-    };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        if (url.pathname === "/api/v1/agents") {
-          return Response.json({ data: [archivedAgent], pagination: { nextCursor: null, hasMore: false } });
-        }
-        if (url.pathname === "/api/v1/environments") {
-          return Response.json({ data: [archivedEnvironment], pagination: { nextCursor: null, hasMore: false } });
-        }
-        if (url.pathname === "/api/v1/runners") return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-        if (url.pathname.endsWith("/agent-archived")) return Response.json(archivedAgent);
-        if (url.pathname.endsWith("/environment-archived")) return Response.json(archivedEnvironment);
-        throw new Error(`Unexpected URL ${url}`);
-      }),
-    );
-    const adapter = new AmaResourceProjectionAdapter(env, "ama-token");
-
-    await expect(adapter.listAgentsPage({ projectId: "project-1", limit: 20, cursor: null, filters: {} })).resolves.toMatchObject({
-      items: [expect.objectContaining({ id: "agent-archived", phase: "archived" })],
-    });
-    await expect(adapter.listMachinesPage({ projectId: "project-1", limit: 20, cursor: null })).resolves.toMatchObject({ items: [] });
-    await expect(adapter.getAgent("project-1", "agent-archived")).resolves.toMatchObject({ id: "agent-archived", phase: "archived" });
-    await expect(adapter.getMachine("project-1", "environment-archived")).resolves.toMatchObject({
-      id: "environment-archived",
-      state: "disabled",
-    });
   });
 
   it("[spec: machines/runner-aggregation] uses one bounded paginated Runner traversal for a Machine collection", async () => {
@@ -681,23 +919,24 @@ describe("Agency Agent and Machine projection adapter", () => {
     expect(pageBoundRequests).toBe(100);
   });
 
-  it("[spec: agents/authoritative-projection] [spec: machines/archive-environment] fails closed on invalid AMA success responses", async () => {
+  it("[spec: agents/authoritative-projection] fails closed on invalid AMA success responses", async () => {
     const adapter = new AmaResourceProjectionAdapter(env, "ama-token");
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("not-json", { status: 200 })),
     );
-    await expect(adapter.getAgent("project-1", "agent-1")).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned invalid JSON" });
+    await expect(adapter.getAgent("project-1", "agent-1")).rejects.toMatchObject({
+      kind: "invalid-response",
+      message: "AMA returned an invalid resource representation",
+    });
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        Response.json({ metadata: metadata("environment-1", "Machine"), spec: { type: "self_hosted" }, status: { phase: "active" } }),
-      ),
+      vi.fn(async () => Response.json({ metadata: null, spec: null, status: null })),
     );
-    await expect(adapter.archiveMachine("project-1", "environment-1")).rejects.toMatchObject({
+    await expect(adapter.getAgent("project-1", "agent-1")).rejects.toMatchObject({
       kind: "invalid-response",
-      message: "AMA did not confirm Machine archival",
+      message: "AMA returned an invalid resource representation",
     });
   });
 

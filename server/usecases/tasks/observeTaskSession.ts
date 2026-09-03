@@ -1,14 +1,7 @@
 export interface AgencySession {
-  metadata: {
-    uid: string;
-    projectId: string;
-    name: string;
-    createdAt: string;
-    updatedAt: string;
-    archivedAt: string | null;
-  };
-  spec: Record<string, unknown>;
-  status: Record<string, unknown>;
+  id: string;
+  projectId: string | null;
+  representation: object;
 }
 
 export interface AgencySessionObservationPort {
@@ -48,7 +41,7 @@ export async function observeTaskSession(
   if (!session) {
     throw new TaskSessionObservationFailure("SESSION_NOT_FOUND", "Agency Session not found for the Task");
   }
-  if (session.metadata.uid !== reference.sessionId || session.metadata.projectId !== reference.projectId) {
+  if (session.id !== reference.sessionId || session.projectId !== reference.projectId) {
     throw new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned a Session outside the requested identity or Project");
   }
   return session;

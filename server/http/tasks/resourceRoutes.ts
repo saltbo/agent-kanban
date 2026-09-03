@@ -189,7 +189,7 @@ async function getTaskSession(c: TaskContext): Promise<Response> {
   const task = await requireTask(c);
   const binding = requireTaskSession(task);
   try {
-    return c.json(await resolveAgencySession(c, binding));
+    return c.json((await resolveAgencySession(c, binding)).representation);
   } catch (error) {
     return mapSessionObservationFailure(c, error);
   }
@@ -208,9 +208,9 @@ async function getTaskSessionWebSocket(c: TaskContext): Promise<Response> {
     if (!upgrade) {
       const url = new URL(c.req.url);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      return c.json({ url: url.toString(), sessionId: session.metadata.uid });
+      return c.json({ url: url.toString(), sessionId: session.id });
     }
-    return relayReadOnlyAgencySocket(await client.adapter.connectSessionSocket(session.metadata.uid));
+    return relayReadOnlyAgencySocket(await client.adapter.connectSessionSocket(session.id));
   } catch (error) {
     return mapSessionObservationFailure(c, error);
   }

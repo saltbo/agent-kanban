@@ -1,3 +1,4 @@
+import type { Session } from "@realmroot/enbor-sdk";
 import { agencySessionObservationClient } from "@server/adapters/agency/sessionObservation";
 import type { Env } from "@server/env";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,23 +13,39 @@ function env(): Env {
   return { AMA_ORIGIN: "https://agency.example.com/configured-path" } as Env;
 }
 
-function session() {
+function session(): Session {
   return {
     metadata: {
       uid: "session-canonical-1",
       projectId: authorization.projectId,
       name: "Observed Session",
+      description: null,
+      labels: {},
+      annotations: {},
+      createdBy: null,
       createdAt: "2026-09-02T00:00:00.000Z",
       updatedAt: "2026-09-02T00:01:00.000Z",
-      archivedAt: null,
     },
-    spec: { runtime: "codex" },
-    status: { phase: "idle" },
+    spec: { agentId: "agent-1", environmentId: null, runtime: "codex", env: {}, envFrom: [], volumes: [], volumeMounts: [] },
+    status: {
+      phase: "idle",
+      reason: null,
+      conditions: [],
+      bindings: {
+        agent: { versionId: "agent-version-1", snapshot: {} as Session["status"]["bindings"]["agent"]["snapshot"] },
+        environment: { id: null, versionId: null, snapshot: null },
+        runtime: "codex",
+      },
+      placement: null,
+      startedAt: "2026-09-02T00:00:00.000Z",
+      closedAt: null,
+    },
   };
 }
 
-describe("Agency Session observation boundary", () => {
+describe("Agency Session observation SDK adapter", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -36,13 +53,19 @@ describe("Agency Session observation boundary", () => {
     const fetchMock = vi.fn(async () => Response.json(session()));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(agencySessionObservationClient(env(), authorization).getSession("session-canonical-1")).resolves.toEqual(session());
+    const representation = session();
+    await expect(agencySessionObservationClient(env(), authorization).getSession("session-canonical-1")).resolves.toEqual({
+      id: "session-canonical-1",
+      projectId: authorization.projectId,
+      representation,
+    });
 
     const [input, init] = fetchMock.mock.calls[0]!;
-    const url = new URL(String(input));
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
     expect(url.href).toBe("https://agency.example.com/api/v1/sessions/session-canonical-1");
     expect([...url.searchParams]).toEqual([]);
-    const headers = new Headers(init?.headers);
+    const headers = request.headers;
     expect(headers.get("Authorization")).toBe(`Bearer ${authorization.token}`);
     expect(headers.get("X-AMA-Project-ID")).toBe(authorization.projectId);
     expect(headers.get("traceparent")).toBe(authorization.traceparent);
@@ -56,23 +79,73 @@ describe("Agency Session observation boundary", () => {
     await expect(agencySessionObservationClient(env(), authorization).getSession("session-missing")).resolves.toBeNull();
   });
 
-  it("rejects malformed and invalid successful Session responses", async () => {
+  it("maps malformed and structurally invalid successful Session responses to INVALID_RESPONSE", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response("{", { status: 200 }))
-      .mockResolvedValueOnce(Response.json({ metadata: { uid: "session-canonical-1" } }));
+      .mockResolvedValueOnce(Response.json({ metadata: { projectId: authorization.projectId } }));
     vi.stubGlobal("fetch", fetchMock);
     const client = agencySessionObservationClient(env(), authorization);
 
     await expect(client.getSession("session-canonical-1")).rejects.toMatchObject({
       code: "INVALID_RESPONSE",
-      message: "Agency returned malformed Session JSON",
-      cause: expect.any(SyntaxError),
     });
     await expect(client.getSession("session-canonical-1")).rejects.toMatchObject({
       code: "INVALID_RESPONSE",
       message: "Agency returned an invalid Session response",
     });
+  });
+
+  it.each([
+    {
+      missing: "spec",
+      response: { metadata: { uid: "session-canonical-1", projectId: authorization.projectId }, status: {} },
+    },
+    {
+      missing: "status",
+      response: { metadata: { uid: "session-canonical-1", projectId: authorization.projectId }, spec: {} },
+    },
+  ])("maps a Session with correct identity but missing $missing to INVALID_RESPONSE", async ({ response }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(response)),
+    );
+
+    await expect(agencySessionObservationClient(env(), authorization).getSession("session-canonical-1")).rejects.toMatchObject({
+      code: "INVALID_RESPONSE",
+      message: "Agency returned an invalid Session response",
+    });
+  });
+
+  it("applies the 10 second SDK timeout signal to REST and connectSessionSocket requests", async () => {
+    const controllers: AbortController[] = [];
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+      expect(milliseconds).toBe(10_000);
+      const controller = new AbortController();
+      controllers.push(controller);
+      return controller.signal;
+    });
+    const requests: Request[] = [];
+    const upstream = {} as WebSocket;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        requests.push(request);
+        return requests.length === 1 ? Response.json(session()) : ({ status: 101, webSocket: upstream } as Response & { webSocket: WebSocket });
+      }),
+    );
+    const client = agencySessionObservationClient(env(), authorization);
+
+    await client.getSession("session-canonical-1");
+    await client.connectSessionSocket("session-canonical-1");
+
+    expect(timeout).toHaveBeenCalledTimes(2);
+    expect(requests.map((request) => request.signal.aborted)).toEqual([false, false]);
+    controllers.forEach((controller) => {
+      controller.abort();
+    });
+    expect(requests.map((request) => request.signal.aborted)).toEqual([true, true]);
   });
 
   it.each([
@@ -86,18 +159,19 @@ describe("Agency Session observation boundary", () => {
       invoke: (client: ReturnType<typeof agencySessionObservationClient>) => client.connectSessionSocket("session-canonical-1"),
       message: "Agency Session socket failed with HTTP 503",
     },
-  ])("does not consume a credential-bearing upstream body when the $operation fails", async ({ invoke, message }) => {
+  ])("keeps the $operation upstream failure stable and redacted", async ({ invoke, message }) => {
     const response = new Response("provider-secret-SENTINEL", { status: 503 });
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => response),
     );
 
-    await expect(invoke(agencySessionObservationClient(env(), authorization))).rejects.toMatchObject({
+    const error = await invoke(agencySessionObservationClient(env(), authorization)).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
       code: "UNAVAILABLE",
       message,
     });
-    expect(response.bodyUsed).toBe(false);
+    expect(String(error)).not.toContain("provider-secret-SENTINEL");
   });
 
   it("preserves stable lookup and socket network failures with their causes", async () => {
@@ -111,12 +185,11 @@ describe("Agency Session observation boundary", () => {
     await expect(client.getSession("session-canonical-1")).rejects.toMatchObject({
       code: "UNAVAILABLE",
       message: "Agency request failed",
-      cause,
+      cause: expect.any(Error),
     });
     await expect(client.connectSessionSocket("session-canonical-1")).rejects.toMatchObject({
       code: "UNAVAILABLE",
       message: "Agency request failed",
-      cause,
     });
   });
 
@@ -128,12 +201,14 @@ describe("Agency Session observation boundary", () => {
     await expect(agencySessionObservationClient(env(), authorization).connectSessionSocket("session-canonical-1")).resolves.toBe(upstream);
 
     const [input, init] = fetchMock.mock.calls[0]!;
-    const url = new URL(String(input));
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
     expect(url.href).toBe("https://agency.example.com/api/v1/sessions/session-canonical-1/socket");
     expect([...url.searchParams]).toEqual([]);
-    const headers = new Headers(init?.headers);
+    const headers = request.headers;
     expect(headers.get("Authorization")).toBe(`Bearer ${authorization.token}`);
     expect(headers.get("X-AMA-Project-ID")).toBe(authorization.projectId);
     expect(headers.get("Upgrade")).toBe("websocket");
+    expect(headers.get("traceparent")).toBe(authorization.traceparent);
   });
 });

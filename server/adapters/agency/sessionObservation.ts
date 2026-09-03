@@ -1,3 +1,5 @@
+import { AmaApiError, connectSessionSocket, type Session } from "@realmroot/enbor-sdk";
+import { createAgencyClient } from "@server/adapters/agency/client";
 import type { Env } from "@server/env";
 import { type AgencySession, AgencySessionObservationFailure, type AgencySessionObservationPort } from "@server/usecases/tasks/observeTaskSession";
 
@@ -16,33 +18,30 @@ export function agencySessionObservationClient(
   authorization: { token: string; projectId: string; traceparent?: string },
 ): AgencySessionObservationClient {
   const origin = agencyOrigin(env);
+  const client = createAgencyClient(origin, authorization);
   return {
     async getSession(sessionId) {
-      const url = new URL(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, origin);
-      const response = await dependencyFetch(url, {
-        headers: requestHeaders(authorization),
-      });
-      if (response.status === 404) return null;
-      if (!response.ok) {
-        throw unavailable(`Agency Session read failed with HTTP ${response.status}`);
-      }
       try {
-        return decodeSession(await response.json());
+        return observedSession(await client.sessions.get(sessionId));
       } catch (error) {
-        if (error instanceof AgencySessionObservationFailure) throw error;
-        throw new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned malformed Session JSON", { cause: error });
+        if (error instanceof AmaApiError && error.status === 404) return null;
+        throw observationFailure(error);
       }
     },
 
     async connectSessionSocket(sessionId) {
-      const url = new URL(`/api/v1/sessions/${encodeURIComponent(sessionId)}/socket`, origin);
-      const response = await dependencyFetch(url, {
-        headers: { ...requestHeaders(authorization), Upgrade: "websocket" },
-      });
-      if (response.status !== 101 || !response.webSocket) {
-        throw unavailable(`Agency Session socket failed with HTTP ${response.status}`);
+      try {
+        const socketClient = createAgencyClient(origin, authorization, { Upgrade: "websocket" });
+        const { response } = await connectSessionSocket({ client: socketClient.raw, path: { sessionId }, parseAs: "stream" });
+        if (!response) throw unavailable("Agency request failed");
+        if (response.status !== 101 || !response.webSocket) {
+          throw unavailable(`Agency Session socket failed with HTTP ${response.status}`);
+        }
+        return response.webSocket;
+      } catch (error) {
+        if (error instanceof AgencySessionObservationFailure) throw error;
+        throw unavailable("Agency request failed", error);
       }
-      return response.webSocket;
     },
   };
 }
@@ -54,58 +53,38 @@ function agencyOrigin(env: Env): string {
   return origin.origin;
 }
 
-function requestHeaders(authorization: { token: string; projectId: string; traceparent?: string }): Record<string, string> {
-  return {
-    Accept: "application/json",
-    Authorization: `Bearer ${authorization.token}`,
-    "X-AMA-Project-ID": authorization.projectId,
-    ...(authorization.traceparent ? { traceparent: authorization.traceparent } : {}),
-  };
-}
-
-async function dependencyFetch(input: URL, init: RequestInit): Promise<Response> {
-  try {
-    return await fetch(input, { ...init, signal: AbortSignal.timeout(10_000) });
-  } catch (error) {
-    throw unavailable("Agency request failed", error);
-  }
-}
-
-function decodeSession(value: unknown): AgencySession {
-  if (!isRecord(value) || !isRecord(value.metadata) || !isRecord(value.spec) || !isRecord(value.status)) throw invalidResponse();
-  const metadata = value.metadata;
+function observedSession(session: Session): AgencySession {
   if (
-    typeof metadata.uid !== "string" ||
-    typeof metadata.projectId !== "string" ||
-    typeof metadata.name !== "string" ||
-    typeof metadata.createdAt !== "string" ||
-    typeof metadata.updatedAt !== "string" ||
-    (metadata.archivedAt !== null && typeof metadata.archivedAt !== "string")
+    typeof session?.metadata?.uid !== "string" ||
+    (session.metadata.projectId !== null && typeof session.metadata.projectId !== "string") ||
+    !isRecord(session.spec) ||
+    !isRecord(session.status)
   ) {
-    throw invalidResponse();
+    throw new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned an invalid Session response");
   }
   return {
-    metadata: {
-      uid: metadata.uid,
-      projectId: metadata.projectId,
-      name: metadata.name,
-      createdAt: metadata.createdAt,
-      updatedAt: metadata.updatedAt,
-      archivedAt: metadata.archivedAt,
-    },
-    spec: value.spec,
-    status: value.status,
+    id: session.metadata.uid,
+    projectId: session.metadata.projectId,
+    representation: session,
   };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function observationFailure(error: unknown): AgencySessionObservationFailure {
+  if (error instanceof AgencySessionObservationFailure) return error;
+  if (!(error instanceof AmaApiError)) {
+    return new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned an invalid Session response", { cause: error });
+  }
+  if (error.status === undefined) return unavailable("Agency request failed", error);
+  if (error.status >= 200 && error.status < 300) {
+    return new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned malformed Session JSON", { cause: error });
+  }
+  return unavailable(`Agency Session read failed with HTTP ${error.status}`, error);
 }
 
 function unavailable(message: string, cause?: unknown): AgencySessionObservationFailure {
   return new AgencySessionObservationFailure("UNAVAILABLE", message, cause === undefined ? undefined : { cause });
-}
-
-function invalidResponse(): AgencySessionObservationFailure {
-  return new AgencySessionObservationFailure("INVALID_RESPONSE", "Agency returned an invalid Session response");
 }
