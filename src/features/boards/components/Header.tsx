@@ -1,6 +1,6 @@
-import { Bot, Cpu, Settings, Tags } from "lucide-react";
+import { Settings, Tags } from "lucide-react";
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -10,6 +10,11 @@ import { api } from "@/lib/api";
 import { signOut, useSession } from "@/lib/auth-client";
 import { getTheme, setTheme, type Theme } from "@/lib/theme";
 import { BoardSwitcher } from "./BoardSwitcher";
+
+const navLinks = [
+  { to: "/agents", label: "Agents" },
+  { to: "/machines", label: "Machines" },
+];
 
 function ThemeIcon({ theme }: { theme: Theme }) {
   if (theme === "light") {
@@ -52,6 +57,7 @@ export function Header() {
 
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const location = useLocation();
   const navigate = useNavigate();
 
   const activeBoard = boards.find((b: any) => b.id === boardId);
@@ -79,7 +85,7 @@ export function Header() {
 
   return (
     <>
-      <header className="flex items-center justify-between px-5 py-3 border-b border-border bg-surface-secondary">
+      <header className="flex flex-wrap items-center justify-between gap-y-2 border-b border-border bg-surface-secondary px-5 py-3">
         {/* Left: Logo + Board name */}
         <div className="flex items-center gap-2">
           <Link to="/" className="text-[15px] font-bold tracking-tight text-content-primary">
@@ -123,7 +129,25 @@ export function Header() {
           )}
         </div>
         {/* Right: Nav + Theme + Avatar */}
-        <div className="flex items-center gap-1">
+        <div className="flex w-full items-center justify-end gap-1 md:w-auto">
+          <nav aria-label="Resource navigation" className="flex items-center gap-1">
+            {navLinks.map(({ to, label }) => {
+              const active = location.pathname.startsWith(to);
+              return (
+                <Link
+                  key={to}
+                  to={to}
+                  aria-current={active ? "page" : undefined}
+                  className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+                    active ? "bg-accent-soft text-accent" : "text-content-tertiary hover:bg-surface-tertiary hover:text-content-secondary"
+                  }`}
+                >
+                  {label}
+                </Link>
+              );
+            })}
+          </nav>
+
           {/* Avatar + Dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="rounded-full" />}>
@@ -175,16 +199,6 @@ export function Header() {
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                 </svg>
                 Repositories
-              </DropdownMenuItem>
-
-              <DropdownMenuItem onClick={() => navigate("/agents")}>
-                <Bot className="size-3.5" />
-                Agents
-              </DropdownMenuItem>
-
-              <DropdownMenuItem onClick={() => navigate("/machines")}>
-                <Cpu className="size-3.5" />
-                Machines
               </DropdownMenuItem>
 
               {isAdmin && (
