@@ -1,7 +1,8 @@
-import { Bot, CheckCircle2, CircleSlash2 } from "lucide-react";
+import { CheckCircle2, CircleSlash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AgentAvatar, type AgentProfile, useAgentProfile } from "@/features/agent-identity";
 import type { AgentProjection } from "@/features/agents/useAgents";
 
 export function AgentList({ agents }: { agents: AgentProjection[] }) {
@@ -11,42 +12,54 @@ export function AgentList({ agents }: { agents: AgentProjection[] }) {
   return (
     <div className="grid gap-3 md:grid-cols-2">
       {agents.map((agent) => (
-        <Link key={agent.id} to={`/agents/${encodeURIComponent(agent.id)}`} className="group focus-visible:outline-none">
-          <Card className="h-full rounded-lg border-border bg-surface-secondary group-hover:border-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-accent">
-            <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="grid size-9 shrink-0 place-items-center rounded-md border border-border bg-surface-primary text-accent">
-                    <Bot className="size-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <CardTitle className="truncate text-content-primary">{agent.name}</CardTitle>
-                    <CardDescription className="font-mono text-xs">@{agent.username}</CardDescription>
-                  </div>
-                </div>
-                <Schedulable value={agent.schedulable} />
-              </div>
-            </CardHeader>
-            <CardContent className="flex items-center gap-2 text-xs text-content-tertiary">
-              <Badge variant="outline" className="font-mono">
-                {agent.runtime}
-              </Badge>
-              {agent.model && <span className="truncate font-mono">{agent.model}</span>}
-            </CardContent>
-          </Card>
-        </Link>
+        <AgentListItem key={agent.id} agent={agent} />
       ))}
     </div>
   );
 }
 
-export function AgentDetail({ agent }: { agent: AgentProjection }) {
+function AgentListItem({ agent }: { agent: AgentProjection }) {
+  const profile = useAgentProfile(agent.subject).data;
+  const name = profile?.name || agent.name;
+  const username = profile?.username || agent.username;
+  return (
+    <Link to={`/agents/${encodeURIComponent(agent.id)}`} className="group focus-visible:outline-none">
+      <Card className="h-full rounded-lg border-border bg-surface-secondary group-hover:border-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-accent">
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <AgentAvatar subject={agent.subject} profile={profile} fallbackName={agent.name} size={36} />
+              <div className="min-w-0">
+                <CardTitle className="truncate text-content-primary">{name}</CardTitle>
+                <CardDescription className="font-mono text-xs">@{username}</CardDescription>
+              </div>
+            </div>
+            <Schedulable value={agent.schedulable} />
+          </div>
+        </CardHeader>
+        <CardContent className="flex items-center gap-2 text-xs text-content-tertiary">
+          <Badge variant="outline" className="font-mono">
+            {agent.runtime}
+          </Badge>
+          {agent.model && <span className="truncate font-mono">{agent.model}</span>}
+        </CardContent>
+      </Card>
+    </Link>
+  );
+}
+
+export function AgentDetail({ agent, profile }: { agent: AgentProjection; profile?: AgentProfile }) {
+  const name = profile?.name || agent.name;
+  const username = profile?.username || agent.username;
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-content-primary">{agent.name}</h1>
-          <p className="mt-1 font-mono text-xs text-content-tertiary">@{agent.username}</p>
+        <div className="flex min-w-0 items-center gap-3">
+          <AgentAvatar subject={agent.subject} profile={profile} fallbackName={agent.name} size={40} />
+          <div className="min-w-0">
+            <h1 className="truncate text-xl font-bold text-content-primary">{name}</h1>
+            <p className="mt-1 truncate font-mono text-xs text-content-tertiary">@{username}</p>
+          </div>
         </div>
         <Schedulable value={agent.schedulable} />
       </div>

@@ -2,6 +2,7 @@ import { ChevronLeft } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useAgentProfile } from "@/features/agent-identity";
 import { AgentDetail } from "@/features/agents/AgentProjectionPages";
 import { useAgent, useAgentTasks } from "@/features/agents/useAgents";
 import { Header } from "@/features/boards/components/Header";
@@ -9,6 +10,7 @@ import { Header } from "@/features/boards/components/Header";
 export function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const { data, isLoading, error } = useAgent(agentId);
+  const profile = useAgentProfile(data?.subject).data;
   const tasks = useAgentTasks(data?.subject);
   return (
     <div className="min-h-screen bg-surface-primary">
@@ -24,7 +26,7 @@ export function AgentDetailPage() {
           <div className="h-40 animate-pulse rounded-lg border border-border bg-surface-secondary" />
         ) : (
           <>
-            <AgentDetail agent={data} />
+            <AgentDetail agent={data} profile={profile} />
             <Card className="rounded-lg border-border bg-surface-secondary">
               <CardHeader>
                 <CardTitle>Assigned tasks</CardTitle>

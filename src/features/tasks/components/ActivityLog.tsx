@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
-import { AgentIdenticon } from "./AgentIdenticon";
+import { AgentAvatar, useAgentProfile } from "@/features/agent-identity";
 import { formatRelative } from "./TaskDetailFields";
 
 interface ActivityLogProps {
@@ -46,9 +46,10 @@ const bodyActions = new Set(["commented", "rejected", "completed", "cancelled"])
 const markdownClass =
   "overflow-x-auto text-[13px] text-content-secondary [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-content-primary [&_h1]:mt-3 [&_h1]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-content-primary [&_h2]:mt-3 [&_h2]:mb-1 [&_h3]:text-[13px] [&_h3]:font-semibold [&_h3]:text-content-primary [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_ul]:mb-2 [&_ul]:pl-4 [&_ul]:list-disc [&_ol]:mb-2 [&_ol]:pl-4 [&_ol]:list-decimal [&_li]:mb-0.5 [&_a]:text-accent [&_a]:underline [&_a]:underline-offset-2 [&_pre]:bg-surface-primary [&_pre]:border [&_pre]:border-border [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[12px] [&_code]:font-mono [&_code]:text-accent [&_code]:bg-surface-primary [&_code]:px-1 [&_code]:rounded [&_code]:text-[12px] [&_pre_code]:bg-transparent [&_pre_code]:text-content-secondary [&_pre_code]:p-0 [&_table]:w-full [&_table]:border-collapse [&_th]:text-left [&_th]:text-[11px] [&_th]:font-medium [&_th]:text-content-tertiary [&_th]:uppercase [&_th]:tracking-wide [&_th]:border-b [&_th]:border-border [&_th]:pb-1 [&_td]:border-b [&_td]:border-border [&_td]:py-1 [&_td]:pr-3 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-content-tertiary [&_hr]:border-border";
 
-function actorLabel(log: any): string {
+function actorLabel(log: any, profileName?: string): string {
+  if (profileName) return profileName;
   if (log.actor_name) return log.actor_name;
-  if (log.actor_type?.startsWith("agent:")) return "Agent";
+  if (log.actor_type === "realmroot:agent" || log.actor_type?.startsWith("agent:")) return log.actor_id || "Agent";
   if (log.actor_type === "user") return "User";
   return "System";
 }
@@ -87,8 +88,10 @@ function buildSentence(log: any): { actionText: string; suffix: string } {
 }
 
 function NoteAvatar({ log }: { log: any }) {
-  if ((log.actor_type === "realmroot:agent" || log.actor_type?.startsWith("agent:")) && log.actor_id) {
-    return <AgentIdenticon seed={log.actor_id} size={28} />;
+  const isAgent = log.actor_type === "realmroot:agent" || log.actor_type?.startsWith("agent:");
+  const profile = useAgentProfile(isAgent ? log.actor_id : null).data;
+  if (isAgent && log.actor_id) {
+    return <AgentAvatar subject={log.actor_id} profile={profile} fallbackName={log.actor_name} size={28} />;
   }
 
   return (
@@ -96,6 +99,13 @@ function NoteAvatar({ log }: { log: any }) {
       <User className="w-3.5 h-3.5 text-content-tertiary" />
     </span>
   );
+}
+
+function ActorLabel({ log, body }: { log: any; body: boolean }) {
+  const isAgent = log.actor_type === "realmroot:agent" || log.actor_type?.startsWith("agent:");
+  const profile = useAgentProfile(isAgent ? log.actor_id : null).data;
+  const className = isAgent ? "font-mono text-accent" : body ? "font-medium text-content-primary" : "text-content-tertiary";
+  return <span className={className}>{actorLabel(log, profile?.name)}</span>;
 }
 
 function MarkdownBody({ children }: { children: string }) {
@@ -138,9 +148,7 @@ export function ActivityLog({ initialNotes, sseNotes, reconnecting }: ActivityLo
           <div className="absolute left-3.5 top-0 bottom-0 w-px bg-border" />
 
           {displayed.map((log: any) => {
-            const actor = actorLabel(log);
             const { actionText, suffix } = buildSentence(log);
-            const isAgent = log.actor_type?.startsWith("agent:");
             const dot = dotColors[log.action] || "bg-zinc-500 border-zinc-500/30";
             const actionColor = actionStyles[log.action] || "text-content-secondary";
             const body = hasBody(log);
@@ -155,7 +163,7 @@ export function ActivityLog({ initialNotes, sseNotes, reconnecting }: ActivityLo
                   {body ? (
                     <div className="overflow-hidden rounded-md border border-border bg-surface-secondary">
                       <div className="flex items-center gap-1.5 border-b border-border bg-surface-tertiary px-3 py-2 text-[12px]">
-                        <span className={isAgent ? "font-mono text-accent" : "font-medium text-content-primary"}>{actor}</span>
+                        <ActorLabel log={log} body />
                         <span className={actionColor}>{actionText}</span>
                         <span className="ml-auto font-mono text-[10px] text-content-tertiary whitespace-nowrap">
                           {formatRelative(log.created_at)}
@@ -167,7 +175,7 @@ export function ActivityLog({ initialNotes, sseNotes, reconnecting }: ActivityLo
                     </div>
                   ) : (
                     <div className="flex items-center gap-1.5 min-h-7 text-[12px] leading-snug">
-                      <span className={isAgent ? "font-mono text-accent" : "text-content-tertiary"}>{actor}</span>
+                      <ActorLabel log={log} body={false} />
                       <span className={actionColor}>{actionText}</span>
                       {suffix && <span className="text-content-tertiary">{suffix}</span>}
                       <span className="ml-auto font-mono text-[10px] text-content-tertiary whitespace-nowrap">{formatRelative(log.created_at)}</span>

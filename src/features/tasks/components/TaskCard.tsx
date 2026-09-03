@@ -1,8 +1,8 @@
 import dayjs from "dayjs";
 import { Badge } from "@/components/ui/badge";
+import { AgentAvatar, useAgentProfile } from "@/features/agent-identity";
 import { LabelChip } from "@/features/boards/components/LabelChip";
 import { agentColor } from "@/lib/agentIdentity";
-import { AgentIdenticon } from "./AgentIdenticon";
 
 interface TaskCardProps {
   task: any;
@@ -15,6 +15,8 @@ interface TaskCardProps {
 export function TaskCard({ task, labels = [], onClick, onAgentClick, isNew }: TaskCardProps) {
   const isAssigned = !!task.assigned_to;
   const isWorking = isAssigned && task.status === "in_progress" && !task.glow_suppressed;
+  const profile = useAgentProfile(task.assigned_to).data;
+  const agentName = profile?.name || task.assignee_name || task.assigned_to;
   const labelByName = new Map(labels.map((label) => [label.name, label]));
 
   return (
@@ -93,16 +95,16 @@ export function TaskCard({ task, labels = [], onClick, onAgentClick, isNew }: Ta
                 event.stopPropagation();
                 onAgentClick?.(task);
               }}
-              aria-label={`Open chat with ${task.assignee_name || task.assigned_to}`}
+              aria-label={`Open chat with ${agentName}`}
             >
               {task.assigned_to && (
                 <div className="shrink-0 transition-[filter] duration-500" style={{ filter: isWorking ? "none" : "grayscale(1) opacity(0.5)" }}>
-                  <AgentIdenticon seed={task.assigned_to} size={12} />
+                  <AgentAvatar subject={task.assigned_to} profile={profile} fallbackName={task.assignee_name} size={12} />
                 </div>
               )}
               {isWorking && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-glow shrink-0" />}
-              <span className="min-w-0 truncate font-mono text-[11px] hover:underline" title={task.assignee_name || task.assigned_to}>
-                {task.assignee_name || task.assigned_to}
+              <span className="min-w-0 truncate font-mono text-[11px] hover:underline" title={agentName}>
+                {agentName}
               </span>
             </button>
           )}

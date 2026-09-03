@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AgentAvatar as AgentProfileAvatar, useAgentProfile } from "@/features/agent-identity";
 import type { AgentAvatar } from "@/features/boards/hooks/useAgentPresence";
-import { AgentIdenticon } from "@/features/tasks/components/AgentIdenticon";
 import { agentColor } from "@/lib/agentIdentity";
 
 const AVATAR_SIZE = 32;
@@ -26,6 +26,7 @@ function FloatingAvatarItem({ avatar }: { avatar: AgentAvatar }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const color = useMemo(() => agentColor(avatar.identitySeed), [avatar.identitySeed]);
   const rafRef = useRef(0);
+  const profile = useAgentProfile(avatar.identitySeed).data;
 
   useLayoutEffect(() => {
     if (avatar.phase === "spawning") setPos(getSpawnPos());
@@ -106,7 +107,14 @@ function FloatingAvatarItem({ avatar }: { avatar: AgentAvatar }) {
           } as React.CSSProperties
         }
       >
-        <AgentIdenticon seed={avatar.identitySeed} size={AVATAR_SIZE} glow={isWorking} crystallize={avatar.phase === "spawning"} />
+        <AgentProfileAvatar
+          subject={avatar.identitySeed}
+          profile={profile}
+          fallbackName={avatar.agentName}
+          size={AVATAR_SIZE}
+          glow={isWorking}
+          crystallize={avatar.phase === "spawning"}
+        />
       </div>
     </div>
   );
