@@ -16,7 +16,7 @@ async function document() {
 }
 
 describe("Agent and Machine projection HTTP contract", () => {
-  it("[spec: agents/authoritative-projection] publishes safe Agent list and detail projections with subject", async () => {
+  it("[spec: agents/authoritative-projection] publishes safe Agent projections with nullable identity fields", async () => {
     const openapi = await document();
     expect(openapi.paths["/agents"].get.security).toContainEqual({ realmroot: ["agent:read"] });
     expect(openapi.paths["/agents/{agentId}"].get.security).toContainEqual({ realmroot: ["agent:read"] });
@@ -27,7 +27,12 @@ describe("Agent and Machine projection HTTP contract", () => {
     expect(openapi.components.schemas.Agent).toMatchObject({
       type: "object",
       additionalProperties: false,
-      required: expect.arrayContaining(["id", "name", "runtime", "subject", "schedulable", "links"]),
+      required: expect.arrayContaining(["id", "name", "username", "runtime", "subject", "schedulable", "links"]),
+      properties: {
+        username: { type: ["string", "null"] },
+        runtime: { type: ["string", "null"] },
+        subject: { type: ["string", "null"] },
+      },
     });
     for (const field of ["projectId", "identityId", "credentialRef", "providerSecret"]) {
       expect(openapi.components.schemas.Agent.properties).not.toHaveProperty(field);

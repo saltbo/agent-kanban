@@ -6,11 +6,11 @@ export interface AgentProjection {
   id: string;
   name: string;
   description: string | null;
-  username: string;
-  runtime: string;
+  username: string | null;
+  runtime: string | null;
   model: string | null;
   skills: string[];
-  subject: string;
+  subject: string | null;
   schedulable: boolean;
   createdAt: string;
   updatedAt: string;
@@ -37,7 +37,7 @@ export function useAgent(agentId: string | undefined) {
   });
 }
 
-export function useAgentTasks(subject: string | undefined) {
+export function useAgentTasks(subject: string | null | undefined) {
   return useQuery({
     queryKey: ["agent-tasks", subject],
     queryFn: () => api.tasks.list({ assigned_to: subject! }) as Promise<Task[]>,

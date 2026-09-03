@@ -22,25 +22,29 @@ function AgentListItem({ agent }: { agent: AgentProjection }) {
   const profile = useAgentProfile(agent.subject).data;
   const name = profile?.name || agent.name;
   const username = profile?.username || agent.username;
+  const identityBound = Boolean(agent.subject);
   return (
     <Link to={`/agents/${encodeURIComponent(agent.id)}`} className="group focus-visible:outline-none">
       <Card className="h-full rounded-lg border-border bg-surface-secondary group-hover:border-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-accent">
         <CardHeader>
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <AgentAvatar subject={agent.subject} profile={profile} fallbackName={agent.name} size={36} />
+              <AgentAvatar subject={agent.subject ?? agent.id} profile={profile} fallbackName={agent.name} size={36} />
               <div className="min-w-0">
                 <CardTitle className="truncate text-content-primary">{name}</CardTitle>
-                <CardDescription className="font-mono text-xs">@{username}</CardDescription>
+                {username ? <CardDescription className="font-mono text-xs">@{username}</CardDescription> : <IdentityNotBound />}
               </div>
             </div>
             <Schedulable value={agent.schedulable} />
           </div>
         </CardHeader>
         <CardContent className="flex items-center gap-2 text-xs text-content-tertiary">
-          <Badge variant="outline" className="font-mono">
-            {agent.runtime}
-          </Badge>
+          {agent.runtime && (
+            <Badge variant="outline" className="font-mono">
+              {agent.runtime}
+            </Badge>
+          )}
+          {!identityBound && <span className="sr-only">This Agent cannot be assigned until an identity is bound.</span>}
           {agent.model && <span className="truncate font-mono">{agent.model}</span>}
         </CardContent>
       </Card>
@@ -55,10 +59,10 @@ export function AgentDetail({ agent, profile }: { agent: AgentProjection; profil
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
-          <AgentAvatar subject={agent.subject} profile={profile} fallbackName={agent.name} size={40} />
+          <AgentAvatar subject={agent.subject ?? agent.id} profile={profile} fallbackName={agent.name} size={40} />
           <div className="min-w-0">
             <h1 className="truncate text-xl font-bold text-content-primary">{name}</h1>
-            <p className="mt-1 truncate font-mono text-xs text-content-tertiary">@{username}</p>
+            {username ? <p className="mt-1 truncate font-mono text-xs text-content-tertiary">@{username}</p> : <IdentityNotBound />}
           </div>
         </div>
         <Schedulable value={agent.schedulable} />
@@ -68,14 +72,22 @@ export function AgentDetail({ agent, profile }: { agent: AgentProjection; profil
           <CardTitle>Identity</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
-          <Field label="Realmroot subject" value={agent.subject} mono />
-          <Field label="Runtime" value={agent.runtime} mono />
+          <Field label="Identity subject" value={agent.subject ?? "Not bound"} mono />
+          <Field label="Runtime" value={agent.runtime ?? "Not bound"} mono />
           <Field label="Model" value={agent.model ?? "Default"} mono />
           <Field label="Skills" value={agent.skills.length ? agent.skills.join(", ") : "None"} />
         </CardContent>
       </Card>
       {agent.description && <p className="text-sm leading-6 text-content-secondary">{agent.description}</p>}
     </div>
+  );
+}
+
+function IdentityNotBound() {
+  return (
+    <Badge variant="outline" className="mt-1 whitespace-nowrap border-warning/30 bg-warning/10 text-warning">
+      Identity not bound
+    </Badge>
   );
 }
 

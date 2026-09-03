@@ -133,11 +133,11 @@ export interface Repository {
 // not persisted as AK business entities.
 export interface ProjectedAgent {
   id: string;
-  subject: string;
+  subject: string | null;
   name: string;
   description: string | null;
-  username: string;
-  runtime: string;
+  username: string | null;
+  runtime: string | null;
   phase: "active" | "archived";
   schedulable: boolean;
   provider: string | null;

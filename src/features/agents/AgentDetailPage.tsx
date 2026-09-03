@@ -32,7 +32,9 @@ export function AgentDetailPage() {
                 <CardTitle>Assigned tasks</CardTitle>
               </CardHeader>
               <CardContent>
-                {tasks.error ? (
+                {!data.subject ? (
+                  <p className="text-sm text-content-tertiary">Bind an identity before assigning tasks to this Agent.</p>
+                ) : tasks.error ? (
                   <p className="text-sm text-error">{tasks.error.message}</p>
                 ) : tasks.isLoading ? (
                   <div className="h-16 animate-pulse rounded-md bg-surface-tertiary" />

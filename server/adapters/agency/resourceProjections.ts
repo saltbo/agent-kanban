@@ -68,10 +68,7 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
     if (input.filters.search) url.searchParams.set("search", input.filters.search);
     const page = decodeList(await this.request<unknown>(input.projectId, `${url.pathname}${url.search}`), decodeAgent, input.limit);
     return {
-      items: page.data
-        .filter((agent) => agent.status.phase === "active")
-        .map(projectAgent)
-        .filter(isProjectedAgent),
+      items: page.data.map(projectAgent),
       nextCursor: page.pagination.hasMore ? page.pagination.nextCursor : null,
     };
   }
@@ -132,9 +129,8 @@ export class AmaResourceProjectionAdapter implements AgentProjectionPort, Machin
         }),
       }),
     );
-    const projected = projectAgent(agent);
-    if (!projected) throw new AmaProjectionError("invalid-response", "AMA created an Agent without a bound identity");
-    return projected;
+    if (!agent.spec.identity) throw new AmaProjectionError("invalid-response", "AMA created an Agent without a bound identity");
+    return projectAgent(agent);
   }
 
   async listMachinesPage(input: {
@@ -263,15 +259,14 @@ function amaFailureKind(status: number): "not-found" | "denied" | "rejected" | "
   return status === 502 ? "invalid-response" : "rejected";
 }
 
-function projectAgent(agent: AmaAgent): ProjectedAgent | null {
-  if (!agent.spec.identity) return null;
+function projectAgent(agent: AmaAgent): ProjectedAgent {
   return {
     id: agent.metadata.uid,
-    subject: agent.spec.identity.subject,
+    subject: agent.spec.identity?.subject ?? null,
     name: agent.metadata.name,
     description: agent.metadata.description,
-    username: agent.spec.identity.username,
-    runtime: agent.spec.identity.runtime,
+    username: agent.spec.identity?.username ?? null,
+    runtime: agent.spec.identity?.runtime ?? null,
     phase: agent.status.phase,
     schedulable: agent.status.schedulable,
     provider: agent.spec.provider,
@@ -282,10 +277,6 @@ function projectAgent(agent: AmaAgent): ProjectedAgent | null {
     created_at: agent.metadata.createdAt,
     updated_at: agent.metadata.updatedAt,
   };
-}
-
-function isProjectedAgent(agent: ProjectedAgent | null): agent is ProjectedAgent {
-  return agent !== null;
 }
 
 function projectMachine(environment: AmaEnvironment, runners: AmaRunner[]): ProjectedMachine {

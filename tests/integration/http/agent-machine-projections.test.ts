@@ -129,13 +129,13 @@ function twoRequestBarrier(): () => Promise<void> {
 }
 
 describe("Agent and Machine projection HTTP resources", () => {
-  it("[spec: agents/authoritative-projection] returns AMA Agent list and detail as safe AK resources", async () => {
+  it("[spec: agents/authoritative-projection] returns bound and unbound AMA Agents as safe AK resources", async () => {
     vi.stubGlobal(
       "fetch",
       delegatedAmaFetch(["agents:read"], async (request) => {
         expect(request.headers.get("authorization")).toBe("Bearer ama-access-token");
         expect(request.headers.get("x-ama-project-id")).toBe(projectId);
-        const agent = {
+        const boundAgent = {
           metadata: { ...metadata("agent-1", "Backend"), description: "Builds APIs" },
           spec: {
             systemPrompt: "Build APIs",
@@ -147,18 +147,37 @@ describe("Agent and Machine projection HTTP resources", () => {
           },
           status: { phase: "active", schedulable: true },
         };
-        if (new URL(request.url).pathname.endsWith("/agent-1")) return Response.json(agent);
-        return Response.json({ data: [agent], pagination: { nextCursor: null, hasMore: false } });
+        const unboundAgent = {
+          metadata: metadata("agent-unbound", "Unbound"),
+          spec: {
+            systemPrompt: "Await identity binding",
+            provider: null,
+            model: null,
+            skills: [],
+            allowedTools: [],
+            identity: null,
+          },
+          status: { phase: "active", schedulable: false },
+        };
+        if (new URL(request.url).pathname.endsWith("/agent-unbound")) return Response.json(unboundAgent);
+        return Response.json({ data: [boundAgent, unboundAgent], pagination: { nextCursor: "agent-page-2", hasMore: true } });
       }),
     );
 
     const list = await browserGet("/agents");
     expect(list.status, await list.clone().text()).toBe(200);
-    await expect(list.json()).resolves.toMatchObject({ items: [expect.objectContaining({ id: "agent-1", subject: "realmroot-agent-subject" })] });
-    const detail = await browserGet("/agents/agent-1");
+    await expect(list.json()).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({ id: "agent-1", subject: "realmroot-agent-subject" }),
+        expect.objectContaining({ id: "agent-unbound", subject: null, username: null, runtime: null }),
+      ],
+      pagination: { pageSize: 2, nextPageToken: expect.any(String) },
+    });
+    expect(list.headers.get("Link")).toContain('rel="next"');
+    const detail = await browserGet("/agents/agent-unbound");
     expect(detail.status, await detail.clone().text()).toBe(200);
     const detailText = await detail.text();
-    expect(JSON.parse(detailText)).toMatchObject({ id: "agent-1", name: "Backend", runtime: "codex", subject: "realmroot-agent-subject" });
+    expect(JSON.parse(detailText)).toMatchObject({ id: "agent-unbound", name: "Unbound", username: null, runtime: null, subject: null });
     expect(detailText).not.toMatch(/ama-project-1|allowedTools|systemPrompt/);
   });
 
