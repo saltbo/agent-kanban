@@ -17,6 +17,8 @@ export interface MachineProjection {
 
 export interface MachineDetailProjection extends MachineProjection {
   runners: MachineRunnerProjection[];
+  authCommand: string;
+  startCommand: string;
 }
 
 export interface MachineRuntimeUsageWindow {

@@ -229,7 +229,7 @@ describe("Machine projection browser mutations", () => {
 });
 
 describe("Machine detail Runner usage", () => {
-  it("[spec: machines/runner-aggregation] renders each runtime usage window within its owning Runner", async () => {
+  it("[spec: machines/runner-aggregation] [spec: machines/create-runner-setup] renders each runtime usage window within its owning Runner and hides setup commands", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -245,6 +245,8 @@ describe("Machine detail Runner usage", () => {
             currentLoad: 2,
             maxLoad: 4,
             runnerCount: 2,
+            authCommand: 'ama-runner auth login --api-server "https://ama.example"',
+            startCommand: 'ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"',
             runners: [
               {
                 id: "runner-east",
@@ -307,9 +309,16 @@ describe("Machine detail Runner usage", () => {
     expect(within(east).getByText("claude-code")).toBeInTheDocument();
     expect(within(east).getByText("Runtime inventory not reported")).toBeInTheDocument();
     expect(within(east).getByText("40% used · 60% remaining")).toBeInTheDocument();
+    expect(screen.queryByText("Start AMA Runner")).not.toBeInTheDocument();
+    expect(screen.queryByText('ama-runner auth login --api-server "https://ama.example"')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"'),
+    ).not.toBeInTheDocument();
   });
 
-  it("[spec: machines/runner-aggregation] renders the Machine empty state when no Runners have reported", async () => {
+  it("[spec: machines/create-runner-setup] keeps setup commands available on Machine detail until a Runner connects", async () => {
+    const authCommand = 'ama-runner auth login --api-server "https://ama.example"';
+    const startCommand = 'ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-empty"';
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -326,6 +335,8 @@ describe("Machine detail Runner usage", () => {
             maxLoad: 0,
             runnerCount: 0,
             runners: [],
+            authCommand,
+            startCommand,
             runtimes: [],
             lastHeartbeatAt: null,
             createdAt: "2026-09-01T12:00:00.000Z",
@@ -343,7 +354,10 @@ describe("Machine detail Runner usage", () => {
       "/machines/environment-empty",
     );
 
-    expect(await screen.findByText("No Runners reported yet.")).toBeInTheDocument();
+    expect(await screen.findByText("Start AMA Runner")).toBeInTheDocument();
+    expect(screen.getByText(authCommand)).toBeInTheDocument();
+    expect(screen.getByText(startCommand)).toBeInTheDocument();
+    expect(screen.queryByText("No Runners reported yet.")).not.toBeInTheDocument();
   });
 
   it("[spec: machines/runner-aggregation] distinguishes an empty Runner from a runtime without usage", async () => {

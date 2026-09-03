@@ -373,6 +373,39 @@ describe("Agent and Machine projection HTTP resources", () => {
     });
   });
 
+  it("[spec: machines/create-runner-setup] returns setup commands for an offline Machine without Runners", async () => {
+    vi.stubGlobal(
+      "fetch",
+      delegatedAmaFetch(["environments:read", "runners:read"], async (request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/api/v1/environments/environment-empty") {
+          return Response.json({
+            metadata: metadata("environment-empty", "Empty host"),
+            spec: { type: "self_hosted" },
+            status: { phase: "active" },
+          });
+        }
+        if (path === "/api/v1/runners") {
+          return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
+        }
+        throw new Error(`Unexpected AMA request ${request.method} ${path}`);
+      }),
+    );
+
+    const response = await browserGet("/machines/environment-empty");
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: "environment-empty",
+      status: "offline",
+      runnerCount: 0,
+      runners: [],
+      authCommand: 'ama-runner auth login --api-server "https://ama.projection.test"',
+      startCommand:
+        'ama-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-empty" --allow-unsafe-process',
+    });
+  });
+
   it("[spec: machines/create-environment] returns complete auth and start commands for the created AMA Environment", async () => {
     vi.stubGlobal(
       "fetch",

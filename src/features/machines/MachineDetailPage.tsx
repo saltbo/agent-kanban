@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Header } from "@/features/boards/components/Header";
+import { MachineRunnerSetup } from "@/features/machines/MachineRunnerSetup";
 import { type MachineRunnerProjection, type MachineRuntimeUsageWindow, useMachine } from "@/features/machines/useMachines";
 import { cn } from "@/lib/utils";
 
@@ -45,15 +46,23 @@ export function MachineDetailPage() {
                 <Metric label="Runners" value={String(data.runnerCount)} />
               </CardContent>
             </Card>
-            <Card className="rounded-lg border-border bg-surface-secondary">
-              <CardHeader>
-                <CardTitle>Runners</CardTitle>
-                <CardDescription>Runtime availability and usage are reported independently by each Runner.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {data.runners.length === 0 ? (
-                  <p className="text-sm text-content-tertiary">No Runners reported yet.</p>
-                ) : (
+            {data.runners.length === 0 ? (
+              <Card className="rounded-lg border-border bg-surface-secondary">
+                <CardHeader>
+                  <CardTitle>Start AMA Runner</CardTitle>
+                  <CardDescription>No Runner has connected yet. Run these commands on this Machine to bring it online.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <MachineRunnerSetup authCommand={data.authCommand} startCommand={data.startCommand} />
+                </CardContent>
+              </Card>
+            ) : (
+              <Card className="rounded-lg border-border bg-surface-secondary">
+                <CardHeader>
+                  <CardTitle>Runners</CardTitle>
+                  <CardDescription>Runtime availability and usage are reported independently by each Runner.</CardDescription>
+                </CardHeader>
+                <CardContent>
                   <div className="flex flex-col gap-5">
                     {data.runners.map((runner, index) => (
                       <div key={runner.id} className="flex flex-col gap-5">
@@ -62,9 +71,9 @@ export function MachineDetailPage() {
                       </div>
                     ))}
                   </div>
-                )}
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            )}
           </>
         )}
       </main>

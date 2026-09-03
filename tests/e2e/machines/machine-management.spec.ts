@@ -72,6 +72,53 @@ test("[spec: machines/create-runner-setup] Add Machine offers a local computer a
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(startCommand);
 });
 
+test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup commands available after the create dialog closes", async ({
+  page,
+}) => {
+  const offlineMachine = { ...machine, status: "offline", currentLoad: 0, maxLoad: 0, runnerCount: 0, runtimes: [], runners: [] };
+  let created = false;
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => sessionStorage.setItem("e2e-copied-command", value),
+        readText: async () => sessionStorage.getItem("e2e-copied-command") ?? "",
+      },
+    });
+  });
+  await page.route(/\/api\/machines$/, async (route) => {
+    if (route.request().method() === "POST") {
+      created = true;
+      await route.fulfill({ status: 201, json: { machine: offlineMachine, authCommand, startCommand } });
+      return;
+    }
+    await route.fulfill({
+      json: { items: created ? [offlineMachine] : [], pagination: { pageSize: created ? 1 : 0, nextPageToken: null } },
+    });
+  });
+  await page.route(/\/api\/machines\/environment-build-01$/, (route) => route.fulfill({ json: { ...offlineMachine, authCommand, startCommand } }));
+  await signInWithRealmrootSession(page, `machine_setup_recovery_${Date.now()}@example.com`);
+  await page.goto("/machines");
+
+  await page.getByRole("button", { name: "Add Machine" }).click();
+  const createDialog = page.getByRole("dialog", { name: "Add Machine" });
+  await createDialog.getByLabel("Machine name").fill("mac-mini-build");
+  await createDialog.getByRole("button", { name: "Create", exact: true }).click();
+
+  const setupDialog = page.getByRole("dialog", { name: "Start AMA Runner" });
+  await setupDialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(setupDialog).not.toBeVisible();
+  await page.getByRole("link", { name: /mac-mini-build/ }).click();
+
+  await expect(page).toHaveURL(/\/machines\/environment-build-01$/);
+  await expect(page.getByText(authCommand, { exact: true })).toBeVisible();
+  await expect(page.getByText(startCommand, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Copy 1. Authenticate" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(authCommand);
+  await page.getByRole("button", { name: "Copy 2. Start this Machine" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(startCommand);
+});
+
 test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses its Idempotency-Key", async ({ page }) => {
   const idempotencyKeys: string[] = [];
   await page.route(/\/api\/machines$/, async (route) => {
