@@ -36,7 +36,7 @@ function Hero() {
         Orchestrate AI Coding Agents on a <span className="text-accent">Kanban Board</span>
       </h1>
       <p className="mt-6 text-base text-content-secondary leading-relaxed max-w-2xl mx-auto">
-        Agency coordinates your Agents, and Enbor Runner hosts self-hosted execution. Realmroot gives them identity and Toolbox access. Agent Kanban
+        Enbor coordinates your Agents, and Enbor Runner hosts self-hosted execution. Realmroot gives them identity and Toolbox access. Agent Kanban
         keeps Tasks, dependencies, progress, and independent review visible in one board.
       </p>
       <div className="mt-10 flex items-center justify-center gap-3 flex-wrap">
@@ -79,11 +79,11 @@ const FEATURES = [
   {
     title: "Realmroot Agent Identity",
     description:
-      "Realmroot authenticates each AMA Agent. AK authorizes the verified actor without storing Agent keys, roles, or runtime credentials.",
+      "Realmroot authenticates each Enbor Agent. AK authorizes the verified actor without storing Agent keys, roles, or runtime credentials.",
   },
   {
-    title: "AMA Runtime Ownership",
-    description: "AMA owns Agent configuration, Sessions, Environments, Runners, health, schedulability, quota, and usage.",
+    title: "Enbor Runtime Ownership",
+    description: "Enbor owns Agent configuration, Sessions, Environments, Runners, health, schedulability, quota, and usage.",
   },
   {
     title: "Live Mission Control",

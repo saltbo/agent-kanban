@@ -32,7 +32,7 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
 
   if (!taskId) return null;
 
-  // AMA is the sole runtime source for task chat.
+  // The bound runtime Session is the sole source for task chat.
   const hasRuntimeSession = !!currentTask?.session_binding;
 
   return (
@@ -66,7 +66,7 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
               taskId={taskId}
               agentId={currentTask?.assigned_to ?? null}
               taskDone={currentTask?.status === "done" || currentTask?.status === "cancelled"}
-              amaSessionId={hasRuntimeSession ? "available" : null}
+              runtimeSessionId={hasRuntimeSession ? "available" : null}
             />
           )}
         </div>

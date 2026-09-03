@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { D1AmaProjectBindingAdapter } from "../../../server/adapters/d1/amaProjectBinding";
+import { D1AgencyProjectBindingAdapter } from "../../../server/adapters/d1/agencyProjectBinding";
 import { seedUser, setupMiniflare } from "../../helpers/db";
 
 const tenantId = "tenant-transparent-project-binding";
@@ -14,9 +14,9 @@ beforeEach(async () => {
 
 afterEach(async () => fixture.mf.dispose());
 
-describe("D1 AMA project initialization binding", () => {
-  it("[spec: agents/transparent-ama-project] conditionally claims and stores only the winning project binding", async () => {
-    const adapter = new D1AmaProjectBindingAdapter(fixture.db);
+describe("D1 Agency project initialization binding", () => {
+  it("[spec: agents/transparent-agency-project] conditionally claims and stores only the winning project binding", async () => {
+    const adapter = new D1AgencyProjectBindingAdapter(fixture.db);
     const now = "2026-09-01T12:00:00.000Z";
     const expiry = "2026-09-01T12:00:25.000Z";
 
@@ -33,7 +33,7 @@ describe("D1 AMA project initialization binding", () => {
     await expect(adapter.findProjectId(tenantId)).resolves.toBe("project-winner");
     await expect(adapter.findClaimExpiry(tenantId)).resolves.toBeNull();
     await expect(
-      fixture.db.prepare("SELECT COUNT(*) AS count FROM ama_owner_integrations WHERE tenant_id = ?").bind(tenantId).first(),
+      fixture.db.prepare("SELECT COUNT(*) AS count FROM agency_owner_integrations WHERE tenant_id = ?").bind(tenantId).first(),
     ).resolves.toEqual({ count: 1 });
   });
 });

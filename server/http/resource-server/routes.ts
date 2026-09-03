@@ -120,8 +120,8 @@ function toolboxDocument(env: Env) {
     tags: [
       { name: "board", description: "Board resources" },
       { name: "repository", description: "Repository resources" },
-      { name: "agent", description: "Schedulable Agent projections from AMA" },
-      { name: "machine", description: "Self-hosted AMA Environment projections" },
+      { name: "agent", description: "Schedulable Agent projections from Enbor" },
+      { name: "machine", description: "Self-hosted Enbor Environment projections" },
       { name: "task", description: "Task resources and resource-first workflows" },
     ],
     paths: {
@@ -186,7 +186,7 @@ function toolboxDocument(env: Env) {
             pageToken,
             pageSize,
             { name: "schedulable", in: "query", schema: { type: "boolean" } },
-            { name: "runtime", in: "query", schema: { type: "string", enum: ["ama", "claude-code", "codex", "copilot"] } },
+            { name: "runtime", in: "query", schema: { type: "string", enum: ["enbor", "claude-code", "codex", "copilot"] } },
             { name: "search", in: "query", schema: { type: "string", maxLength: 160 } },
           ],
           responses: { "200": response("Agent collection", { $ref: "#/components/schemas/AgentCollection" }), ...projectionReadProblems },

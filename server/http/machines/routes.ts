@@ -1,6 +1,6 @@
 import type { Env } from "@server/env";
 import { machineDetailRepresentation, machineRepresentation } from "@server/http/machines/representation";
-import { amaDependencies } from "@server/http/resource-server/amaDependencies";
+import { agencyDependencies } from "@server/http/resource-server/agencyDependencies";
 import { externalPageResponse, readExternalPage } from "@server/http/resource-server/externalPagination";
 import { representationEtag } from "@server/http/resource-server/representation";
 import {
@@ -17,7 +17,7 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
   api.get("/api/machines", async (c) => {
     const page = await readExternalPage(c);
     if (page instanceof Response) return page;
-    const { client } = await amaDependencies(c, ["environments:read", "runners:read"]);
+    const { client } = await agencyDependencies(c, ["environments:read", "runners:read"]);
     const result = await listMachinesPage(client, { limit: page.pageSize, cursor: page.sourceCursor });
     return externalPageResponse(
       c,
@@ -29,7 +29,7 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
   api.post("/api/machines", async (c) => {
     const bodyError = await rejectRequestBody(c, "Machine");
     if (bodyError) return bodyError;
-    const { client, projectId } = await amaDependencies(c, ["environments:write"]);
+    const { client, projectId } = await agencyDependencies(c, ["environments:write"]);
     const idempotencyKey = externalCreationIdempotencyKey(c);
     const result = await createMachine(client, projectId, idempotencyKey, (project, environment) => runnerStartCommand(c.env, project, environment));
     const response = {
@@ -44,7 +44,7 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
   });
 
   api.get("/api/machines/:machineId", async (c) => {
-    const { client, projectId } = await amaDependencies(c, ["environments:read", "runners:read"]);
+    const { client, projectId } = await agencyDependencies(c, ["environments:read", "runners:read"]);
     const machine = await getMachine(client, c.req.param("machineId"));
     if (!machine) throw new HTTPException(404, { message: "Machine not found" });
     const represented = {
@@ -57,18 +57,18 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
   });
 
   api.delete("/api/machines/:machineId", async (c) => {
-    const { client } = await amaDependencies(c, ["environments:write"]);
+    const { client } = await agencyDependencies(c, ["environments:write"]);
     await client.environments.delete(c.req.param("machineId"));
     return c.body(null, 204);
   });
 }
 
 function runnerAuthCommand(env: Env): string {
-  return `enbor-runner auth login --api-server ${quote(required(env.AMA_ORIGIN, "AMA_ORIGIN"))}`;
+  return `enbor-runner auth login --api-server ${quote(required(env.AGENCY_ORIGIN, "AGENCY_ORIGIN"))}`;
 }
 
 function runnerStartCommand(env: Env, projectId: string, environmentId: string): string {
-  return `enbor-runner start --api-server ${quote(required(env.AMA_ORIGIN, "AMA_ORIGIN"))} --project-id ${quote(projectId)} --environment-id ${quote(environmentId)} --allow-unsafe-process`;
+  return `enbor-runner start --api-server ${quote(required(env.AGENCY_ORIGIN, "AGENCY_ORIGIN"))} --project-id ${quote(projectId)} --environment-id ${quote(environmentId)} --allow-unsafe-process`;
 }
 
 function quote(value: string): string {

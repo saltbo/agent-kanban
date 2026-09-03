@@ -46,14 +46,14 @@ async function listAllRunners(client: EnborClient, environmentId?: string): Prom
   for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
     const page = await client.runners.list({ limit: 100, cursor, environmentId });
     runners.push(...page.data);
-    if (runners.length > 10_000) throw invalidPagination("AMA Runner result exceeded the safety bound");
+    if (runners.length > 10_000) throw invalidPagination("Enbor Runner result exceeded the safety bound");
     const nextCursor = page.pagination.nextCursor ?? undefined;
     if (!nextCursor) return runners;
-    if (nextCursor === cursor) throw invalidPagination("AMA Runner pagination did not advance");
-    if (pageNumber === 99) throw invalidPagination("AMA Runner pagination exceeded the safety bound");
+    if (nextCursor === cursor) throw invalidPagination("Enbor Runner pagination did not advance");
+    if (pageNumber === 99) throw invalidPagination("Enbor Runner pagination exceeded the safety bound");
     cursor = nextCursor;
   }
-  throw invalidPagination("AMA Runner pagination exceeded the safety bound");
+  throw invalidPagination("Enbor Runner pagination exceeded the safety bound");
 }
 
 async function generatedEnvironmentName(idempotencyKey: string): Promise<string> {

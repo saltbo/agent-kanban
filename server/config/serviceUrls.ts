@@ -8,6 +8,6 @@ export function akResource(env: Env): string {
   return akPublicUrl(env, "/api").replace(/\/$/, "");
 }
 
-export function amaResource(env: Env): string {
-  return new URL("/api", `${new URL(env.AMA_ORIGIN).origin}/`).toString().replace(/\/$/, "");
+export function agencyResource(env: Env): string {
+  return new URL("/api", `${new URL(env.AGENCY_ORIGIN).origin}/`).toString().replace(/\/$/, "");
 }

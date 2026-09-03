@@ -124,8 +124,8 @@ describe("Machine projection browser mutations", () => {
         if (url === "/api/auth/session") return json(session());
         if (url === "/api/boards") return json([]);
         if (url === "/api/machines" && method === "GET") return json({ items: [machine] });
-        if (url === "/api/machines" && method === "POST") return json({ detail: "AMA Environment creation unavailable" }, 503);
-        if (url === "/api/machines/environment-1" && method === "DELETE") return json({ detail: "AMA Environment archive unavailable" }, 503);
+        if (url === "/api/machines" && method === "POST") return json({ detail: "Enbor Environment creation unavailable" }, 503);
+        if (url === "/api/machines/environment-1" && method === "DELETE") return json({ detail: "Enbor Environment archive unavailable" }, 503);
         throw new Error(`Unexpected request: ${method} ${url}`);
       }),
     );
@@ -138,12 +138,12 @@ describe("Machine projection browser mutations", () => {
     expect(screen.getByText("Coming soon")).toBeInTheDocument();
     expect(screen.queryByLabelText("Machine name")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment creation unavailable");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Enbor Environment creation unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Waiting for computer" }));
     fireEvent.click(screen.getByRole("button", { name: "Archive" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment archive unavailable");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Enbor Environment archive unavailable");
   });
 
   it("[spec: machines/create-runner-setup] reuses a creation key within one dialog attempt and rotates it after cancel", async () => {
@@ -200,8 +200,8 @@ describe("Machine projection browser mutations", () => {
           return json(
             {
               machine,
-              authCommand: 'enbor-runner auth login --api-server "https://ama.example"',
-              startCommand: 'enbor-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"',
+              authCommand: 'enbor-runner auth login --api-server "https://enbor.example"',
+              startCommand: 'enbor-runner start --api-server "https://enbor.example" --project-id "project-1" --environment-id "environment-1"',
             },
             201,
           );
@@ -220,10 +220,10 @@ describe("Machine projection browser mutations", () => {
     expect(screen.getByText("1. Install with Homebrew (macOS/Linux)")).toBeInTheDocument();
     expect(screen.getByText("brew install realmroot/tap/enbor-runner", { exact: true })).toBeInTheDocument();
     expect(screen.getByText("2. Authenticate")).toBeInTheDocument();
-    expect(screen.getByText('enbor-runner auth login --api-server "https://ama.example"', { exact: true })).toBeInTheDocument();
+    expect(screen.getByText('enbor-runner auth login --api-server "https://enbor.example"', { exact: true })).toBeInTheDocument();
     expect(screen.getByText("3. Start this Machine")).toBeInTheDocument();
     expect(
-      screen.getByText('enbor-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"', {
+      screen.getByText('enbor-runner start --api-server "https://enbor.example" --project-id "project-1" --environment-id "environment-1"', {
         exact: true,
       }),
     ).toBeInTheDocument();
@@ -257,8 +257,8 @@ describe("Machine detail Runner usage", () => {
             currentLoad: 2,
             maxLoad: 4,
             runnerCount: 2,
-            authCommand: 'ama-runner auth login --api-server "https://ama.example"',
-            startCommand: 'ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-1"',
+            authCommand: 'enbor-runner auth login --api-server "https://enbor.example"',
+            startCommand: 'enbor-runner start --api-server "https://enbor.example" --project-id "project-1" --environment-id "environment-1"',
             runners: [
               {
                 id: "runner-east",
@@ -329,8 +329,8 @@ describe("Machine detail Runner usage", () => {
   });
 
   it("[spec: machines/create-runner-setup] keeps setup commands available on Machine detail until a Runner connects", async () => {
-    const authCommand = 'ama-runner auth login --api-server "https://ama.example"';
-    const startCommand = 'ama-runner start --api-server "https://ama.example" --project-id "project-1" --environment-id "environment-empty"';
+    const authCommand = 'enbor-runner auth login --api-server "https://enbor.example"';
+    const startCommand = 'enbor-runner start --api-server "https://enbor.example" --project-id "project-1" --environment-id "environment-empty"';
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {

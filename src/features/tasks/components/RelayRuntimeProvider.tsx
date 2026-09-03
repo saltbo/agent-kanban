@@ -390,14 +390,14 @@ export function convertEvents(events: RelayEvent[], agentStatus: AgentStatus): T
 
 // ─── Provider ───
 
-interface AmaRuntimeProviderProps {
+interface SessionRuntimeProviderProps {
   events: Record<string, unknown>[];
   taskDone: boolean;
   children: ReactNode;
 }
 
-export function AmaRuntimeProvider({ events: rawEvents, taskDone, children }: AmaRuntimeProviderProps) {
-  const events = useMemo(() => rawEvents.map(amaEventToRelayEvent), [rawEvents]);
+export function SessionRuntimeProvider({ events: rawEvents, taskDone, children }: SessionRuntimeProviderProps) {
+  const events = useMemo(() => rawEvents.map(sessionEventToRelayEvent), [rawEvents]);
   // No session metadata is fetched — events arrive over the socket. A task that is
   // not yet done is treated as actively running for the typing indicator.
   const agentStatus: AgentStatus = taskDone ? "idle" : "working";
@@ -416,14 +416,14 @@ export function AmaRuntimeProvider({ events: rawEvents, taskDone, children }: Am
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 }
 
-export function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
-  const canonical = canonicalAmaEvent(raw);
-  if (!canonical) throw new Error("Invalid AMA SessionEvent: type and payload are required");
+export function sessionEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
+  const canonical = canonicalSessionEvent(raw);
+  if (!canonical) throw new Error("Invalid upstream SessionEvent: type and payload are required");
   const id = stringValue(raw.id);
-  if (!id) throw new Error("Invalid AMA SessionEvent: id is required");
+  if (!id) throw new Error("Invalid upstream SessionEvent: id is required");
   const timestamp = stringValue(raw.createdAt);
-  if (!timestamp) throw new Error("Invalid AMA SessionEvent: createdAt is required");
-  const event = canonicalAmaAgentEvent(canonical);
+  if (!timestamp) throw new Error("Invalid upstream SessionEvent: createdAt is required");
+  const event = canonicalAgentEvent(canonical);
   return {
     id,
     event,
@@ -431,13 +431,13 @@ export function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
   };
 }
 
-function canonicalAmaEvent(raw: Record<string, unknown>): { type: string; payload: Record<string, unknown> } | null {
+function canonicalSessionEvent(raw: Record<string, unknown>): { type: string; payload: Record<string, unknown> } | null {
   const type = stringValue(raw.type);
   const payload = objectValue(raw.payload);
   return type && payload ? { type, payload } : null;
 }
 
-function canonicalAmaAgentEvent(input: { type: string; payload: Record<string, unknown> }): AgentEvent {
+function canonicalAgentEvent(input: { type: string; payload: Record<string, unknown> }): AgentEvent {
   const message = objectValue(input.payload.message);
   switch (input.type) {
     case "runtime.started":
@@ -448,7 +448,7 @@ function canonicalAmaAgentEvent(input: { type: string; payload: Record<string, u
       return { type: "message", blocks: [] };
     case "turn.started":
       if (message?.role === "user") {
-        requireAmaMessageId(message);
+        requireMessageId(message);
         return { type: "message.user", text: textFromCanonicalMessage(message) };
       }
       return { type: "turn.start" };
@@ -472,11 +472,11 @@ function canonicalAmaAgentEvent(input: { type: string; payload: Record<string, u
 }
 
 function canonicalMessageEvent(message: Record<string, unknown> | null): AgentEvent {
-  if (!message) throw new Error("Invalid AMA EventRecord: message payload is required");
+  if (!message) throw new Error("Invalid upstream EventRecord: message payload is required");
   const role = stringValue(message.role);
-  const messageId = requireAmaMessageId(message);
+  const messageId = requireMessageId(message);
   if (role !== "user" && role !== "assistant" && role !== "system" && role !== "tool") {
-    throw new Error("Invalid AMA EventRecord: message.role is required");
+    throw new Error("Invalid upstream EventRecord: message.role is required");
   }
   if (role === "user") return { type: "message.user", text: textFromCanonicalMessage(message) };
 
@@ -495,19 +495,19 @@ function canonicalContentBlocks(content: unknown[], parentToolCallId?: string | 
       const block = objectValue(part);
       switch (block?.type) {
         case "text":
-          return withAmaParent({ type: "text", text: stringValue(block.text) ?? "" }, parentToolCallId);
+          return withParentToolCall({ type: "text", text: stringValue(block.text) ?? "" }, parentToolCallId);
         case "reasoning":
-          return withAmaParent({ type: "thinking", text: stringValue(block.text) ?? "" }, parentToolCallId);
+          return withParentToolCall({ type: "thinking", text: stringValue(block.text) ?? "" }, parentToolCallId);
         case "tool_call": {
           const toolCall = objectValue(block.toolCall);
           const toolCallId = stringValue(toolCall?.id);
           const toolName = stringValue(toolCall?.name);
           const input = objectValue(toolCall?.input);
           if (!toolCallId || !toolName || !input) {
-            throw new Error("Invalid AMA EventRecord: tool_call requires toolCall.id, toolCall.name, and object toolCall.input");
+            throw new Error("Invalid upstream EventRecord: tool_call requires toolCall.id, toolCall.name, and object toolCall.input");
           }
-          const normalized = normalizeAmaToolCall(toolName, input);
-          return withAmaParent(
+          const normalized = normalizeToolCall(toolName, input);
+          return withParentToolCall(
             {
               type: "tool_use",
               id: toolCallId,
@@ -522,7 +522,7 @@ function canonicalContentBlocks(content: unknown[], parentToolCallId?: string | 
           const toolCallId = stringValue(block.toolCallId);
           const result = objectValue(block.result);
           if (!toolCallId || !result) {
-            throw new Error("Invalid AMA EventRecord: tool_result requires toolCallId and object result");
+            throw new Error("Invalid upstream EventRecord: tool_result requires toolCallId and object result");
           }
           return {
             type: "tool_result",
@@ -543,7 +543,7 @@ function canonicalContentBlocks(content: unknown[], parentToolCallId?: string | 
     .filter((block): block is ContentBlock => block !== null);
 }
 
-function withAmaParent<TBlock extends ContentBlock>(block: TBlock, parentToolCallId?: string | null): TBlock {
+function withParentToolCall<TBlock extends ContentBlock>(block: TBlock, parentToolCallId?: string | null): TBlock {
   return parentToolCallId ? ({ ...block, parent_id: parentToolCallId } as TBlock) : block;
 }
 
@@ -554,13 +554,13 @@ function textFromCanonicalMessage(message: Record<string, unknown>): string {
     .join("\n");
 }
 
-function requireAmaMessageId(message: Record<string, unknown>): string {
+function requireMessageId(message: Record<string, unknown>): string {
   const messageId = stringValue(message.id);
-  if (!messageId) throw new Error("Invalid AMA EventRecord: message.id is required");
+  if (!messageId) throw new Error("Invalid upstream EventRecord: message.id is required");
   return messageId;
 }
 
-function normalizeAmaToolCall(toolName: string, input: Record<string, unknown>): NormalizedToolCall {
+function normalizeToolCall(toolName: string, input: Record<string, unknown>): NormalizedToolCall {
   switch (toolName) {
     case "bash":
       return { name: ToolName.Bash, input };
@@ -582,7 +582,7 @@ function normalizeAmaToolCall(toolName: string, input: Record<string, unknown>):
         },
       };
     case "edit":
-      return normalizeAmaEditToolCall(input);
+      return normalizeEditToolCall(input);
     case "grep":
       return { name: ToolName.Grep, input };
     case "find":
@@ -611,7 +611,7 @@ function normalizeAmaToolCall(toolName: string, input: Record<string, unknown>):
   }
 }
 
-function normalizeAmaEditToolCall(input: Record<string, unknown>): NormalizedToolCall {
+function normalizeEditToolCall(input: Record<string, unknown>): NormalizedToolCall {
   const edits = Array.isArray(input.edits) ? input.edits.map(objectValue).filter((edit): edit is Record<string, unknown> => edit !== null) : [];
   if (edits.length === 1) {
     return {

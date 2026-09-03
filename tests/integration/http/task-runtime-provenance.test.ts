@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { createTask } from "../../../server/adapters/d1/taskRepo";
 import { d1TaskAssignmentRepository } from "../../../server/adapters/d1/tasks/d1TaskAssignments";
-import { storeWebSessionGrant } from "../../../server/adapters/realmroot/delegatedAmaToken";
+import { storeWebSessionGrant } from "../../../server/adapters/realmroot/delegatedAgencyToken";
 import type { Env } from "../../../server/env";
 import { api } from "../../../server/http/app";
 import { replaceTaskAssignment } from "../../../server/usecases/tasks/replaceTaskAssignment";
@@ -105,7 +105,7 @@ describe("verified Task runtime provenance", () => {
   });
 
   it("[spec: session-observation/exact-session] denies Agent observation and returns unavailable to a human when Agency is not configured", async () => {
-    delete env.AMA_ORIGIN;
+    delete env.AGENCY_ORIGIN;
     const board = await createBoard(db, tenantId, "Unavailable observation", "ops");
     const task = await createTask(db, tenantId, { title: "Bound Task", board_id: board.id });
     await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
@@ -131,7 +131,7 @@ describe("verified Task runtime provenance", () => {
         env,
       );
       expect(response.status, suffix).toBe(503);
-      await expect(response.json()).resolves.toMatchObject({ error: { code: "AMA_SESSION_UNAVAILABLE" } });
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "AGENCY_SESSION_UNAVAILABLE" } });
     }
   });
 
@@ -153,11 +153,11 @@ describe("verified Task runtime provenance", () => {
         })
       ).status,
     ).toBe(201);
-    await db.prepare("INSERT INTO ama_owner_integrations (tenant_id, ama_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
+    await db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
     const session = await createTestWebSession(db, tenantId);
     env = {
       ...env,
-      AMA_ORIGIN: "https://agency.test",
+      AGENCY_ORIGIN: "https://agency.test",
       OIDC_SERVICE_CLIENT_ID: "ak-service",
       OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
     };
@@ -213,21 +213,21 @@ describe("verified Task runtime provenance", () => {
     expect(new URL(lookup.url).href).toBe(`https://agency.test/api/v1/sessions/${canonicalSessionId}`);
     expect([...new URL(lookup.url).searchParams]).toEqual([]);
     expect(lookup.headers.get("Authorization")).toBe("Bearer agency-session-token");
-    expect(lookup.headers.get("X-AMA-Project-ID")).toBe("agency-project");
+    expect(lookup.headers.get("X-Enbor-Project-ID")).toBe("agency-project");
 
     outcome = "mismatch";
     const mismatch = await observe();
     expect(mismatch.status).toBe(503);
     await expect(mismatch.json()).resolves.toEqual({
       error: {
-        code: "AMA_SESSION_UNAVAILABLE",
+        code: "AGENCY_SESSION_UNAVAILABLE",
         message: "Agency Session observation is unavailable",
       },
     });
     for (const [nextOutcome, status, code] of [
-      ["missing", 404, "AMA_SESSION_NOT_FOUND"],
-      ["upstream", 503, "AMA_SESSION_UNAVAILABLE"],
-      ["malformed", 503, "AMA_SESSION_UNAVAILABLE"],
+      ["missing", 404, "AGENCY_SESSION_NOT_FOUND"],
+      ["upstream", 503, "AGENCY_SESSION_UNAVAILABLE"],
+      ["malformed", 503, "AGENCY_SESSION_UNAVAILABLE"],
     ] as const) {
       outcome = nextOutcome;
       const response = await observe();
@@ -247,11 +247,11 @@ describe("verified Task runtime provenance", () => {
     });
     const runtimeSessionId = "agency-runtime-session-socket";
     expect((await agentRequest("PUT", `/task-claims/${task.id}`, "task:claim", { runtime: "codex", session_id: runtimeSessionId })).status).toBe(201);
-    await db.prepare("INSERT INTO ama_owner_integrations (tenant_id, ama_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
+    await db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
     const session = await createTestWebSession(db, tenantId);
     env = {
       ...env,
-      AMA_ORIGIN: "https://agency.test",
+      AGENCY_ORIGIN: "https://agency.test",
       OIDC_SERVICE_CLIENT_ID: "ak-service",
       OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
     };
@@ -274,7 +274,7 @@ describe("verified Task runtime provenance", () => {
           expect(url.href).toBe(`https://agency.test/api/v1/sessions/${runtimeSessionId}/socket`);
           expect([...url.searchParams]).toEqual([]);
           expect(request.headers.get("Authorization")).toBe("Bearer agency-session-token");
-          expect(request.headers.get("X-AMA-Project-ID")).toBe("agency-project");
+          expect(request.headers.get("X-Enbor-Project-ID")).toBe("agency-project");
           return new Response(null, { status: 101, webSocket: upstream } as ResponseInit & { webSocket: TestWebSocket });
         }
         return Response.json({

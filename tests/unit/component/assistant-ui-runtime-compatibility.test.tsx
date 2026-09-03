@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentThread } from "@/features/tasks/components/chat/AgentThread";
-import { AmaRuntimeProvider } from "@/features/tasks/components/RelayRuntimeProvider";
+import { SessionRuntimeProvider } from "@/features/tasks/components/RelayRuntimeProvider";
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -22,9 +22,9 @@ afterEach(() => {
 describe("assistant UI runtime compatibility", () => {
   it("renders the Agent thread through the installed assistant UI dependency graph", () => {
     render(
-      <AmaRuntimeProvider events={[]} taskDone>
+      <SessionRuntimeProvider events={[]} taskDone>
         <AgentThread taskDone />
-      </AmaRuntimeProvider>,
+      </SessionRuntimeProvider>,
     );
 
     expect(screen.getByText("No activity recorded.")).toBeTruthy();

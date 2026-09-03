@@ -1,6 +1,6 @@
-import { akResource, amaResource } from "@server/config/serviceUrls";
+import { agencyResource, akResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
-import { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
+import { RealmrootDelegationFailure } from "@server/usecases/agency/failures";
 
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -15,7 +15,7 @@ type StoredGrant = {
   access_token_expires_at: string;
 };
 
-export { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
+export { RealmrootDelegationFailure } from "@server/usecases/agency/failures";
 
 export async function storeWebSessionGrant(env: Env, sessionId: string, value: unknown): Promise<void> {
   const tokens = decodeTokenResponse(value);
@@ -39,7 +39,7 @@ export async function storeWebSessionGrant(env: Env, sessionId: string, value: u
     .run();
 }
 
-export async function delegatedAmaToken(
+export async function delegatedAgencyToken(
   env: Env,
   input: { sourceAccessToken?: string; webSessionId?: string; scopes: readonly string[] },
 ): Promise<string> {
@@ -59,7 +59,7 @@ export async function delegatedAmaToken(
         subject_token: subjectToken,
         subject_token_type: ACCESS_TOKEN_TYPE,
         requested_token_type: ACCESS_TOKEN_TYPE,
-        audience: amaResource(env),
+        audience: agencyResource(env),
         scope: [...new Set(input.scopes)].join(" "),
       }),
       signal: AbortSignal.timeout(10_000),

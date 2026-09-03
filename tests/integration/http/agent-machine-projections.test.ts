@@ -3,14 +3,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { storeWebSessionGrant } from "../../../server/adapters/realmroot/delegatedAmaToken";
+import { storeWebSessionGrant } from "../../../server/adapters/realmroot/delegatedAgencyToken";
 import type { Env } from "../../../server/env";
 import { api } from "../../../server/http/app";
 import { createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "../../helpers/db";
 
 const ownerId = "tenant-projection-http";
 const subjectId = "projection-human";
-const projectId = "ama-project-1";
+const projectId = "agency-project-1";
 const resource = "https://ak.projection.test/api";
 const metadata = (uid: string, name: string) => ({
   uid,
@@ -33,10 +33,10 @@ beforeEach(async () => {
     ...createTestEnv(),
     DB: fixture.db,
     AK_PUBLIC_ORIGIN: new URL(resource).origin,
-    AMA_ORIGIN: "https://ama.projection.test",
+    AGENCY_ORIGIN: "https://enbor.projection.test",
     AK_SESSION_ENCRYPTION_KEY: btoa("01234567890123456789012345678901"),
   } as Env;
-  await fixture.db.prepare("INSERT INTO ama_owner_integrations (tenant_id, ama_project_id) VALUES (?, ?)").bind(ownerId, projectId).run();
+  await fixture.db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(ownerId, projectId).run();
   const webSession = await fixture.db
     .prepare("SELECT id FROM realmroot_web_sessions WHERE tenant_id = ? AND subject_id = ?")
     .bind(ownerId, subjectId)
@@ -111,7 +111,7 @@ async function browserSessionFor(subject: string) {
   return auth;
 }
 
-function delegatedAmaFetch(scopes: string[], upstream: (request: Request) => Response | Promise<Response>) {
+function delegatedAgencyFetch(scopes: string[], upstream: (request: Request) => Response | Promise<Response>) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     if (request.url === "https://id.realmroot.dev/api/auth/.well-known/openid-configuration") {
@@ -121,9 +121,9 @@ function delegatedAmaFetch(scopes: string[], upstream: (request: Request) => Res
       const body = new URLSearchParams(await request.text());
       expect(body.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
       expect(body.get("subject_token")).toBe("ak-browser-access-token");
-      expect(body.get("audience")).toBe("https://ama.projection.test/api");
+      expect(body.get("audience")).toBe("https://enbor.projection.test/api");
       expect(body.get("scope")?.split(" ")).toEqual(scopes);
-      return Response.json({ access_token: "ama-access-token" });
+      return Response.json({ access_token: "enbor-access-token" });
     }
     return upstream(request);
   });
@@ -143,12 +143,12 @@ function twoRequestBarrier(): () => Promise<void> {
 }
 
 describe("Agent and Machine projection HTTP resources", () => {
-  it("[spec: agents/authoritative-projection] returns bound and unbound AMA Agents as safe AK resources", async () => {
+  it("[spec: agents/authoritative-projection] returns bound and unbound Enbor Agents as safe AK resources", async () => {
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["agents:read"], async (request) => {
-        expect(request.headers.get("authorization")).toBe("Bearer ama-access-token");
-        expect(request.headers.get("x-ama-project-id")).toBe(projectId);
+      delegatedAgencyFetch(["agents:read"], async (request) => {
+        expect(request.headers.get("authorization")).toBe("Bearer enbor-access-token");
+        expect(request.headers.get("x-enbor-project-id")).toBe(projectId);
         const boundAgent = {
           metadata: { ...metadata("agent-1", "Backend"), description: "Builds APIs" },
           spec: {
@@ -192,7 +192,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(detail.status, await detail.clone().text()).toBe(200);
     const detailText = await detail.text();
     expect(JSON.parse(detailText)).toMatchObject({ id: "agent-unbound", name: "Unbound", username: null, runtime: null, subject: null });
-    expect(detailText).not.toMatch(/ama-project-1|allowedTools|systemPrompt/);
+    expect(detailText).not.toMatch(/agency-project-1|allowedTools|systemPrompt/);
   });
 
   it.each([
@@ -209,13 +209,13 @@ describe("Agent and Machine projection HTTP resources", () => {
       scopes: ["environments:read", "runners:read", "projects:read", "projects:write"],
     },
   ])(
-    "[spec: agents/transparent-ama-project] initializes the Project before the $resourceName collection",
+    "[spec: agents/transparent-agency-project] initializes the Project before the $resourceName collection",
     async ({ path, operationPath, scopes }) => {
-      await fixture.db.prepare("DELETE FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
+      await fixture.db.prepare("DELETE FROM agency_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
       const events: string[] = [];
       vi.stubGlobal(
         "fetch",
-        delegatedAmaFetch(scopes, async (request) => {
+        delegatedAgencyFetch(scopes, async (request) => {
           const pathname = new URL(request.url).pathname;
           events.push(`${request.method} ${pathname}`);
           if (pathname === "/api/v1/projects" && request.method === "GET") {
@@ -234,15 +234,15 @@ describe("Agent and Machine projection HTTP resources", () => {
           }
           if (pathname === operationPath) {
             await expect(
-              fixture.db.prepare("SELECT ama_project_id FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).first(),
-            ).resolves.toEqual({ ama_project_id: "project-initialized" });
-            expect(request.headers.get("x-ama-project-id")).toBe("project-initialized");
+              fixture.db.prepare("SELECT agency_project_id FROM agency_owner_integrations WHERE tenant_id = ?").bind(ownerId).first(),
+            ).resolves.toEqual({ agency_project_id: "project-initialized" });
+            expect(request.headers.get("x-enbor-project-id")).toBe("project-initialized");
             return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
           }
           if (pathname === "/api/v1/runners") {
             return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
           }
-          throw new Error(`Unexpected AMA request ${request.method} ${pathname}`);
+          throw new Error(`Unexpected Enbor request ${request.method} ${pathname}`);
         }),
       );
 
@@ -253,16 +253,16 @@ describe("Agent and Machine projection HTTP resources", () => {
     },
   );
 
-  it("[spec: agents/transparent-ama-project] maps an active initialization claim to retryable 503", async () => {
-    await fixture.db.prepare("DELETE FROM ama_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
+  it("[spec: agents/transparent-agency-project] maps an active initialization claim to retryable 503", async () => {
+    await fixture.db.prepare("DELETE FROM agency_owner_integrations WHERE tenant_id = ?").bind(ownerId).run();
     await fixture.db
-      .prepare("INSERT INTO ama_resource_initializations (tenant_id, claim_token, expires_at) VALUES (?, ?, ?)")
+      .prepare("INSERT INTO agency_resource_initializations (tenant_id, claim_token, expires_at) VALUES (?, ?, ?)")
       .bind(ownerId, "other-request", new Date(Date.now() + 60_000).toISOString())
       .run();
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["agents:read", "projects:read", "projects:write"], async (request) => {
-        throw new Error(`AMA must not be called while another claim is active: ${request.url}`);
+      delegatedAgencyFetch(["agents:read", "projects:read", "projects:write"], async (request) => {
+        throw new Error(`Enbor must not be called while another claim is active: ${request.url}`);
       }),
     );
 
@@ -272,14 +272,14 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(response.headers.get("Retry-After")).toBe("1");
     await expect(response.json()).resolves.toMatchObject({
       status: 503,
-      type: `${resource}/problems/ama-initialization-busy`,
+      type: `${resource}/problems/enbor-initialization-busy`,
     });
   }, 30_000);
 
   it("[spec: machines/environment-projection] returns runtime usage grouped by Runner", async () => {
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["environments:read", "runners:read"], async (request) => {
+      delegatedAgencyFetch(["environments:read", "runners:read"], async (request) => {
         const path = new URL(request.url).pathname;
         const environment = { metadata: metadata("environment-self", "Build host"), spec: { type: "self_hosted" }, status: { phase: "active" } };
         if (path === "/api/v1/environments") {
@@ -376,7 +376,7 @@ describe("Agent and Machine projection HTTP resources", () => {
   it("[spec: machines/create-runner-setup] returns setup commands for an offline Machine without Runners", async () => {
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["environments:read", "runners:read"], async (request) => {
+      delegatedAgencyFetch(["environments:read", "runners:read"], async (request) => {
         const path = new URL(request.url).pathname;
         if (path === "/api/v1/environments/environment-empty") {
           return Response.json({
@@ -388,7 +388,7 @@ describe("Agent and Machine projection HTTP resources", () => {
         if (path === "/api/v1/runners") {
           return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
         }
-        throw new Error(`Unexpected AMA request ${request.method} ${path}`);
+        throw new Error(`Unexpected Enbor request ${request.method} ${path}`);
       }),
     );
 
@@ -401,16 +401,16 @@ describe("Agent and Machine projection HTTP resources", () => {
       status: "offline",
       runnerCount: 0,
       runners: [],
-      authCommand: 'enbor-runner auth login --api-server "https://ama.projection.test"',
+      authCommand: 'enbor-runner auth login --api-server "https://enbor.projection.test"',
       startCommand:
-        'enbor-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-empty" --allow-unsafe-process',
+        'enbor-runner start --api-server "https://enbor.projection.test" --project-id "agency-project-1" --environment-id "environment-empty" --allow-unsafe-process',
     });
   });
 
-  it("[spec: machines/create-environment] returns complete auth and start commands for the created AMA Environment", async () => {
+  it("[spec: machines/create-environment] returns complete auth and start commands for the created Enbor Environment", async () => {
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["environments:write"], async (request) => {
+      delegatedAgencyFetch(["environments:write"], async (request) => {
         expect(request.method).toBe("POST");
         expect(request.headers.get("Idempotency-Key")).toMatch(/^ak-[a-f0-9]{64}$/);
         await expect(request.json()).resolves.toEqual({
@@ -440,9 +440,9 @@ describe("Agent and Machine projection HTTP resources", () => {
     const created = await response.json();
     expect(created).toMatchObject({
       machine: { id: "environment-created", status: "offline" },
-      authCommand: 'enbor-runner auth login --api-server "https://ama.projection.test"',
+      authCommand: 'enbor-runner auth login --api-server "https://enbor.projection.test"',
       startCommand:
-        'enbor-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-created" --allow-unsafe-process',
+        'enbor-runner start --api-server "https://enbor.projection.test" --project-id "agency-project-1" --environment-id "environment-created" --allow-unsafe-process',
     });
     expect(created.machine).not.toHaveProperty("runners");
   });
@@ -455,7 +455,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     const agentUpstreamKeys: string[] = [];
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["identities:write", "agents:write"], async (request) => {
+      delegatedAgencyFetch(["identities:write", "agents:write"], async (request) => {
         const path = new URL(request.url).pathname;
         if (path === "/api/v1/identities") {
           identityCreates += 1;
@@ -479,7 +479,7 @@ describe("Agent and Machine projection HTTP resources", () => {
             status: { phase: "active", schedulable: true },
           });
         }
-        throw new Error(`Unexpected AMA request ${request.method} ${path}`);
+        throw new Error(`Unexpected Enbor request ${request.method} ${path}`);
       }),
     );
     const key = "concurrent-agent-create";
@@ -542,7 +542,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     const upstreamKeys: string[] = [];
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["environments:write"], async (request) => {
+      delegatedAgencyFetch(["environments:write"], async (request) => {
         expect(new URL(request.url).pathname).toBe("/api/v1/environments");
         machineCreates += 1;
         upstreamKeys.push(request.headers.get("Idempotency-Key")!);
@@ -589,7 +589,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     ).resolves.toEqual({ count: 2 });
   });
 
-  it("[spec: agents/authoritative-projection] uses exact DPoP Agent authority and minimal delegated AMA scope", async () => {
+  it("[spec: agents/authoritative-projection] uses exact DPoP Agent authority and minimal delegated Agency scope", async () => {
     await fixture.db.prepare("DROP TABLE realmroot_user_ama_grants").run();
     const url = `${resource}/agents`;
     const issuer = env.OIDC_ISSUER;
@@ -633,12 +633,12 @@ describe("Agent and Machine projection HTTP resources", () => {
         if (request.url === `${issuer}/oauth2/token`) {
           const body = new URLSearchParams(await request.text());
           expect(body.get("subject_token")).toBe(token);
-          expect(body.get("audience")).toBe(`${env.AMA_ORIGIN}/api`);
+          expect(body.get("audience")).toBe(`${env.AGENCY_ORIGIN}/api`);
           expect(body.get("scope")).toBe("agents:read");
-          return Response.json({ access_token: "agent-delegated-ama-token" });
+          return Response.json({ access_token: "agent-delegated-enbor-token" });
         }
-        expect(request.headers.get("authorization")).toBe("Bearer agent-delegated-ama-token");
-        expect(request.headers.get("x-ama-project-id")).toBe(projectId);
+        expect(request.headers.get("authorization")).toBe("Bearer agent-delegated-enbor-token");
+        expect(request.headers.get("x-enbor-project-id")).toBe(projectId);
         return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
       }),
     );
@@ -650,15 +650,15 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(response.status, await response.clone().text()).toBe(200);
   });
 
-  it("[spec: machines/archive-environment] archives the authoritative AMA Environment without a local Machine entity", async () => {
+  it("[spec: machines/archive-environment] archives the authoritative Enbor Environment without a local Machine entity", async () => {
     await fixture.db.prepare("DROP TABLE machines").run();
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["environments:write"], async (request) => {
+      delegatedAgencyFetch(["environments:write"], async (request) => {
         expect(request.method).toBe("DELETE");
         expect(new URL(request.url).pathname).toBe("/api/v1/environments/environment-1");
-        expect(request.headers.get("authorization")).toBe("Bearer ama-access-token");
-        expect(request.headers.get("x-ama-project-id")).toBe(projectId);
+        expect(request.headers.get("authorization")).toBe("Bearer enbor-access-token");
+        expect(request.headers.get("x-enbor-project-id")).toBe(projectId);
         expect(await request.text()).toBe("");
         return new Response(null, { status: 204 });
       }),
@@ -704,8 +704,8 @@ describe("Agent and Machine projection HTTP resources", () => {
   it("[spec: agents/read-only-browser] rejects noncanonical runtime and malformed Agent collection filters", async () => {
     vi.stubGlobal(
       "fetch",
-      delegatedAmaFetch(["agents:read"], async (request) => {
-        throw new Error(`AMA must not be called for an invalid filter: ${request.url}`);
+      delegatedAgencyFetch(["agents:read"], async (request) => {
+        throw new Error(`Enbor must not be called for an invalid filter: ${request.url}`);
       }),
     );
     for (const query of ["runtime=remote", "schedulable=yes", "search=", `search=${"x".repeat(161)}`]) {

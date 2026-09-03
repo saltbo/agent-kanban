@@ -85,7 +85,7 @@ test("[spec: agents/read-only-browser] Agent list and detail expose identity and
   await list.getByRole("textbox", { name: "Search Agents" }).fill("backend");
   await list.getByRole("combobox", { name: "Runtime" }).click();
   const runtimeOptions = page.getByRole("option");
-  await expect(runtimeOptions).toHaveText(["All runtimes", "AMA", "Claude Code", "Codex", "Copilot"]);
+  await expect(runtimeOptions).toHaveText(["All runtimes", "Enbor", "Claude Code", "Codex", "Copilot"]);
   await page.getByRole("option", { name: "Claude Code", exact: true }).click();
   await list.getByRole("combobox", { name: "Availability" }).click();
   await page.getByRole("option", { name: "Schedulable" }).click();

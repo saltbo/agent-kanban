@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { replaceTaskAssignment, type TaskAssignmentRepository } from "../../../server/usecases/tasks/replaceTaskAssignment";
 
 describe("Agent projection Assignment boundary", () => {
-  it("[spec: agents/assignment-subject] stores the projected subject as agentActorId without an AMA dependency", async () => {
+  it("[spec: agents/assignment-subject] stores the projected subject as agentActorId without an Agency dependency", async () => {
     const repository: TaskAssignmentRepository = {
       findTarget: vi.fn().mockResolvedValue({ status: "todo", assignedTo: null, assigneeIdentityType: null, activeAssignment: null }),
       create: vi.fn().mockResolvedValue({

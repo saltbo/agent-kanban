@@ -8,7 +8,7 @@ import { useAgents } from "@/features/agents/useAgents";
 import { Header } from "@/features/boards/components/Header";
 
 const RUNTIME_LABELS: Record<(typeof AGENCY_RUNTIMES)[number], string> = {
-  ama: "AMA",
+  enbor: "Enbor",
   "claude-code": "Claude Code",
   codex: "Codex",
   copilot: "Copilot",

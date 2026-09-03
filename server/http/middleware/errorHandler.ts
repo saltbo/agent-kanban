@@ -1,8 +1,8 @@
 import { EnborApiError } from "@realmroot/enbor-sdk";
 import { applyRequestIdHeader } from "@server/http/middleware/requestContext";
 import { isPublishedV2Operation, v2Problem } from "@server/http/middleware/v2Contract";
-import { AmaProjectInitializationBusy } from "@server/usecases/ama/ensureAmaProject";
-import { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
+import { AgencyProjectInitializationBusy } from "@server/usecases/agency/ensureAgencyProject";
+import { RealmrootDelegationFailure } from "@server/usecases/agency/failures";
 import { ApplicationError } from "@server/usecases/applicationError";
 import { TaskLifecycleNotificationFailure } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { ErrorHandler } from "hono";
@@ -22,18 +22,18 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
       error.message,
     );
   }
-  if (error instanceof AmaProjectInitializationBusy) {
+  if (error instanceof AgencyProjectInitializationBusy) {
     c.header("Retry-After", "1");
-    return v2Problem(c, 503, "ama-initialization-busy", "AMA initialization in progress", error.message);
+    return v2Problem(c, 503, "enbor-initialization-busy", "Enbor initialization in progress", error.message);
   }
   if (error instanceof EnborApiError) {
-    const status = amaStatus(error.status);
+    const status = upstreamStatus(error.status);
     return v2Problem(
       c,
       status,
-      "ama-request-failed",
-      status === 503 ? "AMA unavailable" : "AMA request failed",
-      status === 503 ? "AMA is unavailable" : "AMA rejected the request",
+      "enbor-request-failed",
+      status === 503 ? "Enbor unavailable" : "Enbor request failed",
+      status === 503 ? "Enbor is unavailable" : "Enbor rejected the request",
     );
   }
   if (error instanceof TaskLifecycleNotificationFailure) {
@@ -84,7 +84,7 @@ function applicationStatus(kind: ApplicationError["kind"]): 400 | 404 | 409 | 50
   return kind === "invariant-failed" ? 500 : 400;
 }
 
-function amaStatus(status: number | undefined): 403 | 404 | 409 | 502 | 503 {
+function upstreamStatus(status: number | undefined): 403 | 404 | 409 | 502 | 503 {
   if (status === 404) return 404;
   if (status === 401 || status === 403) return 403;
   if (status === undefined || status === 408 || status === 429 || (status >= 500 && status !== 502)) return 503;

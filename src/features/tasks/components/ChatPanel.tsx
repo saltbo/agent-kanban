@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AgentThread, ChatToolUIs } from "@/features/tasks/components/chat";
 import { api } from "@/lib/api";
-import { AmaRuntimeProvider } from "./RelayRuntimeProvider";
+import { SessionRuntimeProvider } from "./RelayRuntimeProvider";
 
 const LIVE_POLL_MS = 2000;
 
@@ -59,11 +59,11 @@ interface ChatPanelProps {
   taskId: string;
   agentId: string | null;
   taskDone: boolean;
-  /** The AMA session this task is bound to. */
-  amaSessionId?: string | null;
+  /** The runtime session this task is bound to. */
+  runtimeSessionId?: string | null;
 }
 
-export function ChatPanel({ taskId, agentId, taskDone, amaSessionId }: ChatPanelProps) {
+export function ChatPanel({ taskId, agentId, taskDone, runtimeSessionId }: ChatPanelProps) {
   if (!agentId) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -72,8 +72,8 @@ export function ChatPanel({ taskId, agentId, taskDone, amaSessionId }: ChatPanel
     );
   }
 
-  if (amaSessionId) {
-    return <AmaSessionChat taskId={taskId} taskDone={taskDone} unavailableMessage="Session history is not available for this task." />;
+  if (runtimeSessionId) {
+    return <RuntimeSessionChat taskId={taskId} taskDone={taskDone} unavailableMessage="Session history is not available for this task." />;
   }
 
   return (
@@ -83,10 +83,10 @@ export function ChatPanel({ taskId, agentId, taskDone, amaSessionId }: ChatPanel
   );
 }
 
-// The AMA path: the task's events live in the AMA control plane (the Session DO
+// The runtime path: the task's events live in the upstream control plane (the Session DO
 // for cloud-loop runtimes, the runner store for self-hosted CLI runtimes), read
 // back through AK's server as a paginated snapshot and live-tailed.
-export function AmaSessionChat({
+export function RuntimeSessionChat({
   taskId,
   sessionId,
   taskDone,
@@ -101,7 +101,7 @@ export function AmaSessionChat({
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
 
   // Events come over AK's authenticated WebSocket boundary. AK validates the
-  // browser Session Cookie and proxies upstream with its AMA machine authority;
+  // browser Session Cookie and proxies upstream with its machine authority;
   // history backfill and live events remain on the same socket.
   useEffect(() => {
     let active = true;
@@ -184,9 +184,9 @@ export function AmaSessionChat({
   }
 
   return (
-    <AmaRuntimeProvider events={events} taskDone={taskDone}>
+    <SessionRuntimeProvider events={events} taskDone={taskDone}>
       <ChatToolUIs />
       <AgentThread taskDone={taskDone} />
-    </AmaRuntimeProvider>
+    </SessionRuntimeProvider>
   );
 }

@@ -51,7 +51,7 @@ function repository(kind: "rejection" | "completion", actor = input.actor): Task
 }
 
 describe("Task Review Decisions", () => {
-  it("rejects review without accepting an AMA message effect", async () => {
+  it("rejects review without accepting an Agency message effect", async () => {
     const repo = repository("rejection");
     await expect(replaceTaskReviewRejection(repo, { ...input, reason: "needs changes" })).resolves.toMatchObject({
       created: true,
@@ -62,7 +62,7 @@ describe("Task Review Decisions", () => {
     expect(repo.markEffectDelivered).toHaveBeenCalledOnce();
   });
 
-  it("completes review without accepting an AMA close effect", async () => {
+  it("completes review without accepting an Agency close effect", async () => {
     const repo = repository("completion");
     await expect(replaceTaskReviewCompletion(repo, input)).resolves.toMatchObject({
       created: true,

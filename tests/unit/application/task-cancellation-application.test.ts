@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { replaceTaskCancellation, type TaskCancellationRepository } from "../../../server/usecases/tasks/replaceTaskCancellation";
 
 describe("Task Cancellation", () => {
-  it("cancels a Task without accepting an AMA runtime effect", async () => {
+  it("cancels a Task without accepting an Agency runtime effect", async () => {
     const repository: TaskCancellationRepository = {
       findTarget: vi.fn(async () => ({
         status: "in_progress",

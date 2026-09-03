@@ -11,7 +11,7 @@ export interface Env {
   AK_SESSION_ENCRYPTION_KEY: string;
   INBOX_RESOURCE: string;
   INBOX_API_VERSION: string;
-  AMA_ORIGIN: string;
+  AGENCY_ORIGIN: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;
   // base64 of the App's PKCS#8 PEM private key

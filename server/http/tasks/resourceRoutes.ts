@@ -15,7 +15,7 @@ import {
 } from "@server/adapters/d1/taskRepo";
 import { createSSEResponse } from "@server/adapters/stream/sse";
 import type { Env } from "@server/env";
-import { amaAuthorization } from "@server/http/resource-server/amaDependencies";
+import { agencyAuthorization } from "@server/http/resource-server/agencyDependencies";
 import { pageResponse, readPageWindow } from "@server/http/resource-server/pagination";
 import { taskNoteResource, taskResource } from "@server/http/resource-server/representation";
 import {
@@ -236,7 +236,7 @@ async function resolveAgencySession(c: TaskContext, binding: NonNullable<Task["s
 }
 
 async function taskSessionClient(c: TaskContext, scopes: readonly string[]) {
-  const { projectId, token, origin } = await amaAuthorization(c, scopes);
+  const { projectId, token, origin } = await agencyAuthorization(c, scopes);
   return {
     projectId,
     token,
@@ -328,10 +328,10 @@ function isBackfillRequest(value: string | ArrayBuffer): value is string {
 
 function mapSessionObservationFailure(c: TaskContext, error: unknown): Response {
   if (error instanceof EnborApiError && error.status === 404) {
-    return c.json({ error: { code: "AMA_SESSION_NOT_FOUND", message: "Agency Session not found for the Task" } }, 404);
+    return c.json({ error: { code: "AGENCY_SESSION_NOT_FOUND", message: "Agency Session not found for the Task" } }, 404);
   }
   if (error instanceof EnborApiError) {
-    return c.json({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
+    return c.json({ error: { code: "AGENCY_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
   }
   throw error;
 }
