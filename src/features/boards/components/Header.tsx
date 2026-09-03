@@ -138,8 +138,10 @@ export function Header() {
                   key={to}
                   to={to}
                   aria-current={active ? "page" : undefined}
-                  className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-                    active ? "bg-accent-soft text-accent" : "text-content-tertiary hover:bg-surface-tertiary hover:text-content-secondary"
+                  className={`inline-flex h-7 items-center rounded-lg px-2.5 text-[13px] font-medium transition-colors ${
+                    active
+                      ? "bg-surface-tertiary text-content-primary"
+                      : "text-content-tertiary hover:bg-surface-tertiary hover:text-content-secondary"
                   }`}
                 >
                   {label}
