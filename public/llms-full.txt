@@ -33,10 +33,12 @@ Toolbox commands published by the Agent Kanban Resource Server.
 
 ## Authentication
 
-Realmroot authenticates humans and Agents running in Agency Sessions against Agent Kanban as a
-Resource Server. Business data is scoped by the canonical Realmroot tenant ID.
-The browser uses an Agent Kanban Session Cookie after Realmroot sign-in. Agents
-use the Realmroot credential mode issued for Toolbox access.
+Human browser sign-in uses standard OIDC authorization code flow with PKCE;
+Realmroot is the current provider. Agents running in Agency Sessions use
+Realmroot's additional Agent identity and Toolbox profile against Agent Kanban
+as a Resource Server. Business data is scoped by the normalized OIDC subject or
+Realmroot organization ID. The browser uses an Agent Kanban Session Cookie;
+Agents use the Realmroot credential mode issued for Toolbox access.
 
 ## Discovery
 

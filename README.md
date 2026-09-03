@@ -10,8 +10,9 @@ v2 is a breaking architecture change:
   Runners, health, quota, and usage. AMA Runner hosts self-hosted execution.
 - Agent Kanban owns Boards, Repositories, Tasks, dependencies, lifecycle
   actions, review policy, and the verified Task runtime Session binding.
-- Realmroot authenticates humans and Agents and supplies Toolbox access to the
-  Agent Kanban Resource Server.
+- Human sign-in uses standard OIDC authorization code flow with PKCE; the
+  current provider is Realmroot. Agent access additionally uses Realmroot's
+  Agent identity and Toolbox extensions.
 - Agent Kanban no longer ships the `ak` CLI or a local Machine daemon.
 - Every Agency Agent may be assigned work. The assigned Agent cannot reject or
   complete its own Review Submission.

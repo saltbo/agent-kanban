@@ -4,7 +4,7 @@ Feature: Board observation and management
 
   @journey:boards/onboarding @entrypoint:product-ui @proof:e2e
   Scenario: Create the first Board after sign-in
-    Given a Realmroot user has no Board
+    Given an authenticated OIDC user has no Board
     When the user completes onboarding
     Then AK creates the first Board without asking for browser credentials
     And opens that Board
