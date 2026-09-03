@@ -1,18 +1,18 @@
-import type { ProjectedAgent } from "@shared";
+import type { Agent } from "@realmroot/enbor-sdk";
 
-export function agentRepresentation(agent: ProjectedAgent, requestUrl: string) {
+export function agentRepresentation(agent: Agent, requestUrl: string) {
   return {
-    id: agent.id,
-    name: agent.name,
-    description: agent.description,
-    username: agent.username,
-    runtime: agent.runtime,
-    model: agent.model,
-    skills: agent.skills,
-    subject: agent.subject,
-    schedulable: agent.schedulable,
-    createdAt: agent.created_at,
-    updatedAt: agent.updated_at,
-    links: { self: new URL(`/api/agents/${encodeURIComponent(agent.id)}`, requestUrl).toString() },
+    id: agent.metadata.uid,
+    name: agent.metadata.name,
+    description: agent.metadata.description,
+    username: agent.spec.identity?.username ?? null,
+    runtime: agent.spec.identity?.runtime ?? null,
+    model: agent.spec.model,
+    skills: agent.spec.skills,
+    subject: agent.spec.identity?.subject ?? null,
+    schedulable: agent.status.schedulable,
+    createdAt: agent.metadata.createdAt,
+    updatedAt: agent.metadata.updatedAt,
+    links: { self: new URL(`/api/agents/${encodeURIComponent(agent.metadata.uid)}`, requestUrl).toString() },
   };
 }

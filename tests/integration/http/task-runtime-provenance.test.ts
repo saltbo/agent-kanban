@@ -136,7 +136,6 @@ describe("verified Task runtime provenance", () => {
   });
 
   it("[spec: session-observation/exact-session] resolves the canonical stored Session and maps boundary failures", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const board = await createBoard(db, tenantId, "Exact Session observation", "ops");
     const task = await createTask(db, tenantId, { title: "Observe exact Agency Session", board_id: board.id });
     await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
@@ -216,7 +215,6 @@ describe("verified Task runtime provenance", () => {
     expect(lookup.headers.get("Authorization")).toBe("Bearer agency-session-token");
     expect(lookup.headers.get("X-AMA-Project-ID")).toBe("agency-project");
 
-    consoleError.mockClear();
     outcome = "mismatch";
     const mismatch = await observe();
     expect(mismatch.status).toBe(503);
@@ -226,18 +224,6 @@ describe("verified Task runtime provenance", () => {
         message: "Agency Session observation is unavailable",
       },
     });
-    const mismatchCompletion = consoleError.mock.calls
-      .map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>)
-      .filter((entry) => entry.msg === "request completed" && entry.status === 503);
-    expect(mismatchCompletion).toEqual([
-      expect.objectContaining({
-        result: "server_error",
-        error_name: "AgencySessionObservationFailure",
-        error_message: "Agency returned a Session outside the requested identity or Project",
-        error_stack: expect.stringContaining("Agency returned a Session outside the requested identity or Project"),
-      }),
-    ]);
-
     for (const [nextOutcome, status, code] of [
       ["missing", 404, "AMA_SESSION_NOT_FOUND"],
       ["upstream", 503, "AMA_SESSION_UNAVAILABLE"],

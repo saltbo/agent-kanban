@@ -1,88 +1,94 @@
+import { AmaApiError, type AmaClient, type Environment, type Runner } from "@realmroot/enbor-sdk";
 import { describe, expect, it, vi } from "vitest";
-import {
-  archiveProjectedMachine,
-  createProjectedMachine,
-  listProjectedMachinesPage,
-  type MachineProjectionPort,
-} from "../../../server/usecases/machines/projectMachines";
-import type { ProjectedMachine } from "../../../shared";
+import { createMachine, listMachinesPage } from "../../../server/usecases/machines/projectMachines";
 
-const machine: ProjectedMachine = {
-  id: "environment-1",
-  name: "Build host",
-  description: null,
-  state: "online",
-  current_load: 3,
-  max_concurrent: 6,
-  runner_count: 1,
-  runners: [
-    {
-      id: "runner-1",
-      name: "Runner one",
-      state: "active",
-      current_load: 3,
-      max_concurrent: 6,
-      runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
-      runtime_usage: [
-        {
-          runtime: "codex",
-          windows: [{ label: "5 hours", utilization: 25, resets_at: "2026-09-01T17:00:00.000Z" }],
-        },
-      ],
-      last_heartbeat_at: "2026-09-01T12:00:01.000Z",
-    },
-  ],
-  runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
-  last_heartbeat_at: "2026-09-01T12:00:01.000Z",
-  created_at: "2026-09-01T11:00:00.000Z",
-  updated_at: "2026-09-01T12:00:01.000Z",
-};
-
-function port(overrides: Partial<MachineProjectionPort> = {}): MachineProjectionPort {
-  return {
-    listMachinesPage: vi.fn().mockResolvedValue({ items: [machine], nextCursor: null }),
-    getMachine: vi.fn().mockResolvedValue(machine),
-    createMachine: vi.fn().mockResolvedValue(machine),
-    archiveMachine: vi.fn().mockResolvedValue(true),
-    ...overrides,
-  };
+function environment(uid: string, type: Environment["spec"]["type"]): Environment {
+  return { metadata: { uid }, spec: { type } } as Environment;
 }
 
-describe("Machine projection application", () => {
-  it("[spec: machines/create-runner-setup] creates an Environment and returns generated Runner setup", async () => {
-    const projection = port();
-    const result = await createProjectedMachine(
-      projection,
-      "project-1",
-      "machine-create-key",
-      (projectId, environmentId) => `enbor-runner start --project-id ${projectId} --environment-id ${environmentId}`,
-    );
+function runner(id: string, environmentId: string): Runner {
+  return { id, environmentId } as Runner;
+}
 
-    expect(projection.createMachine).toHaveBeenCalledWith(
-      "project-1",
-      expect.stringMatching(/^computer-[a-f0-9]{8}$/),
-      expect.stringMatching(/^ak-[a-f0-9]{64}$/),
-    );
-    expect(result).toEqual({
-      machine,
+describe("Machine SDK orchestration", () => {
+  it("[spec: machines/runner-aggregation] groups every paginated SDK Runner under its self-hosted Environment", async () => {
+    const selfHosted = environment("environment-self-hosted", "self_hosted");
+    const managed = environment("environment-cloud", "cloud");
+    const selfHostedRunnerA = runner("runner-a", selfHosted.metadata.uid);
+    const selfHostedRunnerB = runner("runner-b", selfHosted.metadata.uid);
+    const managedRunner = runner("runner-managed", managed.metadata.uid);
+    const environmentsList = vi.fn().mockResolvedValue({
+      data: [selfHosted, managed],
+      pagination: { nextCursor: "environment-next" },
+    });
+    const runnersList = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [selfHostedRunnerA, managedRunner],
+        pagination: { nextCursor: "runner-next" },
+      })
+      .mockResolvedValueOnce({ data: [selfHostedRunnerB], pagination: { nextCursor: null } });
+    const client = {
+      environments: { list: environmentsList },
+      runners: { list: runnersList },
+    } as unknown as AmaClient;
+
+    await expect(listMachinesPage(client, { limit: 20, cursor: "environment-cursor" })).resolves.toEqual({
+      items: [{ environment: selfHosted, runners: [selfHostedRunnerA, selfHostedRunnerB] }],
+      nextCursor: "environment-next",
+    });
+    expect(environmentsList).toHaveBeenCalledWith({ limit: 20, cursor: "environment-cursor" });
+    expect(runnersList.mock.calls).toEqual([
+      [{ limit: 100, cursor: undefined, environmentId: undefined }],
+      [{ limit: 100, cursor: "runner-next", environmentId: undefined }],
+    ]);
+  });
+
+  it("[spec: machines/create-runner-setup] creates a self-hosted SDK Environment and returns Runner setup", async () => {
+    const created = environment("environment-created", "self_hosted");
+    const environmentsCreate = vi.fn().mockResolvedValue(created);
+    const client = { environments: { create: environmentsCreate } } as unknown as AmaClient;
+
+    await expect(
+      createMachine(
+        client,
+        "project-1",
+        "machine-create-key",
+        (projectId, environmentId) => `enbor-runner start --project-id ${projectId} --environment-id ${environmentId}`,
+      ),
+    ).resolves.toEqual({
+      machine: { environment: created, runners: [] },
       setup: {
-        command: "enbor-runner start --project-id project-1 --environment-id environment-1",
+        command: "enbor-runner start --project-id project-1 --environment-id environment-created",
         project_id: "project-1",
-        environment_id: "environment-1",
+        environment_id: "environment-created",
       },
     });
+    expect(environmentsCreate).toHaveBeenCalledWith(
+      {
+        metadata: { name: expect.stringMatching(/^computer-[a-f0-9]{8}$/) },
+        spec: { scope: "project", type: "self_hosted" },
+      },
+      expect.stringMatching(/^ak-[a-f0-9]{64}$/),
+    );
   });
 
-  it("[spec: machines/runner-aggregation] returns the adapter's aggregated Machine projection unchanged", async () => {
-    await expect(listProjectedMachinesPage(port(), "project-1", { limit: 20, cursor: null })).resolves.toEqual({
-      items: [machine],
-      nextCursor: null,
-    });
-  });
+  it("rejects a repeated SDK Runner pagination cursor", async () => {
+    const selfHosted = environment("environment-self-hosted", "self_hosted");
+    const client = {
+      environments: {
+        list: vi.fn().mockResolvedValue({ data: [selfHosted], pagination: { nextCursor: null } }),
+      },
+      runners: {
+        list: vi
+          .fn()
+          .mockResolvedValueOnce({ data: [], pagination: { nextCursor: "repeated" } })
+          .mockResolvedValueOnce({ data: [], pagination: { nextCursor: "repeated" } }),
+      },
+    } as unknown as AmaClient;
 
-  it("[spec: machines/archive-environment] archives the authoritative Environment", async () => {
-    const projection = port();
-    await expect(archiveProjectedMachine(projection, "project-1", "environment-1")).resolves.toBe(true);
-    expect(projection.archiveMachine).toHaveBeenCalledWith("project-1", "environment-1");
+    const error = await listMachinesPage(client, { limit: 20, cursor: null }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AmaApiError);
+    expect(error).toMatchObject({ status: 502, responseText: "AMA Runner pagination did not advance" });
   });
 });

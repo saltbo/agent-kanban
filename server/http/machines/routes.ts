@@ -1,6 +1,6 @@
 import type { Env } from "@server/env";
 import { machineDetailRepresentation, machineRepresentation } from "@server/http/machines/representation";
-import { amaProjectionDependencies } from "@server/http/resource-server/amaProjectionDependencies";
+import { amaDependencies } from "@server/http/resource-server/amaDependencies";
 import { externalPageResponse, readExternalPage } from "@server/http/resource-server/externalPagination";
 import { representationEtag } from "@server/http/resource-server/representation";
 import {
@@ -9,12 +9,7 @@ import {
   rejectRequestBody,
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
-import {
-  archiveProjectedMachine,
-  createProjectedMachine,
-  getProjectedMachine,
-  listProjectedMachinesPage,
-} from "@server/usecases/machines/projectMachines";
+import { createMachine, getMachine, listMachinesPage } from "@server/usecases/machines/projectMachines";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
@@ -22,8 +17,8 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
   api.get("/api/machines", async (c) => {
     const page = await readExternalPage(c);
     if (page instanceof Response) return page;
-    const { adapter, projectId } = await amaProjectionDependencies(c, ["environments:read", "runners:read"]);
-    const result = await listProjectedMachinesPage(adapter, projectId, { limit: page.pageSize, cursor: page.sourceCursor });
+    const { client } = await amaDependencies(c, ["environments:read", "runners:read"]);
+    const result = await listMachinesPage(client, { limit: page.pageSize, cursor: page.sourceCursor });
     return externalPageResponse(
       c,
       result.items.map((machine) => machineRepresentation(machine, c.req.url)),
@@ -34,40 +29,36 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
   api.post("/api/machines", async (c) => {
     const bodyError = await rejectRequestBody(c, "Machine");
     if (bodyError) return bodyError;
-    const { adapter, projectId } = await amaProjectionDependencies(c, ["environments:write"]);
+    const { client, projectId } = await amaDependencies(c, ["environments:write"]);
     const idempotencyKey = externalCreationIdempotencyKey(c);
-    const result = await createProjectedMachine(adapter, projectId, idempotencyKey, (project, environment) =>
-      runnerStartCommand(c.env, project, environment),
-    );
+    const result = await createMachine(client, projectId, idempotencyKey, (project, environment) => runnerStartCommand(c.env, project, environment));
     const response = {
       machine: machineRepresentation(result.machine, c.req.url),
       authCommand: runnerAuthCommand(c.env),
       startCommand: result.setup.command,
     };
     const machineEtag = await representationEtag(response.machine);
-    await completeExternalCreation(c, "machines", result.machine.id, machineEtag.slice(1, -1), response);
-    setCreatedResourceHeaders(c, "machines", result.machine.id, machineEtag.slice(1, -1));
+    await completeExternalCreation(c, "machines", result.machine.environment.metadata.uid, machineEtag.slice(1, -1), response);
+    setCreatedResourceHeaders(c, "machines", result.machine.environment.metadata.uid, machineEtag.slice(1, -1));
     return c.json(response, 201);
   });
 
   api.get("/api/machines/:machineId", async (c) => {
-    const { adapter, projectId } = await amaProjectionDependencies(c, ["environments:read", "runners:read"]);
-    const machine = await getProjectedMachine(adapter, projectId, c.req.param("machineId"));
+    const { client, projectId } = await amaDependencies(c, ["environments:read", "runners:read"]);
+    const machine = await getMachine(client, c.req.param("machineId"));
     if (!machine) throw new HTTPException(404, { message: "Machine not found" });
     const represented = {
       ...machineDetailRepresentation(machine, c.req.url),
       authCommand: runnerAuthCommand(c.env),
-      startCommand: runnerStartCommand(c.env, projectId, machine.id),
+      startCommand: runnerStartCommand(c.env, projectId, machine.environment.metadata.uid),
     };
     c.header("ETag", await representationEtag(represented));
     return c.json(represented);
   });
 
   api.delete("/api/machines/:machineId", async (c) => {
-    const { adapter, projectId } = await amaProjectionDependencies(c, ["environments:write"]);
-    if (!(await archiveProjectedMachine(adapter, projectId, c.req.param("machineId")))) {
-      throw new HTTPException(404, { message: "Machine not found" });
-    }
+    const { client } = await amaDependencies(c, ["environments:write"]);
+    await client.environments.delete(c.req.param("machineId"));
     return c.body(null, 204);
   });
 }

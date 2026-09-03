@@ -2,7 +2,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { AmaProjectionError, RealmrootDelegationFailure } from "@server/usecases/ama/failures";
+import { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
 import { ApplicationError } from "@server/usecases/applicationError";
 import { describe, expect, it } from "vitest";
 
@@ -98,13 +98,9 @@ describe("HTTP route module structure", () => {
   });
 
   it("keeps use-case errors transport-neutral without numeric status or HTTP response fields", () => {
-    const errors = [
-      new ApplicationError("invalid-request", "application failure"),
-      new AmaProjectionError("invalid-response", "projection failure"),
-      new RealmrootDelegationFailure("denied", "delegation failure"),
-    ];
+    const errors = [new ApplicationError("invalid-request", "application failure"), new RealmrootDelegationFailure("denied", "delegation failure")];
 
-    expect(errors.map(({ kind }) => kind)).toEqual(["invalid-request", "invalid-response", "denied"]);
+    expect(errors.map(({ kind }) => kind)).toEqual(["invalid-request", "denied"]);
     for (const error of errors) {
       expect(error).not.toHaveProperty("status");
       expect(error).not.toHaveProperty("statusCode");
