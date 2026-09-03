@@ -179,7 +179,7 @@ describe("Agency Agent and Machine projection adapter", () => {
     });
   });
 
-  it("[spec: agents/authoritative-projection] maps AMA data pages and Agent identity to the safe AK projection", async () => {
+  it("[spec: agents/authoritative-projection] preserves the AMA Agent page, nullable identity, and continuation cursor", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -201,8 +201,20 @@ describe("Agency Agent and Machine projection adapter", () => {
               },
               status: { phase: "active", schedulable: true },
             },
+            {
+              metadata: metadata("agent-2", "Unbound"),
+              spec: {
+                systemPrompt: "Await identity binding",
+                provider: null,
+                model: null,
+                skills: [],
+                allowedTools: [],
+                identity: null,
+              },
+              status: { phase: "archived", schedulable: false },
+            },
           ],
-          pagination: { nextCursor: null, hasMore: false },
+          pagination: { nextCursor: "agent-page-2", hasMore: true },
         });
       }),
     );
@@ -225,8 +237,56 @@ describe("Agency Agent and Machine projection adapter", () => {
           subject: "realmroot-agent-subject",
           schedulable: true,
         }),
+        expect.objectContaining({
+          id: "agent-2",
+          name: "Unbound",
+          username: null,
+          runtime: null,
+          subject: null,
+          phase: "archived",
+          schedulable: false,
+        }),
       ],
-      nextCursor: null,
+      nextCursor: "agent-page-2",
+    });
+  });
+
+  it("[spec: agents/create-bound-agent] rejects an AMA-created Agent without a bound identity", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(String(input), init);
+        expect(request.method).toBe("POST");
+        expect(new URL(request.url).pathname).toBe("/api/v1/agents");
+        return Response.json({
+          metadata: metadata("agent-unbound", "Unbound"),
+          spec: {
+            systemPrompt: "Await identity binding",
+            provider: null,
+            model: null,
+            skills: [],
+            allowedTools: [],
+            identity: null,
+          },
+          status: { phase: "active", schedulable: false },
+        });
+      }),
+    );
+
+    await expect(
+      new AmaResourceProjectionAdapter(env, "ama-token").createAgent("project-1", {
+        name: "Unbound",
+        description: null,
+        systemPrompt: "Await identity binding",
+        provider: null,
+        model: null,
+        skills: [],
+        identityRef: "identity-1",
+        idempotencyKey: "create-unbound-agent",
+      }),
+    ).rejects.toMatchObject({
+      kind: "invalid-response",
+      message: "AMA created an Agent without a bound identity",
     });
   });
 
@@ -278,7 +338,7 @@ describe("Agency Agent and Machine projection adapter", () => {
     });
   });
 
-  it("[spec: agents/authoritative-projection] [spec: machines/environment-projection] hides archived collections but preserves direct reads", async () => {
+  it("[spec: agents/authoritative-projection] [spec: machines/environment-projection] preserves AMA Agent pages while hiding archived Machines", async () => {
     const archivedAgent = {
       metadata: { ...metadata("agent-archived", "Archived Agent"), archivedAt: "2026-09-01T13:00:00.000Z" },
       spec: {
@@ -314,7 +374,9 @@ describe("Agency Agent and Machine projection adapter", () => {
     );
     const adapter = new AmaResourceProjectionAdapter(env, "ama-token");
 
-    await expect(adapter.listAgentsPage({ projectId: "project-1", limit: 20, cursor: null, filters: {} })).resolves.toMatchObject({ items: [] });
+    await expect(adapter.listAgentsPage({ projectId: "project-1", limit: 20, cursor: null, filters: {} })).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: "agent-archived", phase: "archived" })],
+    });
     await expect(adapter.listMachinesPage({ projectId: "project-1", limit: 20, cursor: null })).resolves.toMatchObject({ items: [] });
     await expect(adapter.getAgent("project-1", "agent-archived")).resolves.toMatchObject({ id: "agent-archived", phase: "archived" });
     await expect(adapter.getMachine("project-1", "environment-archived")).resolves.toMatchObject({

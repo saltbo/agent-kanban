@@ -40,6 +40,36 @@ describe("read-only Agent projection pages", () => {
     expect(screen.getByText("realmroot-agent-subject")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create|edit|archive/i })).not.toBeInTheDocument();
   });
+
+  it('[spec: agents/read-only-browser] keeps an Agent without identity visible and marks it "Identity not bound"', () => {
+    const unboundAgent: AgentProjection = {
+      ...agent,
+      id: "agent-unbound",
+      name: "Unbound Agent",
+      username: null,
+      runtime: null,
+      subject: null,
+      schedulable: false,
+    };
+
+    const list = renderWithQuery(
+      <MemoryRouter>
+        <AgentList agents={[unboundAgent]} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: /unbound agent/i })).toHaveAttribute("href", "/agents/agent-unbound");
+    expect(screen.getByText("Identity not bound")).toBeInTheDocument();
+    expect(screen.getByText("This Agent cannot be assigned until an identity is bound.")).toHaveClass("sr-only");
+    list.unmount();
+
+    renderWithQuery(
+      <MemoryRouter>
+        <AgentDetail agent={unboundAgent} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Identity not bound")).toBeInTheDocument();
+    expect(screen.getAllByText("Not bound")).toHaveLength(2);
+  });
 });
 
 function renderWithQuery(children: ReactNode) {

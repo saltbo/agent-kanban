@@ -5,16 +5,21 @@ AK presents product resources while Agency remains authoritative.
 ## Agents
 
 `GET /agents` and `GET /agents/{id}` return safe projections with identity,
-runtime, model, Skills, Realmroot subject, and Agency's authoritative
-`schedulable` state. The browser pages are read-only and the detail page finds
-AK Tasks by the projected subject.
+runtime, model, Skills, identity subject, and Agency's authoritative
+`schedulable` state. AK preserves the membership and cursor of each Agency page;
+it does not post-filter Agents by lifecycle or identity binding. Identity fields
+are null until Agency binds an identity, and the browser marks those Agents as
+`Identity not bound`. The browser pages are read-only and the detail page finds
+AK Tasks by the projected subject when one exists.
 
 The browser treats the subject as the stable identity key. It discovers the
 configured authorization server from AK's protected-resource metadata and, when
 that server advertises an `agent_profile_uri_template`, reads the public Agent
 profile for the current name, username, and picture. Profiles are query-cached
 per subject and are display-only: failure falls back to the Agency projection or
-subject and never changes assignment or authorization behavior.
+subject and never changes assignment or authorization behavior. Assignment
+candidates still require both a bound subject and authoritative `schedulable`
+state; visibility in the Agent collection does not imply assignability.
 
 `POST /agents` validates the complete request, creates a same-tenant Realmroot
 Identity through Agency, creates the bound Agent, and returns the projection.

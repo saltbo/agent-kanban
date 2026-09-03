@@ -110,3 +110,43 @@ test("[spec: agents/read-only-browser] Agent list and detail expose identity and
   await expect(detail.getByRole("link", { name: /Harden the API boundary/ })).toHaveAttribute("href", "/boards/board-platform");
   await expect(detail.getByRole("button", { name: /create|edit|archive|delete/i })).toHaveCount(0);
 });
+
+test("[spec: agents/read-only-browser] Agent without a bound identity remains visible without loading assigned tasks", async ({ page }) => {
+  const unboundAgent = {
+    ...agent,
+    id: "agent-unbound",
+    name: "Unbound Builder",
+    username: null,
+    runtime: null,
+    model: null,
+    subject: null,
+    schedulable: false,
+  };
+  const taskRequests: string[] = [];
+  await page.route(/\/api\/agents(?:\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [unboundAgent], pagination: { pageSize: 1, nextPageToken: null } } }),
+  );
+  await page.route(/\/api\/agents\/agent-unbound$/, (route) => route.fulfill({ json: unboundAgent }));
+  await page.route(/\/api\/tasks(?:\?.*)?$/, (route) => {
+    taskRequests.push(route.request().url());
+    return route.fulfill({ json: [] });
+  });
+  await signInWithRealmrootSession(page, `agent_unbound_${Date.now()}@example.com`);
+
+  await page.goto("/agents");
+
+  const list = page.getByRole("main");
+  await expect(list.getByText("Unbound Builder", { exact: true })).toBeVisible();
+  await expect(list.getByText("Identity not bound", { exact: true })).toBeVisible();
+  await expect(list.getByText("Unavailable", { exact: true })).toBeVisible();
+
+  await list.getByRole("link", { name: /Unbound Builder/ }).click();
+  await expect(page).toHaveURL(/\/agents\/agent-unbound$/);
+
+  const detail = page.getByRole("main");
+  await expect(detail.getByRole("heading", { name: "Unbound Builder" })).toBeVisible();
+  await expect(detail.getByText("Identity not bound", { exact: true })).toBeVisible();
+  await expect(detail.getByText("Bind an identity before assigning tasks to this Agent.", { exact: true })).toBeVisible();
+  await expect(detail.getByRole("button", { name: /create|edit|archive|delete/i })).toHaveCount(0);
+  expect(taskRequests).toEqual([]);
+});
