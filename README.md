@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./public/Logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="./public/Logo-light.png" />
-    <img src="./public/Logo-light.png" alt="Agent Kanban" width="520" />
+    <img src="./public/Logo-light.png" alt="Agent Kanban" width="360" />
   </picture>
 </p>
 
