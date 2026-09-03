@@ -218,7 +218,6 @@ function toolboxDocument(env: Env) {
           ...operation("createMachine", "machine:write", "Machine created", "201"),
           tags: ["machine"],
           parameters: [version, idempotencyKey],
-          requestBody: { required: true, ...json({ $ref: "#/components/schemas/MachineWrite" }) },
           responses: {
             "201": createdResponse("Machine created with Runner setup", { $ref: "#/components/schemas/MachineCreateResult" }),
             ...projectionCreateProblems,
@@ -759,12 +758,6 @@ function toolboxDocument(env: Env) {
             updatedAt: { type: "string", format: "date-time" },
             links: { type: "object", additionalProperties: false, required: ["self"], properties: { self: { type: "string", format: "uri" } } },
           },
-        },
-        MachineWrite: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name"],
-          properties: { name: { type: "string", minLength: 1, maxLength: 160 } },
         },
         MachineCreateResult: {
           type: "object",

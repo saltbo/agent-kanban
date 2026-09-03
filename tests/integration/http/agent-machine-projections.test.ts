@@ -73,6 +73,20 @@ function browserPost(path: string, body: unknown, idempotencyKey?: string, auth 
   );
 }
 
+function browserPostWithoutBody(path: string, idempotencyKey?: string, auth = session) {
+  return api.fetch(
+    new Request(`${resource}${path}`, {
+      method: "POST",
+      headers: {
+        cookie: auth.cookie,
+        "x-csrf-token": auth.csrfToken,
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      },
+    }),
+    env,
+  );
+}
+
 function browserDelete(path: string) {
   return api.fetch(
     new Request(`${resource}${path}`, {
@@ -319,7 +333,14 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(response.status, await response.clone().text()).toBe(200);
     const collection = (await response.json()) as { items: Array<Record<string, unknown>> };
     expect(collection.items).toEqual([
-      expect.objectContaining({ id: "environment-self", name: "Build host", status: "online", currentLoad: 1, maxLoad: 3, runnerCount: 2 }),
+      expect.objectContaining({
+        id: "environment-self",
+        name: "Runner east + 1 runner",
+        status: "online",
+        currentLoad: 1,
+        maxLoad: 3,
+        runnerCount: 2,
+      }),
     ]);
     expect(collection.items[0]).not.toHaveProperty("runners");
 
@@ -358,19 +379,29 @@ describe("Agent and Machine projection HTTP resources", () => {
       delegatedAmaFetch(["environments:write"], async (request) => {
         expect(request.method).toBe("POST");
         expect(request.headers.get("Idempotency-Key")).toMatch(/^ak-[a-f0-9]{64}$/);
-        await expect(request.json()).resolves.toEqual({ metadata: { name: "Build host" }, spec: { scope: "project", type: "self_hosted" } });
+        await expect(request.json()).resolves.toEqual({
+          metadata: { name: expect.stringMatching(/^computer-[a-f0-9]{8}$/) },
+          spec: { scope: "project", type: "self_hosted" },
+        });
         return Response.json({
-          metadata: metadata("environment-created", "Build host"),
+          metadata: metadata("environment-created", "computer-created"),
           spec: { type: "self_hosted" },
           status: { phase: "active" },
         });
       }),
     );
 
-    const missingKey = await browserPost("/machines", { name: "Build host" });
+    const missingKey = await browserPostWithoutBody("/machines");
     expect(missingKey.status).toBe(400);
 
-    const response = await browserPost("/machines", { name: "Build host" }, "machine-form-request-1");
+    const callerAuthoredBody = await browserPost("/machines", { name: "Caller-controlled" }, "machine-form-request-with-body");
+    expect(callerAuthoredBody.status).toBe(400);
+    await expect(callerAuthoredBody.json()).resolves.toMatchObject({
+      type: `${resource}/problems/request-body-not-allowed`,
+      detail: "Machine has no client-writable representation",
+    });
+
+    const response = await browserPostWithoutBody("/machines", "machine-form-request-1");
     expect(response.status, await response.clone().text()).toBe(201);
     const created = await response.json();
     expect(created).toMatchObject({
@@ -490,9 +521,8 @@ describe("Agent and Machine projection HTTP resources", () => {
       }),
     );
     const key = "concurrent-machine-create";
-    const body = { name: "Concurrent Machine" };
 
-    const responses = await Promise.all([browserPost("/machines", body, key), browserPost("/machines", body, key)]);
+    const responses = await Promise.all([browserPostWithoutBody("/machines", key), browserPostWithoutBody("/machines", key)]);
     expect(responses.map((response) => response.status)).toEqual([201, 201]);
     expect(responses.filter((response) => response.headers.get("Idempotency-Replayed") === null)).toHaveLength(1);
     expect(responses.filter((response) => response.headers.get("Idempotency-Replayed") === "true")).toHaveLength(1);
@@ -512,12 +542,8 @@ describe("Agent and Machine projection HTTP resources", () => {
         .first(),
     ).resolves.toEqual({ count: 1 });
 
-    const conflict = await browserPost("/machines", { name: "Different Machine" }, key);
-    expect(conflict.status).toBe(422);
-    expect(machineCreates).toBe(2);
-
     const otherSession = await browserSessionFor("projection-human-other");
-    const otherCaller = await browserPost("/machines", { name: "Other caller Machine" }, key, otherSession);
+    const otherCaller = await browserPostWithoutBody("/machines", key, otherSession);
     expect(otherCaller.status, await otherCaller.clone().text()).toBe(201);
     expect(upstreamKeys[0]).toBe(upstreamKeys[1]);
     expect(upstreamKeys[2]).not.toBe(upstreamKeys[0]);

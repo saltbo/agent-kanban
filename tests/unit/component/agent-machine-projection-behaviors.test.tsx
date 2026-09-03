@@ -133,8 +133,11 @@ describe("Machine projection browser mutations", () => {
     wrapper(<MachinesPage />);
     await screen.findByText("Build host");
     fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
-    fireEvent.change(screen.getByLabelText("Machine name"), { target: { value: "New host" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+    expect(screen.getByRole("button", { name: /Your Computer/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Cloud Sandbox/ })).toBeDisabled();
+    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Machine name")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment creation unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -143,8 +146,8 @@ describe("Machine projection browser mutations", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("AMA Environment archive unavailable");
   });
 
-  it("[spec: machines/create-runner-setup] reuses the creation key for retries and rotates it for changed input", async () => {
-    const attempts: Array<{ name: string; key: string | null }> = [];
+  it("[spec: machines/create-runner-setup] reuses a creation key within one dialog attempt and rotates it after cancel", async () => {
+    const attempts: Array<{ body: BodyInit | null | undefined; key: string | null }> = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -155,7 +158,7 @@ describe("Machine projection browser mutations", () => {
         if (url === "/api/machines" && method === "GET") return json({ items: [] });
         if (url === "/api/machines" && method === "POST") {
           const headers = new Headers(init?.headers);
-          attempts.push({ name: (JSON.parse(String(init?.body)) as { name: string }).name, key: headers.get("Idempotency-Key") });
+          attempts.push({ body: init?.body, key: headers.get("Idempotency-Key") });
           return json({ detail: "retryable failure" }, 503);
         }
         throw new Error(`Unexpected request: ${request.method} ${url}`);
@@ -165,20 +168,20 @@ describe("Machine projection browser mutations", () => {
     wrapper(<MachinesPage />);
     await screen.findByText("No Machines registered.");
     fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
-    const input = screen.getByLabelText("Machine name");
-    fireEvent.change(input, { target: { value: "Build host" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
     await screen.findByRole("alert");
-    fireEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
     await waitFor(() => expect(attempts).toHaveLength(2));
-    fireEvent.change(input, { target: { value: "Different host" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
+    fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
     await waitFor(() => expect(attempts).toHaveLength(3));
 
     expect(attempts[0]?.key).toMatch(/.+/);
     expect(attempts[1]?.key).toBe(attempts[0]?.key);
+    expect(attempts[2]?.key).toMatch(/.+/);
     expect(attempts[2]?.key).not.toBe(attempts[0]?.key);
-    expect(attempts.map(({ name }) => name)).toEqual(["Build host", "Build host", "Different host"]);
+    expect(attempts.map(({ body }) => body)).toEqual([undefined, undefined, undefined]);
   });
 
   it("[spec: machines/create-runner-setup] separates installation from start and bounds the online follow-up", async () => {
@@ -210,8 +213,7 @@ describe("Machine projection browser mutations", () => {
     const view = wrapper(<MachinesPage />);
     await screen.findByText("No Machines registered.");
     fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
-    fireEvent.change(screen.getByLabelText("Machine name"), { target: { value: "Build host" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
 
     await screen.findByRole("heading", { name: "Start AMA Runner" });
     expect(screen.getByText(/must already be installed/i)).toBeInTheDocument();

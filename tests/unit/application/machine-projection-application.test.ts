@@ -54,15 +54,14 @@ describe("Machine projection application", () => {
     const result = await createProjectedMachine(
       projection,
       "project-1",
-      "Build host",
       "machine-create-key",
       (projectId, environmentId) => `ama-runner start --project-id ${projectId} --environment-id ${environmentId}`,
     );
 
     expect(projection.createMachine).toHaveBeenCalledWith(
       "project-1",
-      "Build host",
-      "ak-e3e8b0594ceeaaeb45de40c5f01a266da0708ce00cc0c715f0a91e5ed7991274",
+      expect.stringMatching(/^computer-[a-f0-9]{8}$/),
+      expect.stringMatching(/^ak-[a-f0-9]{64}$/),
     );
     expect(result).toEqual({
       machine,
