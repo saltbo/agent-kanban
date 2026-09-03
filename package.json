@@ -6,7 +6,9 @@
   "description": "Agent-first kanban board and Realmroot Resource Server",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "pnpm run build:skills && vite build",
+    "build:skills": "node scripts/build-agent-skills.mjs",
+    "check:skills": "node scripts/build-agent-skills.mjs --check",
     "preview": "vite preview",
     "deploy": "pnpm run build && wrangler deploy",
     "db:migrate": "tsx scripts/check-v2-upgrade.ts --local && wrangler d1 migrations apply DB --local",

@@ -24,11 +24,11 @@ function stringArrayValue(body: string, key: string): string[] | null {
 }
 
 describe("production wrangler configuration", () => {
-  it("routes the canonical API resource and its descendants to the Worker before SPA assets", () => {
+  it("keeps API and OAuth metadata Worker-first while serving Agent Skills as static assets", () => {
     const workerFirst = stringArrayValue(tableBody("[assets]"), "run_worker_first");
 
-    expect(workerFirst).toEqual(expect.arrayContaining(["/api", "/api/*"]));
-    expect(workerFirst?.filter((pattern) => pattern === "/api")).toHaveLength(1);
+    expect(workerFirst).toEqual(["/api", "/api/*", "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/api", "/share/*"]);
+    expect(workerFirst).not.toEqual(expect.arrayContaining(["/.well-known/*", "/.well-known/agent-skills/*"]));
   });
 
   it("deploys only the canonical route without cron", () => {
