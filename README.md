@@ -4,9 +4,7 @@
     <source media="(prefers-color-scheme: light)" srcset="./public/Logo-light.png" />
     <img src="./public/Logo-light.png" alt="Agent Kanban" width="360" />
   </picture>
-</p>
-
-<p align="center">
+  <br />
   <strong>Don't babysit your agent. Take human out of the loop.</strong>
 </p>
 
