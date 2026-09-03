@@ -20,7 +20,7 @@ export function createTestEnv() {
     AK_SESSION_ENCRYPTION_KEY: btoa("01234567890123456789012345678901"),
     AK_PUBLIC_ORIGIN: "http://localhost:8788",
     AK_SIGNING_KEY: btoa("01234567890123456789012345678901"),
-    AMA_ORIGIN: "https://ama.test",
+    AGENCY_ORIGIN: "https://enbor.test",
   };
 }
 
@@ -78,6 +78,7 @@ export async function applyMigrations(db: D1Database) {
     "0050_resource_idempotency.sql",
     "0051_idempotent_response_snapshots.sql",
     "0052_realmroot_web_session_grants.sql",
+    "0053_enbor_contract.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");

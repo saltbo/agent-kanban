@@ -1,6 +1,6 @@
 import { EnborApiError, type EnborClient, type Project } from "@realmroot/enbor-sdk";
 
-export interface AmaProjectBindingPort {
+export interface AgencyProjectBindingPort {
   findProjectId(tenantId: string): Promise<string | null>;
   claim(tenantId: string, claimToken: string, expiresAt: string, now: string): Promise<boolean>;
   renew(tenantId: string, claimToken: string, expiresAt: string, now: string): Promise<boolean>;
@@ -13,14 +13,14 @@ const CLAIM_TTL_MS = 25_000;
 const WAIT_ATTEMPTS = 100;
 const WAIT_MS = 100;
 
-export class AmaProjectInitializationBusy extends Error {
+export class AgencyProjectInitializationBusy extends Error {
   constructor() {
-    super("AMA project initialization is still in progress. Retry the request.");
-    this.name = "AmaProjectInitializationBusy";
+    super("Enbor project initialization is still in progress. Retry the request.");
+    this.name = "AgencyProjectInitializationBusy";
   }
 }
 
-export async function ensureAmaProject(bindings: AmaProjectBindingPort, client: EnborClient, tenantId: string): Promise<string> {
+export async function ensureAgencyProject(bindings: AgencyProjectBindingPort, client: EnborClient, tenantId: string): Promise<string> {
   const existing = await bindings.findProjectId(tenantId);
   if (existing) return existing;
 
@@ -39,7 +39,7 @@ export async function ensureAmaProject(bindings: AmaProjectBindingPort, client: 
     const renewClaim = async () => {
       const renewedAt = new Date();
       const renewed = await bindings.renew(tenantId, claimToken, new Date(renewedAt.getTime() + CLAIM_TTL_MS).toISOString(), renewedAt.toISOString());
-      if (!renewed) throw new AmaProjectClaimLost();
+      if (!renewed) throw new AgencyProjectClaimLost();
     };
     const available: Project[] = [];
     let cursor: string | undefined;
@@ -49,8 +49,8 @@ export async function ensureAmaProject(bindings: AmaProjectBindingPort, client: 
       available.push(...page.data);
       const nextCursor = page.pagination.nextCursor ?? undefined;
       if (!nextCursor) break;
-      if (nextCursor === cursor) throw invalidPagination("AMA Project pagination did not advance");
-      if (pageNumber === 99) throw invalidPagination("AMA Project pagination exceeded the safety bound");
+      if (nextCursor === cursor) throw invalidPagination("Agency Project pagination did not advance");
+      if (pageNumber === 99) throw invalidPagination("Agency Project pagination exceeded the safety bound");
       cursor = nextCursor;
     }
     let project = available.find((candidate) => candidate.name === name);
@@ -62,23 +62,23 @@ export async function ensureAmaProject(bindings: AmaProjectBindingPort, client: 
     return waitForProject(bindings, client, tenantId);
   } catch (error) {
     await bindings.release(tenantId, claimToken);
-    if (error instanceof AmaProjectClaimLost) return waitForProject(bindings, client, tenantId);
+    if (error instanceof AgencyProjectClaimLost) return waitForProject(bindings, client, tenantId);
     throw error;
   }
 }
 
-async function waitForProject(bindings: AmaProjectBindingPort, client: EnborClient, tenantId: string): Promise<string> {
+async function waitForProject(bindings: AgencyProjectBindingPort, client: EnborClient, tenantId: string): Promise<string> {
   for (let attempt = 0; attempt < WAIT_ATTEMPTS; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, WAIT_MS));
     const projectId = await bindings.findProjectId(tenantId);
     if (projectId) return projectId;
     const expiry = await bindings.findClaimExpiry(tenantId);
-    if (!expiry || expiry <= new Date().toISOString()) return ensureAmaProject(bindings, client, tenantId);
+    if (!expiry || expiry <= new Date().toISOString()) return ensureAgencyProject(bindings, client, tenantId);
   }
-  throw new AmaProjectInitializationBusy();
+  throw new AgencyProjectInitializationBusy();
 }
 
-class AmaProjectClaimLost extends Error {}
+class AgencyProjectClaimLost extends Error {}
 
 function invalidPagination(message: string): EnborApiError {
   return new EnborApiError(502, message, null);

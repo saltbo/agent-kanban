@@ -2,7 +2,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
+import { RealmrootDelegationFailure } from "@server/usecases/agency/failures";
 import { ApplicationError } from "@server/usecases/applicationError";
 import { describe, expect, it } from "vitest";
 

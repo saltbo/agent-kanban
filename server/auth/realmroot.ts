@@ -1,4 +1,4 @@
-import { storeWebSessionGrant } from "@server/adapters/realmroot/delegatedAmaToken";
+import { storeWebSessionGrant } from "@server/adapters/realmroot/delegatedAgencyToken";
 import { akPublicUrl, akResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
 import { createLogger } from "@server/observability/logger";

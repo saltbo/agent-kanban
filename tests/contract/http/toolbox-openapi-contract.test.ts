@@ -84,7 +84,7 @@ describe("published Resource Server contract", () => {
     expect(toolbox.components.schemas.TaskClaim).toMatchObject({
       required: expect.arrayContaining(["runtime"]),
       properties: {
-        runtime: { type: "string", enum: ["ama", "claude-code", "codex", "copilot"] },
+        runtime: { type: "string", enum: ["enbor", "claude-code", "codex", "copilot"] },
       },
     });
   });

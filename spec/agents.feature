@@ -1,18 +1,26 @@
 Feature: Agent projections
-  AK presents safe Agent resources sourced from AMA without owning Agent state.
+  AK presents safe Agent resources sourced from Enbor without owning Agent state.
 
-  @journey:agents/transparent-ama-project @entrypoint:toolbox @proof:integration
-  Scenario: The first Agent projection initializes the hidden AMA project
-    Given the current Realmroot tenant has no stored AMA project binding
+  @journey:agents/transparent-agency-project @entrypoint:toolbox @proof:integration
+  Scenario: The first Agent projection initializes the hidden Agency project binding
+    Given the current Realmroot tenant has no stored Agency project binding
     When an Agent lists Agent projections through the AK Resource Server
-    Then AK creates or reuses the tenant's project named "Agent Kanban" in AMA
+    Then AK creates or reuses the tenant's project named "Agent Kanban" in Enbor
     And AK persists exactly one tenant-to-project binding before reading Agents
     And concurrent first requests reuse the winning binding
+
+  @journey:agents/agency-binding-migration @entrypoint:deployment @proof:integration
+  Scenario: Cut active integration state over to Agency and Enbor contracts
+    Given active integration bindings and Task metadata still use the retired AMA names
+    When the one-way Enbor contract migration runs
+    Then active binding tables and columns use Agency names without compatibility aliases
+    And known Task runtime metadata uses Enbor names without changing unrelated text such as llama
+
   @journey:agents/authoritative-projection @entrypoint:toolbox @proof:integration
-  Scenario: Read safe Agent projections from AMA
-    Given AMA is authoritative for the tenant's Agents
+  Scenario: Read safe Agent projections from Enbor
+    Given Enbor is authoritative for the tenant's Agents
     When a caller lists Agents or reads one Agent through AK
-    Then AK preserves every Agent in AMA's page and its continuation cursor
+    Then AK preserves every Agent in Enbor's page and its continuation cursor
     And an Agent without a bound identity has null identity fields
     And AK does not read or persist a local Agent entity
 
@@ -20,7 +28,7 @@ Feature: Agent projections
   Scenario: Create an Agent with its Realmroot identity
     Given an authorized caller supplies complete Agent configuration
     When the caller creates an Agent through AK
-    Then AK creates a same-tenant Realmroot Identity and bound AMA Agent
+    Then AK creates a same-tenant Realmroot Identity and bound Enbor Agent
     And replays the compound operation without duplicate resources when its Idempotency-Key is retried
     And stores no local Agent entity
 
@@ -28,7 +36,7 @@ Feature: Agent projections
   Scenario: Assign a Task by projected Agent subject
     Given an Agent projection exposes its Realmroot subject
     When an authorized actor assigns that subject as agentActorId
-    Then AK stores the subject without calling AMA or storing an AMA Agent id
+    Then AK stores the subject without calling Enbor or storing an Enbor Agent id
 
   @journey:agents/read-only-browser @entrypoint:product-ui @proof:e2e
   Scenario: Browse Agents without management controls

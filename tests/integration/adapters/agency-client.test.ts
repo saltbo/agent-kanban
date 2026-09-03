@@ -20,7 +20,7 @@ describe("Agency SDK client", () => {
         return Response.json({ data: [], pagination: { nextCursor: null } });
       }),
     );
-    const client = createAgencyClient("https://ama.test", { token: "ama-token", projectId: "project-1" });
+    const client = createAgencyClient("https://enbor.test", { token: "enbor-token", projectId: "project-1" });
 
     await client.projects.list({ limit: 100 });
 

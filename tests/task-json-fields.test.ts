@@ -52,7 +52,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
       board_id: boardId,
       labels: ["bug", "urgent"],
       input: { prompt: "fix the thing", context: { file: "main.ts", line: 42 } },
-      metadata: { annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } },
+      metadata: { annotations: { "enbor.sessionId": "session_123", "enbor.dispatch.result": "accepted" } },
     });
     taskId = task.id;
 
@@ -60,7 +60,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
     expect(task.labels).toEqual(["bug", "urgent"]);
     expect(typeof task.input).toBe("object");
     expect(task.input).toEqual({ prompt: "fix the thing", context: { file: "main.ts", line: 42 } });
-    expect(task.metadata).toEqual({ annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } });
+    expect(task.metadata).toEqual({ annotations: { "enbor.sessionId": "session_123", "enbor.dispatch.result": "accepted" } });
   });
 
   it("createTask rejects labels that are not defined on the board", async () => {
@@ -95,7 +95,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
     expect(task.labels).toEqual(["bug", "urgent"]);
     expect(typeof task.input).toBe("object");
     expect(task.input!.prompt).toBe("fix the thing");
-    expect(task.metadata).toEqual({ annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } });
+    expect(task.metadata).toEqual({ annotations: { "enbor.sessionId": "session_123", "enbor.dispatch.result": "accepted" } });
   });
 
   it("getTask returns parsed labels and input", async () => {
@@ -107,7 +107,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
     expect(task!.labels).toEqual(["bug", "urgent"]);
     expect(typeof task!.input).toBe("object");
     expect(task!.input!.context).toEqual({ file: "main.ts", line: 42 });
-    expect(task!.metadata).toEqual({ annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } });
+    expect(task!.metadata).toEqual({ annotations: { "enbor.sessionId": "session_123", "enbor.dispatch.result": "accepted" } });
   });
 
   it("updateTask accepts arrays/objects and returns parsed values", async () => {
@@ -115,13 +115,13 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
     const task = await updateTask(db, taskId, {
       labels: ["feature"],
       input: { prompt: "new prompt" },
-      metadata: { annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } },
+      metadata: { annotations: { "enbor.sessionId": "session_456", "enbor.dispatch.result": "resumed" } },
     });
 
     expect(task).toBeTruthy();
     expect(task!.labels).toEqual(["feature"]);
     expect(task!.input).toEqual({ prompt: "new prompt" });
-    expect(task!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
+    expect(task!.metadata).toEqual({ annotations: { "enbor.sessionId": "session_456", "enbor.dispatch.result": "resumed" } });
   });
 
   it("updated values persist through getTask", async () => {
@@ -130,7 +130,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
 
     expect(task!.labels).toEqual(["feature"]);
     expect(task!.input).toEqual({ prompt: "new prompt" });
-    expect(task!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
+    expect(task!.metadata).toEqual({ annotations: { "enbor.sessionId": "session_456", "enbor.dispatch.result": "resumed" } });
   });
 
   it("getBoard returns tasks with parsed labels and input", async () => {
@@ -143,7 +143,7 @@ describe("task JSON field parsing (labels, input, metadata)", () => {
     expect(task.labels).toEqual(["feature"]);
     expect(typeof task.input).toBe("object");
     expect(task.input).toEqual({ prompt: "new prompt" });
-    expect(task.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
+    expect(task.metadata).toEqual({ annotations: { "enbor.sessionId": "session_456", "enbor.dispatch.result": "resumed" } });
   });
 
   it("[spec: boards/labels] deleteBoardLabel removes the label from tasks on the same board", async () => {

@@ -28,9 +28,9 @@ const machine = {
 };
 
 const installCommand = "brew install realmroot/tap/enbor-runner";
-const authCommand = 'enbor-runner auth login --api-server "https://ama.example.test"';
+const authCommand = 'enbor-runner auth login --api-server "https://enbor.example.test"';
 const startCommand =
-  'enbor-runner start --api-server "https://ama.example.test" --project-id "project-123" --environment-id "environment-build-01" --allow-unsafe-process';
+  'enbor-runner start --api-server "https://enbor.example.test" --project-id "project-123" --environment-id "environment-build-01" --allow-unsafe-process';
 
 test("[spec: machines/create-runner-setup] Add Machine offers a local computer and copies its setup commands", async ({ page }) => {
   await page.addInitScript(() => {
@@ -150,7 +150,7 @@ test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses i
     if (route.request().method() === "POST") {
       idempotencyKeys.push((await route.request().headerValue("idempotency-key")) ?? "");
       if (idempotencyKeys.length === 1) {
-        await route.fulfill({ status: 503, json: { detail: "AMA Project binding is unavailable" } });
+        await route.fulfill({ status: 503, json: { detail: "Enbor Project binding is unavailable" } });
         return;
       }
       await route.fulfill({ status: 201, json: { machine, authCommand, startCommand } });
@@ -165,7 +165,7 @@ test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses i
   const dialog = page.getByRole("dialog", { name: "Add Machine" });
   await dialog.getByRole("button", { name: /Your Computer/ }).click();
 
-  await expect(dialog.getByRole("alert")).toHaveText("AMA Project binding is unavailable");
+  await expect(dialog.getByRole("alert")).toHaveText("Enbor Project binding is unavailable");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: /Your Computer/ }).click();
   await expect(page.getByRole("dialog", { name: "Start Enbor Runner" })).toBeVisible();
@@ -245,7 +245,7 @@ test("[spec: machines/archive-machine-ui] Archive requires confirmation naming t
 test("[spec: machines/archive-machine-ui] Archive failure remains actionable in the confirmation dialog", async ({ page }) => {
   await page.route(/\/api\/machines$/, (route) => route.fulfill({ json: { items: [machine], pagination: { pageSize: 1, nextPageToken: null } } }));
   await page.route(/\/api\/machines\/environment-build-01$/, (route) =>
-    route.fulfill({ status: 502, json: { detail: "AMA Environment could not be archived" } }),
+    route.fulfill({ status: 502, json: { detail: "Enbor Environment could not be archived" } }),
   );
   await signInWithRealmrootSession(page, `machine_archive_error_${Date.now()}@example.com`);
   await page.goto("/machines");
@@ -254,6 +254,6 @@ test("[spec: machines/archive-machine-ui] Archive failure remains actionable in 
   const dialog = page.getByRole("dialog", { name: "Archive Machine" });
   await dialog.getByRole("button", { name: "Archive", exact: true }).click();
 
-  await expect(dialog.getByRole("alert")).toHaveText("AMA Environment could not be archived");
+  await expect(dialog.getByRole("alert")).toHaveText("Enbor Environment could not be archived");
   await expect(dialog).toBeVisible();
 });

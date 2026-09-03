@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { delegatedAmaToken, RealmrootDelegationFailure } from "../../../server/adapters/realmroot/delegatedAmaToken";
+import { delegatedAgencyToken, RealmrootDelegationFailure } from "../../../server/adapters/realmroot/delegatedAgencyToken";
 import type { Env } from "../../../server/env";
 import { apiErrorHandler } from "../../../server/http/middleware/errorHandler";
 
@@ -12,7 +12,7 @@ const env = {
   OIDC_ISSUER: issuer,
   OIDC_WEB_CLIENT_ID: "ak-web",
   OIDC_WEB_CLIENT_SECRET: "secret",
-  AMA_ORIGIN: "https://ama.test",
+  AGENCY_ORIGIN: "https://enbor.test",
   AK_PUBLIC_ORIGIN: "https://ak.test",
 } as Env;
 
@@ -29,18 +29,18 @@ function stubExchange(exchange: () => Response | Promise<Response>) {
   );
 }
 
-describe("Realmroot delegated AMA token boundary", () => {
+describe("Realmroot delegated Agency token boundary", () => {
   it("redacts OIDC error_description from delegation failures and API Problems", async () => {
     const credentialSentinel = "oidc-upstream-credential-sentinel";
     stubExchange(() => Response.json({ error: "access_denied", error_description: credentialSentinel }, { status: 403 }));
 
-    const failure = await delegatedAmaToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] }).catch((caught: unknown) => caught);
+    const failure = await delegatedAgencyToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] }).catch((caught: unknown) => caught);
     expect(failure).toBeInstanceOf(RealmrootDelegationFailure);
     expect(failure).toMatchObject({ kind: "denied", message: "Realmroot token exchange was denied." });
     expect(String(failure)).not.toContain(credentialSentinel);
 
     const app = new Hono<{ Bindings: Env }>();
-    app.get("/api/agents", async (c) => c.text(await delegatedAmaToken(c.env, { sourceAccessToken: "source", scopes: ["agents:read"] })));
+    app.get("/api/agents", async (c) => c.text(await delegatedAgencyToken(c.env, { sourceAccessToken: "source", scopes: ["agents:read"] })));
     app.onError(apiErrorHandler);
     const response = await app.fetch(new Request("https://ak.test/api/agents"), env);
 
@@ -61,7 +61,7 @@ describe("Realmroot delegated AMA token boundary", () => {
       [Response.json({ error: "temporarily_unavailable" }, { status: 500 }), "unavailable"],
     ] as const) {
       stubExchange(() => response.clone());
-      await expect(delegatedAmaToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).rejects.toMatchObject({ kind });
+      await expect(delegatedAgencyToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).rejects.toMatchObject({ kind });
     }
   });
 
@@ -70,14 +70,14 @@ describe("Realmroot delegated AMA token boundary", () => {
       "fetch",
       vi.fn(async () => new Response("bad discovery", { status: 400 })),
     );
-    await expect(delegatedAmaToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).rejects.toMatchObject({
+    await expect(delegatedAgencyToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).rejects.toMatchObject({
       kind: "invalid-response",
     });
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => Promise.reject(new Error("network down"))),
     );
-    await expect(delegatedAmaToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).rejects.toMatchObject({ kind: "unavailable" });
+    await expect(delegatedAgencyToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).rejects.toMatchObject({ kind: "unavailable" });
 
     for (const [kind, status] of [
       ["reauthenticate", 401],
@@ -114,7 +114,7 @@ describe("Realmroot delegated AMA token boundary", () => {
       }),
     );
 
-    await expect(delegatedAmaToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).resolves.toBe("delegated-token");
+    await expect(delegatedAgencyToken(env, { sourceAccessToken: "source", scopes: ["agents:read"] })).resolves.toBe("delegated-token");
     expect(signals).toHaveLength(2);
   });
 });

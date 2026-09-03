@@ -1,19 +1,19 @@
 Feature: Machine projections
-  AK presents AMA self-hosted Environments as Machines enriched by live Runners.
+  AK presents Enbor self-hosted Environments as Machines enriched by live Runners.
 
   @journey:machines/environment-projection @entrypoint:toolbox @proof:integration
-  Scenario: Read Machines projected from self-hosted AMA Environments
-    Given AMA has cloud and self-hosted Environments for the tenant
+  Scenario: Read Machines projected from self-hosted Enbor Environments
+    Given Enbor has cloud and self-hosted Environments for the tenant
     When a caller lists Machines or reads one Machine through AK
     Then only self-hosted Environments appear as Machines
     And AK does not read or persist a local Machine entity
 
   @journey:machines/create-environment @entrypoint:toolbox @proof:integration
   Scenario: Create the authoritative Machine Environment
-    Given the tenant has an authoritative AMA Project
+    Given the tenant has an authoritative Enbor Project
     When an authorized caller creates a Machine
-    Then AK creates a real self-hosted AMA Environment
-    And returns an enbor-runner auth command and start command containing AMA origin, Project id, and Environment id
+    Then AK creates a real self-hosted Enbor Environment
+    And returns an enbor-runner auth command and start command containing Enbor origin, Project id, and Environment id
     And retrying the same Idempotency-Key does not duplicate the Environment
     And AK stores no local Machine entity
 
@@ -40,11 +40,11 @@ Feature: Machine projections
     And a Machine with one usable Runner name uses that name
     And a Machine with multiple Runners uses the first deterministic usable Runner name followed by the additional Runner count
     And AK never exposes the internal Environment name as the Machine name
-    And an attached Runner with a blank name makes the AMA response invalid
+    And an attached Runner with a blank name makes the Enbor response invalid
 
   @journey:machines/archive-environment @entrypoint:toolbox @proof:integration
   Scenario: Archive a Machine's authoritative Environment
-    Given a Machine projects an AMA self-hosted Environment
+    Given a Machine projects an Enbor self-hosted Environment
     When an authorized caller deletes the Machine
     Then AK archives the authoritative Environment
     And does not delete a local Machine entity

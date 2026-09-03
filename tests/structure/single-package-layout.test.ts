@@ -5,8 +5,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "../..");
-const enborSdkVersion = "0.2.0";
-const enborSdkIntegrity = "sha512-Emm6VKv27IE6KUEr4sdvau0a/gJmjjERzcGKfIA0AU4xsfOqZUVb6fIryGSch1dT18h7f2EPcYu7vBEEnNY6kg==";
+const enborSdkVersion = "0.3.0";
+const enborSdkIntegrity = "sha512-cK4HlXcSvcnSvyyuV3xZfsjtPN+6Ason/bT7igLQrD4S69sAMMVpvJqKPtss2wtfdk1Mn9PC0P7JQEJDaj6TEQ==";
 const legacyEnborSdkReleasePrefix = "https://github.com/realmroot/enbor/releases/download/enbor-sdk-";
 
 describe("single-package repository structure", () => {

@@ -89,6 +89,6 @@ describe("Machine SDK orchestration", () => {
 
     const error = await listMachinesPage(client, { limit: 20, cursor: null }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(EnborApiError);
-    expect(error).toMatchObject({ status: 502, responseText: "AMA Runner pagination did not advance" });
+    expect(error).toMatchObject({ status: 502, responseText: "Enbor Runner pagination did not advance" });
   });
 });

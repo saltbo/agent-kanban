@@ -22,7 +22,7 @@ describe("Agent and Machine projection HTTP contract", () => {
     expect(openapi.paths["/agents/{agentId}"].get.security).toContainEqual({ realmroot: ["agent:read"] });
     expect(openapi.paths["/agents"].get.parameters.find((parameter: any) => parameter.name === "runtime")?.schema).toEqual({
       type: "string",
-      enum: ["ama", "claude-code", "codex", "copilot"],
+      enum: ["enbor", "claude-code", "codex", "copilot"],
     });
     expect(openapi.components.schemas.Agent).toMatchObject({
       type: "object",

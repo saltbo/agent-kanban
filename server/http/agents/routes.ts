@@ -1,7 +1,7 @@
 import type { RuntimeName } from "@realmroot/enbor-sdk";
 import type { Env } from "@server/env";
 import { agentRepresentation } from "@server/http/agents/representation";
-import { amaDependencies } from "@server/http/resource-server/amaDependencies";
+import { agencyDependencies } from "@server/http/resource-server/agencyDependencies";
 import { externalPageResponse, readExternalPage } from "@server/http/resource-server/externalPagination";
 import { representationEtag } from "@server/http/resource-server/representation";
 import {
@@ -33,7 +33,7 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
     const model = optionalNullableString(body.model, "Agent.model", 200);
     const skills = optionalStringArray(body.skills, "Agent.skills");
     const idempotencyKey = externalCreationIdempotencyKey(c);
-    const { client } = await amaDependencies(c, ["identities:write", "agents:write"]);
+    const { client } = await agencyDependencies(c, ["identities:write", "agents:write"]);
     const agent = await createAgencyAgent(client, {
       name,
       username,
@@ -56,7 +56,7 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
   api.get("/api/agents", async (c) => {
     const page = await readExternalPage(c);
     if (page instanceof Response) return page;
-    const { client } = await amaDependencies(c, ["agents:read"]);
+    const { client } = await agencyDependencies(c, ["agents:read"]);
     const schedulable = optionalBoolean(c.req.query("schedulable"));
     const runtime = optionalRuntime(c.req.query("runtime"));
     const search = optionalBoundedString(c.req.query("search"), "search", 160);
@@ -75,7 +75,7 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
   });
 
   api.get("/api/agents/:agentId", async (c) => {
-    const { client } = await amaDependencies(c, ["agents:read"]);
+    const { client } = await agencyDependencies(c, ["agents:read"]);
     const agent = await client.agents.get(c.req.param("agentId"));
     const represented = agentRepresentation(agent, c.req.url);
     c.header("ETag", await representationEtag(represented));

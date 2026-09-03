@@ -764,7 +764,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     });
   });
 
-  it.each(["assigned_to", "agent_id"] as const)("rejects Task create field %s before Task, action, or AMA side effects", async (field) => {
+  it.each(["assigned_to", "agent_id"] as const)("rejects Task create field %s before Task, action, or Agency side effects", async (field) => {
     const board = await createBoard(db, tenantId, `Rejected ${field} board`, "ops");
     const before = await Promise.all([
       db.prepare("SELECT COUNT(*) AS count FROM tasks").first(),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { amaEventToRelayEvent, convertEvents, type RelayEvent } from "@/features/tasks/components/RelayRuntimeProvider";
+import { convertEvents, type RelayEvent, sessionEventToRelayEvent } from "@/features/tasks/components/RelayRuntimeProvider";
 
 const timestamp = "2026-04-08T10:00:00.000Z";
 
@@ -9,7 +9,7 @@ function relay(id: string, event: RelayEvent["event"]): RelayEvent {
 }
 
 function canonical(id: string, sequence: number, type: string, payload: Record<string, unknown>): RelayEvent {
-  return amaEventToRelayEvent({
+  return sessionEventToRelayEvent({
     id,
     sessionId: "session-1",
     sequence,
@@ -20,7 +20,7 @@ function canonical(id: string, sequence: number, type: string, payload: Record<s
 }
 
 describe("Agency Session event projection", () => {
-  it("maps canonical AMA EventRecord user and assistant messages", () => {
+  it("maps canonical Enbor EventRecord user and assistant messages", () => {
     const events = [
       canonical("turn-1", 1, "turn.started", {
         message: {
@@ -46,7 +46,7 @@ describe("Agency Session event projection", () => {
     expect(messages[1].content).toEqual([{ type: "text", text: "Checks passed" }]);
   });
 
-  it("attaches a canonical AMA tool result to its assistant tool call", () => {
+  it("attaches a canonical Enbor tool result to its assistant tool call", () => {
     const events = [
       canonical("tool-call", 1, "message.completed", {
         message: {

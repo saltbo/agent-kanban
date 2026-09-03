@@ -8,6 +8,7 @@
       "!**/.wrangler",
       "!**/playwright-report",
       "!**/test-results",
+      "!**/coverage",
       "!**/pnpm-lock.yaml",
       "!**/*.min.js",
       "!**/*.min.css",
