@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "skills": [
+    {
+      "name": "agent-kanban",
+      "type": "archive",
+      "description": "Work on an assigned Agent Kanban v2 Task through Realmroot Toolbox. Use when an Agent running in an Agency Session needs to inspect, claim, update, or submit assigned work.",
+      "url": "/.well-known/agent-skills/agent-kanban.tar.gz",
+      "digest": "sha256:44285b7d34b6524e028b8f42a814113937930c1a42b5cf1b8f73e52ded8a6773"
+    },
+    {
+      "name": "ak-plan",
+      "type": "archive",
+      "description": "Plan and execute a multi-Task project through Agent Kanban v2 resources and Realmroot Toolbox. Use only when the user explicitly asks for AK Plan, an Agent Kanban project plan, or execution of a project through an AK board.",
+      "url": "/.well-known/agent-skills/ak-plan.tar.gz",
+      "digest": "sha256:2f28ce2293b29fea262eb11bf81de611406debe0cabf3c5473e92b444f8fa9f2"
+    },
+    {
+      "name": "ak-task",
+      "type": "archive",
+      "description": "Create, assign, monitor, and review one Agent Kanban v2 Task through Realmroot Toolbox. Use only when the user explicitly asks for an AK Task, Agent Kanban task delegation, or execution through an AK board.",
+      "url": "/.well-known/agent-skills/ak-task.tar.gz",
+      "digest": "sha256:da16a84f035817dbe879ba0e6d55a57821bc48ae71ec52aec0ed2ded95478239"
+    }
+  ]
+}

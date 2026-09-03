@@ -6,6 +6,14 @@ Feature: Realmroot Resource Server
     When Realmroot discovers AK
     Then AK publishes protected-resource metadata and its Toolbox OpenAPI document
 
+  @journey:resource-server/agent-skills @entrypoint:toolbox @proof:integration
+  Scenario: Publish installable Agent Skills
+    Given AK owns Agent-facing operating Skills
+    When Toolbox discovers Agent Skills at the AK Resource Server origin
+    Then AK publishes an Agent Skills Discovery version 0.2.0 index
+    And the index advertises every AK-owned Skill as a digest-verified archive
+    And each archive contains its Skill instructions and supporting files
+
   @journey:resource-server/generic-operations @entrypoint:toolbox @proof:integration
   Scenario: Use Toolbox generic resource operations
     Given an authorized Realmroot actor
