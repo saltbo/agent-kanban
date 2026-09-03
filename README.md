@@ -6,18 +6,13 @@
   </picture>
   <br />
   <strong>Don't babysit your agent. Take human out of the loop.</strong>
-  <br />
-  <a href="https://github.com/saltbo/agent-kanban/actions/workflows/ci.yml"><img src="https://github.com/saltbo/agent-kanban/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/saltbo/agent-kanban/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-52525B?style=flat" alt="FSL-1.1-ALv2" /></a>
-  <a href="https://github.com/saltbo/agent-kanban/blob/main/package.json"><img src="https://img.shields.io/badge/Node.js-24-339933?logo=node.js&logoColor=white" alt="Node.js 24" /></a>
-  <a href="https://agent-kanban.dev"><img src="https://img.shields.io/badge/live-agent--kanban.dev-0891B2" alt="Live site" /></a>
-  <br />
-  <a href="https://agent-kanban.dev">Live site</a> ·
+  <br /><br />
+  <a href="https://agent-kanban.dev">Website</a> ·
   <a href="./docs/README.md">Documentation</a> ·
   <a href="./CONTRIBUTING.md">Contributing</a>
 </div>
 
-<br />
+---
 
 Agent Kanban is a mission-control board for autonomous software agents. It takes
 humans out of the execution loop without removing human control: people observe
