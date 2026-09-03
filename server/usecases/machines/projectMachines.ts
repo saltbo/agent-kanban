@@ -1,40 +1,59 @@
-import type { MachineSetup, ProjectedMachine } from "@shared";
+import { EnborApiError, type EnborClient, type Environment, type Runner } from "@realmroot/enbor-sdk";
+import type { MachineSetup } from "@shared";
 
-export interface MachineProjectionPort {
-  listMachinesPage(input: {
-    projectId: string;
-    limit: number;
-    cursor: string | null;
-  }): Promise<{ items: ProjectedMachine[]; nextCursor: string | null }>;
-  getMachine(projectId: string, machineId: string): Promise<ProjectedMachine | null>;
-  createMachine(projectId: string, name: string, idempotencyKey: string): Promise<ProjectedMachine>;
-  archiveMachine(projectId: string, machineId: string): Promise<boolean>;
+export interface MachineProjection {
+  environment: Environment;
+  runners: Runner[];
 }
 
-export function listProjectedMachinesPage(
-  port: MachineProjectionPort,
-  projectId: string,
+export async function listMachinesPage(
+  client: EnborClient,
   page: { limit: number; cursor: string | null },
-): Promise<{ items: ProjectedMachine[]; nextCursor: string | null }> {
-  return port.listMachinesPage({ projectId, ...page });
+): Promise<{ items: MachineProjection[]; nextCursor: string | null }> {
+  const environments = await client.environments.list({ limit: page.limit, cursor: page.cursor ?? undefined });
+  const runners = await listAllRunners(client);
+  return {
+    items: environments.data
+      .filter((environment) => environment.spec.type === "self_hosted")
+      .map((environment) => ({ environment, runners: runners.filter((runner) => runner.environmentId === environment.metadata.uid) })),
+    nextCursor: environments.pagination.nextCursor,
+  };
 }
 
-export function getProjectedMachine(port: MachineProjectionPort, projectId: string, machineId: string): Promise<ProjectedMachine | null> {
-  return port.getMachine(projectId, machineId);
+export async function getMachine(client: EnborClient, machineId: string): Promise<MachineProjection | null> {
+  const environment = await client.environments.get(machineId);
+  if (environment.spec.type !== "self_hosted") return null;
+  return { environment, runners: await listAllRunners(client, machineId) };
 }
 
-export async function createProjectedMachine(
-  port: MachineProjectionPort,
+export async function createMachine(
+  client: EnborClient,
   projectId: string,
   idempotencyKey: string,
   runnerCommand: (projectId: string, environmentId: string) => string,
-): Promise<{ machine: ProjectedMachine; setup: MachineSetup }> {
+): Promise<{ machine: MachineProjection; setup: MachineSetup }> {
   const [name, environmentKey] = await Promise.all([generatedEnvironmentName(idempotencyKey), derivedKey(idempotencyKey, "environment")]);
-  const machine = await port.createMachine(projectId, name, environmentKey);
+  const environment = await client.environments.create({ metadata: { name }, spec: { scope: "project", type: "self_hosted" } }, environmentKey);
   return {
-    machine,
-    setup: { command: runnerCommand(projectId, machine.id), project_id: projectId, environment_id: machine.id },
+    machine: { environment, runners: [] },
+    setup: { command: runnerCommand(projectId, environment.metadata.uid), project_id: projectId, environment_id: environment.metadata.uid },
   };
+}
+
+async function listAllRunners(client: EnborClient, environmentId?: string): Promise<Runner[]> {
+  const runners: Runner[] = [];
+  let cursor: string | undefined;
+  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+    const page = await client.runners.list({ limit: 100, cursor, environmentId });
+    runners.push(...page.data);
+    if (runners.length > 10_000) throw invalidPagination("AMA Runner result exceeded the safety bound");
+    const nextCursor = page.pagination.nextCursor ?? undefined;
+    if (!nextCursor) return runners;
+    if (nextCursor === cursor) throw invalidPagination("AMA Runner pagination did not advance");
+    if (pageNumber === 99) throw invalidPagination("AMA Runner pagination exceeded the safety bound");
+    cursor = nextCursor;
+  }
+  throw invalidPagination("AMA Runner pagination exceeded the safety bound");
 }
 
 async function generatedEnvironmentName(idempotencyKey: string): Promise<string> {
@@ -48,6 +67,6 @@ async function derivedKey(parent: string, stage: string): Promise<string> {
   return `ak-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function archiveProjectedMachine(port: MachineProjectionPort, projectId: string, machineId: string): Promise<boolean> {
-  return port.archiveMachine(projectId, machineId);
+function invalidPagination(message: string): EnborApiError {
+  return new EnborApiError(502, message, null);
 }

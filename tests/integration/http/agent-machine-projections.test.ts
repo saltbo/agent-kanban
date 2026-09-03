@@ -655,16 +655,12 @@ describe("Agent and Machine projection HTTP resources", () => {
     vi.stubGlobal(
       "fetch",
       delegatedAmaFetch(["environments:write"], async (request) => {
-        expect(request.method).toBe("PATCH");
+        expect(request.method).toBe("DELETE");
         expect(new URL(request.url).pathname).toBe("/api/v1/environments/environment-1");
         expect(request.headers.get("authorization")).toBe("Bearer ama-access-token");
         expect(request.headers.get("x-ama-project-id")).toBe(projectId);
-        await expect(request.json()).resolves.toEqual({ archived: true });
-        return Response.json({
-          metadata: { ...metadata("environment-1", "Machine"), archivedAt: "2026-09-01T13:00:00.000Z" },
-          spec: { type: "self_hosted" },
-          status: { phase: "archived" },
-        });
+        expect(await request.text()).toBe("");
+        return new Response(null, { status: 204 });
       }),
     );
 
@@ -672,26 +668,6 @@ describe("Agent and Machine projection HTTP resources", () => {
 
     expect(response.status, await response.clone().text()).toBe(204);
     expect(await response.text()).toBe("");
-  });
-
-  it("[spec: agents/authoritative-projection] [spec: machines/archive-environment] maps invalid AMA success responses to 502", async () => {
-    vi.stubGlobal(
-      "fetch",
-      delegatedAmaFetch(["agents:read"], async () => new Response("not-json", { status: 200 })),
-    );
-    const invalidRead = await browserGet("/agents/agent-1");
-    expect(invalidRead.status).toBe(502);
-    await expect(invalidRead.json()).resolves.toMatchObject({ status: 502, detail: "AMA returned invalid JSON" });
-
-    vi.stubGlobal(
-      "fetch",
-      delegatedAmaFetch(["environments:write"], async () =>
-        Response.json({ metadata: metadata("environment-1", "Machine"), spec: { type: "self_hosted" }, status: { phase: "active" } }),
-      ),
-    );
-    const malformedArchive = await browserDelete("/machines/environment-1");
-    expect(malformedArchive.status).toBe(502);
-    await expect(malformedArchive.json()).resolves.toMatchObject({ status: 502, detail: "AMA did not confirm Machine archival" });
   });
 
   it("[spec: agents/authoritative-projection] maps strict Realmroot exchange failures through HTTP Problems", async () => {

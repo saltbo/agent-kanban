@@ -1,4 +1,5 @@
-import { agencySessionObservationClient, assertAgencySessionObservationConfigured } from "@server/adapters/agency/sessionObservation";
+import { connectSessionSocket, EnborApiError, type EnborClient, type Session } from "@realmroot/enbor-sdk";
+import { createAgencyClient } from "@server/adapters/agency/client";
 import {
   addTaskAction,
   assertTaskOwner,
@@ -14,7 +15,7 @@ import {
 } from "@server/adapters/d1/taskRepo";
 import { createSSEResponse } from "@server/adapters/stream/sse";
 import type { Env } from "@server/env";
-import { amaAuthorization } from "@server/http/resource-server/amaProjectionDependencies";
+import { amaAuthorization } from "@server/http/resource-server/amaDependencies";
 import { pageResponse, readPageWindow } from "@server/http/resource-server/pagination";
 import { taskNoteResource, taskResource } from "@server/http/resource-server/representation";
 import {
@@ -27,7 +28,6 @@ import {
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
 import { normalizeTaskCreate, normalizeTaskUpdate } from "@server/http/tasks/request";
-import { observeTaskSession, TaskSessionObservationFailure } from "@server/usecases/tasks/observeTaskSession";
 import { TASK_STATUSES, type Task } from "@shared";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -201,16 +201,30 @@ async function getTaskSessionWebSocket(c: TaskContext): Promise<Response> {
   try {
     const upgrade = c.req.header("Upgrade")?.toLowerCase() === "websocket";
     const client = await taskSessionClient(c, upgrade ? ["sessions:read", "sessions:write"] : ["sessions:read"]);
-    const session = await observeTaskSession(client.adapter, {
-      sessionId: binding.runtime_session_id,
-      projectId: client.projectId,
-    });
+    const session = await readAgencySession(client.client, binding.runtime_session_id, client.projectId);
     if (!upgrade) {
       const url = new URL(c.req.url);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       return c.json({ url: url.toString(), sessionId: session.metadata.uid });
     }
-    return relayReadOnlyAgencySocket(await client.adapter.connectSessionSocket(session.metadata.uid));
+    const socketClient = createAgencyClient(
+      client.origin,
+      {
+        token: client.token,
+        projectId: client.projectId,
+        traceparent: c.get("traceparent"),
+      },
+      { Upgrade: "websocket" },
+    );
+    const { response } = await connectSessionSocket({
+      client: socketClient.raw,
+      path: { sessionId: session.metadata.uid },
+      parseAs: "stream",
+    });
+    if (response?.status !== 101 || !response.webSocket) {
+      throw new EnborApiError(response?.status, "Session socket upgrade failed", null);
+    }
+    return relayReadOnlyAgencySocket(response.webSocket);
   } catch (error) {
     return mapSessionObservationFailure(c, error);
   }
@@ -218,19 +232,26 @@ async function getTaskSessionWebSocket(c: TaskContext): Promise<Response> {
 
 async function resolveAgencySession(c: TaskContext, binding: NonNullable<Task["session_binding"]>) {
   const client = await taskSessionClient(c, ["sessions:read"]);
-  return observeTaskSession(client.adapter, {
-    sessionId: binding.runtime_session_id,
-    projectId: client.projectId,
-  });
+  return readAgencySession(client.client, binding.runtime_session_id, client.projectId);
 }
 
 async function taskSessionClient(c: TaskContext, scopes: readonly string[]) {
-  assertAgencySessionObservationConfigured(c.env);
-  const { projectId, token } = await amaAuthorization(c, scopes);
+  const { projectId, token, origin } = await amaAuthorization(c, scopes);
   return {
     projectId,
-    adapter: agencySessionObservationClient(c.env, { token, projectId, traceparent: c.get("traceparent") }),
+    token,
+    origin,
+    client: createAgencyClient(origin, { token, projectId, traceparent: c.get("traceparent") }),
   };
+}
+
+async function readAgencySession(client: EnborClient, sessionId: string, projectId: string): Promise<Session> {
+  const session = await client.sessions.get(sessionId);
+  if (!session?.metadata) throw new EnborApiError(502, "Agency returned an invalid Session response", session);
+  if (session.metadata.uid !== sessionId || session.metadata.projectId !== projectId) {
+    throw new EnborApiError(502, "Agency returned a Session outside the requested identity or Project", session);
+  }
+  return session;
 }
 
 function relayReadOnlyAgencySocket(upstream: WebSocket): Response {
@@ -306,8 +327,11 @@ function isBackfillRequest(value: string | ArrayBuffer): value is string {
 }
 
 function mapSessionObservationFailure(c: TaskContext, error: unknown): Response {
-  if (error instanceof TaskSessionObservationFailure) {
-    return c.json({ error: { code: "AMA_SESSION_NOT_FOUND", message: error.message } }, 404);
+  if (error instanceof EnborApiError && error.status === 404) {
+    return c.json({ error: { code: "AMA_SESSION_NOT_FOUND", message: "Agency Session not found for the Task" } }, 404);
+  }
+  if (error instanceof EnborApiError) {
+    return c.json({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
   }
   throw error;
 }

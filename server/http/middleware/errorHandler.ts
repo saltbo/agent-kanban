@@ -1,9 +1,9 @@
+import { EnborApiError } from "@realmroot/enbor-sdk";
 import { applyRequestIdHeader } from "@server/http/middleware/requestContext";
 import { isPublishedV2Operation, v2Problem } from "@server/http/middleware/v2Contract";
 import { AmaProjectInitializationBusy } from "@server/usecases/ama/ensureAmaProject";
-import { AmaProjectionError, RealmrootDelegationFailure } from "@server/usecases/ama/failures";
+import { RealmrootDelegationFailure } from "@server/usecases/ama/failures";
 import { ApplicationError } from "@server/usecases/applicationError";
-import { AgencySessionObservationFailure } from "@server/usecases/tasks/observeTaskSession";
 import { TaskLifecycleNotificationFailure } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { ErrorHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -26,16 +26,19 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
     c.header("Retry-After", "1");
     return v2Problem(c, 503, "ama-initialization-busy", "AMA initialization in progress", error.message);
   }
-  if (error instanceof AmaProjectionError) {
-    const status = amaProjectionStatus(error.kind);
-    return v2Problem(c, status, "ama-projection-failed", status === 503 ? "AMA unavailable" : "AMA projection failed", error.message);
+  if (error instanceof EnborApiError) {
+    const status = amaStatus(error.status);
+    return v2Problem(
+      c,
+      status,
+      "ama-request-failed",
+      status === 503 ? "AMA unavailable" : "AMA request failed",
+      status === 503 ? "AMA is unavailable" : "AMA rejected the request",
+    );
   }
   if (error instanceof TaskLifecycleNotificationFailure) {
     c.header("Retry-After", "5");
     return v2Problem(c, 503, "task-notification-unavailable", "Task notification unavailable", error.message);
-  }
-  if (error instanceof AgencySessionObservationFailure) {
-    return c.json({ error: { code: "AMA_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
   }
   if (error instanceof ApplicationError) {
     const status = applicationStatus(error.kind);
@@ -81,11 +84,12 @@ function applicationStatus(kind: ApplicationError["kind"]): 400 | 404 | 409 | 50
   return kind === "invariant-failed" ? 500 : 400;
 }
 
-function amaProjectionStatus(kind: AmaProjectionError["kind"]): 403 | 404 | 409 | 502 | 503 {
-  if (kind === "not-found") return 404;
-  if (kind === "denied") return 403;
-  if (kind === "rejected") return 409;
-  return kind === "invalid-response" ? 502 : 503;
+function amaStatus(status: number | undefined): 403 | 404 | 409 | 502 | 503 {
+  if (status === 404) return 404;
+  if (status === 401 || status === 403) return 403;
+  if (status === undefined || status === 408 || status === 429 || (status >= 500 && status !== 502)) return 503;
+  if (status === 502 || (status >= 200 && status < 300)) return 502;
+  return 409;
 }
 
 function delegationStatus(kind: RealmrootDelegationFailure["kind"]): 401 | 403 | 502 | 503 {

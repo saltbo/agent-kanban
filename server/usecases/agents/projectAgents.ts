@@ -1,49 +1,10 @@
-import type { ProjectedAgent } from "@shared";
+import { type Agent, EnborApiError, type EnborClient, type RuntimeName } from "@realmroot/enbor-sdk";
 
-export interface AgentProjectionPort {
-  listAgentsPage(input: {
-    projectId: string;
-    limit: number;
-    cursor: string | null;
-    filters: { runtime?: string; schedulable?: boolean; search?: string };
-  }): Promise<{ items: ProjectedAgent[]; nextCursor: string | null }>;
-  getAgent(projectId: string, agentId: string): Promise<ProjectedAgent | null>;
-  createIdentity(projectId: string, input: { name: string; username: string; runtime: string; idempotencyKey: string }): Promise<string>;
-  archiveIdentity(projectId: string, identityId: string): Promise<void>;
-  isPermanentFailure(error: unknown): boolean;
-  createAgent(
-    projectId: string,
-    input: {
-      name: string;
-      description: string | null;
-      systemPrompt: string;
-      provider: string | null;
-      model: string | null;
-      skills: string[];
-      identityRef: string;
-      idempotencyKey: string;
-    },
-  ): Promise<ProjectedAgent>;
-}
-
-export function listProjectedAgentsPage(
-  port: AgentProjectionPort,
-  projectId: string,
-  page: { limit: number; cursor: string | null },
-  filters: { runtime?: string; schedulable?: boolean; search?: string },
-): Promise<{ items: ProjectedAgent[]; nextCursor: string | null }> {
-  return port.listAgentsPage({ projectId, limit: page.limit, cursor: page.cursor, filters });
-}
-
-export function getProjectedAgent(port: AgentProjectionPort, projectId: string, agentId: string): Promise<ProjectedAgent | null> {
-  return port.getAgent(projectId, agentId);
-}
-
-export interface CreateProjectedAgentInput {
+export interface CreateAgencyAgentInput {
   name: string;
   description?: string | null;
   username: string;
-  runtime: string;
+  runtime: RuntimeName;
   systemPrompt: string;
   provider?: string | null;
   model?: string | null;
@@ -51,26 +12,39 @@ export interface CreateProjectedAgentInput {
   idempotencyKey: string;
 }
 
-export async function createProjectedAgent(port: AgentProjectionPort, projectId: string, input: CreateProjectedAgentInput): Promise<ProjectedAgent> {
-  const identityRef = await port.createIdentity(projectId, {
-    name: input.name,
-    username: input.username,
-    runtime: input.runtime,
-    idempotencyKey: await derivedKey(input.idempotencyKey, "identity"),
-  });
+export async function createAgencyAgent(client: EnborClient, input: CreateAgencyAgentInput): Promise<Agent> {
+  const identity = await client.identities.create(
+    {
+      metadata: { name: input.name },
+      spec: { username: input.username, runtime: input.runtime },
+    },
+    await derivedKey(input.idempotencyKey, "identity"),
+  );
   try {
-    return await port.createAgent(projectId, {
-      name: input.name,
-      description: input.description ?? null,
-      systemPrompt: input.systemPrompt,
-      provider: input.provider ?? null,
-      model: input.model ?? null,
-      skills: input.skills ?? [],
-      identityRef,
-      idempotencyKey: await derivedKey(input.idempotencyKey, "agent"),
-    });
+    return await client.agents.create(
+      {
+        metadata: { name: input.name, description: input.description },
+        spec: {
+          systemPrompt: input.systemPrompt,
+          provider: input.provider,
+          model: input.model,
+          skills: input.skills,
+          identityRef: identity.metadata.uid,
+        },
+      },
+      await derivedKey(input.idempotencyKey, "agent"),
+    );
   } catch (error) {
-    if (port.isPermanentFailure(error)) await port.archiveIdentity(projectId, identityRef);
+    if (
+      error instanceof EnborApiError &&
+      error.status !== undefined &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      error.status !== 408 &&
+      error.status !== 429
+    ) {
+      await client.identities.delete(identity.metadata.uid);
+    }
     throw error;
   }
 }

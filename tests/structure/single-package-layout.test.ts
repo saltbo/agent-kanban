@@ -5,6 +5,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "../..");
+const enborSdkVersion = "0.2.0";
+const enborSdkIntegrity = "sha512-Emm6VKv27IE6KUEr4sdvau0a/gJmjjERzcGKfIA0AU4xsfOqZUVb6fIryGSch1dT18h7f2EPcYu7vBEEnNY6kg==";
+const legacyEnborSdkReleasePrefix = "https://github.com/realmroot/enbor/releases/download/enbor-sdk-";
 
 describe("single-package repository structure", () => {
   it("has no workspace, video application, or legacy CLI surface", async () => {
@@ -15,12 +18,19 @@ describe("single-package repository structure", () => {
     expect(packageJson).not.toHaveProperty("workspaces");
   });
 
-  it("keeps a single root lockfile importer without AMA SDK or workspace links", async () => {
+  it("keeps a single root lockfile importer with the pinned Enbor SDK npm package and no legacy SDK or workspace links", async () => {
+    const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
     const lockfile = await readFile(path.join(root, "pnpm-lock.yaml"), "utf8");
     const importers = lockfile.slice(lockfile.indexOf("importers:"), lockfile.indexOf("packages:"));
     const importerKeys = [...importers.matchAll(/^ {2}([^\s].*):$/gm)].map((match) => match[1]);
 
     expect(importerKeys).toEqual(["."]);
-    expect(lockfile).not.toMatch(/(?:ama-sdk|@ama\/|workspace:|\blink:)/i);
+    expect(packageJson.dependencies?.["@realmroot/enbor-sdk"]).toBe(enborSdkVersion);
+    expect(importers).toContain(`specifier: ${enborSdkVersion}\n        version: ${enborSdkVersion}`);
+    expect(lockfile).toContain(`  '@realmroot/enbor-sdk@${enborSdkVersion}':\n    resolution: {integrity: ${enborSdkIntegrity}}`);
+    expect(lockfile).not.toContain(legacyEnborSdkReleasePrefix);
+    expect(lockfile).not.toMatch(/(?:@realmroot\/ama-sdk|@ama\/|workspace:|\blink:)/i);
   });
 });
