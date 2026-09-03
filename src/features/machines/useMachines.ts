@@ -57,8 +57,7 @@ export function useMachine(machineId: string | undefined) {
 export function useCreateMachine() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, idempotencyKey }: { name: string; idempotencyKey: string }) =>
-      api.machines.create(name, idempotencyKey) as Promise<MachineCreateResult>,
+    mutationFn: ({ idempotencyKey }: { idempotencyKey: string }) => api.machines.create(idempotencyKey) as Promise<MachineCreateResult>,
     onSuccess: () => client.invalidateQueries({ queryKey: ["machines"] }),
   });
 }

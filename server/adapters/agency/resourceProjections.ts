@@ -306,7 +306,7 @@ function projectMachine(environment: AmaEnvironment, runners: AmaRunner[]): Proj
   }
   return {
     id: environment.metadata.uid,
-    name: environment.metadata.name,
+    name: projectedMachineName(runners),
     description: environment.metadata.description,
     state,
     current_load: active.reduce((total, runner) => total + runner.currentLoad, 0),
@@ -347,6 +347,14 @@ function projectRuntimeUsage(usage: AmaRunner["runtimeUsage"][number]): MachineR
       resets_at: window.resetsAt,
     })),
   };
+}
+
+function projectedMachineName(runners: AmaRunner[]): string {
+  if (runners.length === 0) return "Waiting for computer";
+  const names = runners.map((runner) => runner.name).sort();
+  if (runners.length === 1) return names[0];
+  const additionalRunners = runners.length - 1;
+  return `${names[0]} + ${additionalRunners} runner${additionalRunners === 1 ? "" : "s"}`;
 }
 
 function isString(value: string | null): value is string {
@@ -417,6 +425,7 @@ function decodeRunner(value: unknown): AmaRunner {
   if (
     !isRecord(value) ||
     !strings(value, ["id", "name"]) ||
+    (value.name as string).trim().length === 0 ||
     (value.environmentId !== null && typeof value.environmentId !== "string") ||
     !["active", "draining", "disabled", "offline"].includes(String(value.state)) ||
     !Number.isInteger(value.currentLoad) ||
@@ -428,7 +437,7 @@ function decodeRunner(value: unknown): AmaRunner {
     throw invalidResponse();
   return {
     id: value.id as string,
-    name: value.name as string,
+    name: (value.name as string).trim(),
     environmentId: value.environmentId as string | null,
     state: value.state as AmaRunner["state"],
     currentLoad: value.currentLoad as number,

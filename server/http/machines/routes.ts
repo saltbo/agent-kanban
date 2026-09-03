@@ -6,7 +6,7 @@ import { representationEtag } from "@server/http/resource-server/representation"
 import {
   completeExternalCreation,
   externalCreationIdempotencyKey,
-  readJsonBody,
+  rejectRequestBody,
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
 import {
@@ -32,14 +32,11 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
   });
 
   api.post("/api/machines", async (c) => {
-    const body = await readJsonBody<{ name?: unknown }>(c);
-    if (body instanceof Response) return body;
-    if (typeof body.name !== "string" || body.name.trim().length === 0 || body.name.length > 160) {
-      throw new HTTPException(422, { message: "Machine.name must be a non-empty string of at most 160 characters" });
-    }
+    const bodyError = await rejectRequestBody(c, "Machine");
+    if (bodyError) return bodyError;
     const { adapter, projectId } = await amaProjectionDependencies(c, ["environments:write"]);
     const idempotencyKey = externalCreationIdempotencyKey(c);
-    const result = await createProjectedMachine(adapter, projectId, body.name.trim(), idempotencyKey, (project, environment) =>
+    const result = await createProjectedMachine(adapter, projectId, idempotencyKey, (project, environment) =>
       runnerStartCommand(c.env, project, environment),
     );
     const response = {

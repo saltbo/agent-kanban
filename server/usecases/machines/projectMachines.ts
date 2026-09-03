@@ -26,15 +26,21 @@ export function getProjectedMachine(port: MachineProjectionPort, projectId: stri
 export async function createProjectedMachine(
   port: MachineProjectionPort,
   projectId: string,
-  name: string,
   idempotencyKey: string,
   runnerCommand: (projectId: string, environmentId: string) => string,
 ): Promise<{ machine: ProjectedMachine; setup: MachineSetup }> {
-  const machine = await port.createMachine(projectId, name, await derivedKey(idempotencyKey, "environment"));
+  const [name, environmentKey] = await Promise.all([generatedEnvironmentName(idempotencyKey), derivedKey(idempotencyKey, "environment")]);
+  const machine = await port.createMachine(projectId, name, environmentKey);
   return {
     machine,
     setup: { command: runnerCommand(projectId, machine.id), project_id: projectId, environment_id: machine.id },
   };
+}
+
+async function generatedEnvironmentName(idempotencyKey: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${idempotencyKey}:environment-name`));
+  const suffix = Array.from(new Uint8Array(digest).slice(0, 4), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `computer-${suffix}`;
 }
 
 async function derivedKey(parent: string, stage: string): Promise<string> {

@@ -83,6 +83,8 @@ describe("Agent and Machine projection HTTP contract", () => {
       required: ["label", "utilization", "resetsAt"],
       properties: { utilization: { type: "number" }, resetsAt: { type: "string", format: "date-time" } },
     });
+    expect(openapi.paths["/machines"].post.requestBody).toBeUndefined();
+    expect(openapi.components.schemas).not.toHaveProperty("MachineWrite");
     expect(openapi.components.schemas.MachineCreateResult.required).toEqual(expect.arrayContaining(["machine", "authCommand", "startCommand"]));
     expect(openapi.components.schemas.MachineCreateResult.properties.machine).toEqual({ $ref: "#/components/schemas/Machine" });
   });

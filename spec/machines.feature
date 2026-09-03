@@ -20,7 +20,9 @@ Feature: Machine projections
   @journey:machines/create-runner-setup @entrypoint:product-ui @proof:e2e
   Scenario: Complete Runner setup from the Add Machine dialog
     Given a human opens Add Machine
-    When the human creates a Machine or retries an uncertain attempt
+    Then the dialog offers Your Computer and a disabled Cloud Sandbox marked Coming soon
+    When the human chooses Your Computer or retries an uncertain attempt
+    And AK creates the self-hosted Environment with a generated internal name instead of asking the human for one
     Then the browser reuses that attempt's Idempotency-Key
     And the browser distinguishes installing AMA Runner from starting this Machine
     And the browser follows the Machine against one absolute 30 second deadline while it comes online
@@ -33,6 +35,11 @@ Feature: Machine projections
     When AK projects that Environment as a Machine
     Then the Machine reports online state, last heartbeat, runtime inventory, and aggregate current and maximum load
     And preserves each Runner and its runtime usage windows separately
+    And a Machine without Runners is named Waiting for computer
+    And a Machine with one usable Runner name uses that name
+    And a Machine with multiple Runners uses the first deterministic usable Runner name followed by the additional Runner count
+    And AK never exposes the internal Environment name as the Machine name
+    And an attached Runner with a blank name makes the AMA response invalid
 
   @journey:machines/archive-environment @entrypoint:toolbox @proof:integration
   Scenario: Archive a Machine's authoritative Environment

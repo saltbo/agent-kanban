@@ -110,7 +110,7 @@ export const api = {
   machines: {
     list: () => request<{ items: any[] }>("GET", "/machines"),
     get: (id: string) => request<any>("GET", `/machines/${encodeURIComponent(id)}`),
-    create: (name: string, idempotencyKey: string) => request<any>("POST", "/machines", { name }, { "Idempotency-Key": idempotencyKey }),
+    create: (idempotencyKey: string) => request<any>("POST", "/machines", undefined, { "Idempotency-Key": idempotencyKey }),
     delete: (id: string) => request<void>("DELETE", `/machines/${encodeURIComponent(id)}`),
   },
   githubApp: {

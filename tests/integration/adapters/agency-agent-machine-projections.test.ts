@@ -350,7 +350,7 @@ describe("Agency Agent and Machine projection adapter", () => {
       items: [
         expect.objectContaining({
           id: "environment-self",
-          name: "Build host",
+          name: "Runner east + 1 runner",
           state: "online",
           current_load: 3,
           max_concurrent: 7,
@@ -407,6 +407,106 @@ describe("Agency Agent and Machine projection adapter", () => {
               runtimeUsage: [{ runtime: "codex", windows: [{ label: "5 hours", utilization: 25, resetsAt: "not-a-date" }] }],
               runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
               lastHeartbeatAt: "2026-09-01T12:01:00.000Z",
+            },
+          ],
+          pagination: { nextCursor: null, hasMore: false },
+        });
+      }),
+    );
+
+    await expect(
+      new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned an invalid resource representation" });
+  });
+
+  it("[spec: machines/runner-aggregation] derives the Machine display name from deterministic usable Runner names", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/api/v1/environments") {
+          return Response.json({
+            data: [
+              { metadata: metadata("environment-empty", "computer-empty"), spec: { type: "self_hosted" }, status: { phase: "active" } },
+              { metadata: metadata("environment-one", "computer-one"), spec: { type: "self_hosted" }, status: { phase: "active" } },
+              { metadata: metadata("environment-many", "computer-many"), spec: { type: "self_hosted" }, status: { phase: "active" } },
+            ],
+            pagination: { nextCursor: null, hasMore: false },
+          });
+        }
+        return Response.json({
+          data: [
+            {
+              id: "runner-one",
+              name: "solo.local",
+              environmentId: "environment-one",
+              state: "active",
+              currentLoad: 0,
+              maxConcurrent: 1,
+              runtimeUsage: [],
+              runtimes: [],
+              lastHeartbeatAt: null,
+            },
+            {
+              id: "runner-zulu",
+              name: "zulu.local",
+              environmentId: "environment-many",
+              state: "active",
+              currentLoad: 0,
+              maxConcurrent: 1,
+              runtimeUsage: [],
+              runtimes: [],
+              lastHeartbeatAt: null,
+            },
+            {
+              id: "runner-alpha",
+              name: "alpha.local",
+              environmentId: "environment-many",
+              state: "active",
+              currentLoad: 0,
+              maxConcurrent: 1,
+              runtimeUsage: [],
+              runtimes: [],
+              lastHeartbeatAt: null,
+            },
+          ],
+          pagination: { nextCursor: null, hasMore: false },
+        });
+      }),
+    );
+
+    const result = await new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null });
+
+    expect(result.items.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "environment-empty", name: "Waiting for computer" },
+      { id: "environment-one", name: "solo.local" },
+      { id: "environment-many", name: "alpha.local + 1 runner" },
+    ]);
+  });
+
+  it("[spec: machines/runner-aggregation] rejects an attached Runner with a blank name", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/api/v1/environments") {
+          return Response.json({
+            data: [{ metadata: metadata("environment-1", "computer-internal"), spec: { type: "self_hosted" }, status: { phase: "active" } }],
+            pagination: { nextCursor: null, hasMore: false },
+          });
+        }
+        return Response.json({
+          data: [
+            {
+              id: "runner-blank",
+              name: "   ",
+              environmentId: "environment-1",
+              state: "active",
+              currentLoad: 0,
+              maxConcurrent: 1,
+              runtimeUsage: [],
+              runtimes: [],
+              lastHeartbeatAt: null,
             },
           ],
           pagination: { nextCursor: null, hasMore: false },

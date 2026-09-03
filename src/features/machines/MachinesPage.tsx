@@ -1,10 +1,9 @@
-import { Check, Copy, Cpu, Plus, Trash2 } from "lucide-react";
+import { Check, Cloud, Copy, Cpu, Monitor, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Header } from "@/features/boards/components/Header";
 import { type MachineCreateResult, type MachineProjection, useCreateMachine, useDeleteMachine, useMachines } from "@/features/machines/useMachines";
 
@@ -13,12 +12,11 @@ export function MachinesPage() {
   const create = useCreateMachine();
   const remove = useDeleteMachine();
   const [adding, setAdding] = useState(false);
-  const [name, setName] = useState("");
   const [setup, setSetup] = useState<MachineCreateResult | null>(null);
   const [deleting, setDeleting] = useState<MachineProjection | null>(null);
   const [tracking, setTracking] = useState<{ machineId: string; deadline: number } | null>(null);
   const [trackingTimedOut, setTrackingTimedOut] = useState<string | null>(null);
-  const createAttempt = useRef<{ name: string; key: string } | null>(null);
+  const createAttempt = useRef<{ key: string } | null>(null);
 
   useEffect(() => {
     if (!tracking) return;
@@ -45,20 +43,24 @@ export function MachinesPage() {
   }, [data, refetch, tracking]);
 
   async function addMachine() {
-    const normalizedName = name.trim();
-    if (createAttempt.current?.name !== normalizedName) {
-      createAttempt.current = { name: normalizedName, key: crypto.randomUUID() };
-    }
+    createAttempt.current ??= { key: crypto.randomUUID() };
     try {
-      const result = await create.mutateAsync({ name: normalizedName, idempotencyKey: createAttempt.current.key });
+      const result = await create.mutateAsync({ idempotencyKey: createAttempt.current.key });
       createAttempt.current = null;
-      setName("");
       setAdding(false);
       setSetup(result);
       setTrackingTimedOut(null);
       setTracking({ machineId: result.machine.id, deadline: Date.now() + 30_000 });
     } catch {
       // The mutation exposes the actionable API error in the dialog.
+    }
+  }
+
+  function setAddDialogOpen(open: boolean) {
+    setAdding(open);
+    if (!open) {
+      createAttempt.current = null;
+      create.reset();
     }
   }
 
@@ -79,7 +81,7 @@ export function MachinesPage() {
         <div className="flex items-end justify-between gap-4">
           <div>
             <h1 className="text-xl font-bold text-content-primary">Machines</h1>
-            <p className="mt-1 text-sm text-content-tertiary">Self-hosted AMA Runner environments.</p>
+            <p className="mt-1 text-sm text-content-tertiary">Computers available to run agent work.</p>
           </div>
           <Button
             size="sm"
@@ -123,17 +125,35 @@ export function MachinesPage() {
         )}
       </main>
 
-      <Dialog open={adding} onOpenChange={setAdding}>
+      <Dialog open={adding} onOpenChange={setAddDialogOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Add Machine</DialogTitle>
-            <DialogDescription>Create a self-hosted Runner environment. The exact command is generated for this Machine.</DialogDescription>
+            <DialogDescription>Where will this machine run?</DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <label htmlFor="machine-name" className="text-xs font-medium uppercase tracking-wide text-content-tertiary">
-              Machine name
-            </label>
-            <Input id="machine-name" autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="mac-mini-build" />
+          <div className="flex flex-col gap-3">
+            <Button
+              variant="outline"
+              className="h-auto min-h-20 justify-start whitespace-normal p-4 text-left"
+              disabled={create.isPending}
+              onClick={addMachine}
+            >
+              <Monitor data-icon="inline-start" />
+              <span className="flex flex-col items-start gap-1">
+                <span>{create.isPending ? "Creating…" : "Your Computer"}</span>
+                <span className="font-normal text-muted-foreground">Run AMA Runner on this computer</span>
+              </span>
+            </Button>
+            <Button variant="outline" className="h-auto min-h-20 justify-start whitespace-normal p-4 text-left" disabled>
+              <Cloud data-icon="inline-start" />
+              <span className="flex flex-1 flex-col items-start gap-1">
+                <span className="flex w-full items-center justify-between gap-3">
+                  Cloud Sandbox
+                  <Badge variant="secondary">Coming soon</Badge>
+                </span>
+                <span className="font-normal text-muted-foreground">Run in a managed cloud sandbox</span>
+              </span>
+            </Button>
             {create.error && (
               <p role="alert" className="text-sm text-error">
                 {create.error.message}
@@ -141,11 +161,8 @@ export function MachinesPage() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAdding(false)}>
+            <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
               Cancel
-            </Button>
-            <Button disabled={!name.trim() || create.isPending} onClick={addMachine}>
-              {create.isPending ? "Creating…" : "Create"}
             </Button>
           </DialogFooter>
         </DialogContent>

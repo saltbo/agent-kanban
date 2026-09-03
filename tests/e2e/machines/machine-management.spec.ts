@@ -31,7 +31,7 @@ const authCommand = 'ama-runner auth login --api-server "https://ama.example.tes
 const startCommand =
   'ama-runner start --api-server "https://ama.example.test" --project-id "project-123" --environment-id "environment-build-01" --allow-unsafe-process';
 
-test("[spec: machines/create-runner-setup] Add Machine copies complete auth and start commands", async ({ page }) => {
+test("[spec: machines/create-runner-setup] Add Machine offers a local computer and copies its setup commands", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -43,7 +43,7 @@ test("[spec: machines/create-runner-setup] Add Machine copies complete auth and 
   });
   await page.route(/\/api\/machines$/, async (route) => {
     if (route.request().method() === "POST") {
-      expect(route.request().postDataJSON()).toEqual({ name: "mac-mini-build" });
+      expect(route.request().postData()).toBeNull();
       await route.fulfill({ status: 201, json: { machine, authCommand, startCommand } });
       return;
     }
@@ -54,8 +54,13 @@ test("[spec: machines/create-runner-setup] Add Machine copies complete auth and 
 
   await page.getByRole("button", { name: "Add Machine" }).click();
   const createDialog = page.getByRole("dialog", { name: "Add Machine" });
-  await createDialog.getByLabel("Machine name").fill("mac-mini-build");
-  await createDialog.getByRole("button", { name: "Create", exact: true }).click();
+  const computer = createDialog.getByRole("button", { name: /Your Computer/ });
+  const cloudSandbox = createDialog.getByRole("button", { name: /Cloud Sandbox/ });
+  await expect(computer).toBeEnabled();
+  await expect(cloudSandbox).toBeDisabled();
+  await expect(createDialog.getByText("Coming soon", { exact: true })).toBeVisible();
+  await expect(createDialog.getByLabel("Machine name")).toHaveCount(0);
+  await computer.click();
 
   const setupDialog = page.getByRole("dialog", { name: "Start AMA Runner" });
   await expect(setupDialog.getByText(authCommand, { exact: true })).toBeVisible();
@@ -86,12 +91,11 @@ test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses i
 
   await page.getByRole("button", { name: "Add Machine" }).click();
   const dialog = page.getByRole("dialog", { name: "Add Machine" });
-  await dialog.getByLabel("Machine name").fill("mac-mini-build");
-  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  await dialog.getByRole("button", { name: /Your Computer/ }).click();
 
   await expect(dialog.getByRole("alert")).toHaveText("AMA Project binding is unavailable");
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  await dialog.getByRole("button", { name: /Your Computer/ }).click();
   await expect(page.getByRole("dialog", { name: "Start AMA Runner" })).toBeVisible();
   expect(idempotencyKeys).toHaveLength(2);
   expect(idempotencyKeys[0]).not.toBe("");
@@ -124,8 +128,7 @@ test("[spec: machines/create-runner-setup] Changing Machine data cannot extend t
 
   await page.getByRole("button", { name: "Add Machine" }).click();
   const createDialog = page.getByRole("dialog", { name: "Add Machine" });
-  await createDialog.getByLabel("Machine name").fill("mac-mini-build");
-  await createDialog.getByRole("button", { name: "Create", exact: true }).click();
+  await createDialog.getByRole("button", { name: /Your Computer/ }).click();
 
   const setupDialog = page.getByRole("dialog", { name: "Start AMA Runner" });
   const waiting = setupDialog.getByText("Waiting up to 30 seconds for this Machine to report online…", { exact: true });
