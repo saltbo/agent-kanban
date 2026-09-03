@@ -8,6 +8,7 @@ import { api } from "../../../server/http/app";
 type Operation = Record<string, unknown>;
 type OpenApiDocument = {
   openapi: string;
+  info: { title: string };
   servers: Array<{ url: string }>;
   paths: Record<string, Record<string, Operation>>;
   components: {
@@ -39,7 +40,11 @@ describe("published Resource Server contract", () => {
       openapi: `${env.AK_PUBLIC_ORIGIN}/api/openapi.json`,
     });
     const toolbox = await document();
-    expect(toolbox).toMatchObject({ openapi: "3.1.0", servers: [{ url: `${env.AK_PUBLIC_ORIGIN}/api` }] });
+    expect(toolbox).toMatchObject({
+      openapi: "3.1.0",
+      info: { title: "Agent Kanban API" },
+      servers: [{ url: `${env.AK_PUBLIC_ORIGIN}/api` }],
+    });
     expect((await api.request("/api/toolbox/openapi.json", {}, env)).status).toBe(404);
   });
 

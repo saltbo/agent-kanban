@@ -115,7 +115,7 @@ function toolboxDocument(env: Env) {
 
   return {
     openapi: "3.1.0",
-    info: { title: "Agent Kanban Toolbox API", version: "2.0.0" },
+    info: { title: "Agent Kanban API", version: "2.0.0" },
     servers: [{ url: akResource(env) }],
     tags: [
       { name: "board", description: "Board resources" },
