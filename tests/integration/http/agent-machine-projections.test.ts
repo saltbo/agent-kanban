@@ -262,27 +262,52 @@ describe("Agent and Machine projection HTTP resources", () => {
     });
   }, 30_000);
 
-  it("[spec: machines/environment-projection] returns AMA self-hosted Environment and Runner projections", async () => {
+  it("[spec: machines/environment-projection] returns runtime usage grouped by AMA Runner", async () => {
     vi.stubGlobal(
       "fetch",
       delegatedAmaFetch(["environments:read", "runners:read"], async (request) => {
         const path = new URL(request.url).pathname;
+        const environment = { metadata: metadata("environment-self", "Build host"), spec: { type: "self_hosted" }, status: { phase: "active" } };
         if (path === "/api/v1/environments") {
           return Response.json({
-            data: [{ metadata: metadata("environment-self", "Build host"), spec: { type: "self_hosted" }, status: { phase: "active" } }],
+            data: [environment],
             pagination: { nextCursor: null, hasMore: false },
           });
         }
+        if (path === "/api/v1/environments/environment-self") return Response.json(environment);
         return Response.json({
           data: [
             {
               id: "runner-1",
+              name: "Runner east",
               environmentId: "environment-self",
               state: "active",
               currentLoad: 1,
               maxConcurrent: 2,
+              runtimeUsage: [
+                {
+                  runtime: "codex",
+                  windows: [{ label: "5 hours", utilization: 30, resetsAt: "2026-09-01T17:00:00.000Z" }],
+                },
+              ],
               runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
               lastHeartbeatAt: "2026-09-01T12:01:00.000Z",
+            },
+            {
+              id: "runner-2",
+              name: "Runner west",
+              environmentId: "environment-self",
+              state: "active",
+              currentLoad: 0,
+              maxConcurrent: 1,
+              runtimeUsage: [
+                {
+                  runtime: "claude-code",
+                  windows: [{ label: "7 days", utilization: 65, resetsAt: "2026-09-08T12:00:00.000Z" }],
+                },
+              ],
+              runtimes: [{ runtime: "claude-code", models: ["claude-opus-4-1"], state: "ready" }],
+              lastHeartbeatAt: "2026-09-01T12:02:00.000Z",
             },
           ],
           pagination: { nextCursor: null, hasMore: false },
@@ -292,8 +317,38 @@ describe("Agent and Machine projection HTTP resources", () => {
 
     const response = await browserGet("/machines");
     expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      items: [expect.objectContaining({ id: "environment-self", name: "Build host", status: "online", currentLoad: 1, maxLoad: 2 })],
+    const collection = (await response.json()) as { items: Array<Record<string, unknown>> };
+    expect(collection.items).toEqual([
+      expect.objectContaining({ id: "environment-self", name: "Build host", status: "online", currentLoad: 1, maxLoad: 3, runnerCount: 2 }),
+    ]);
+    expect(collection.items[0]).not.toHaveProperty("runners");
+
+    const detailResponse = await browserGet("/machines/environment-self");
+    expect(detailResponse.status, await detailResponse.clone().text()).toBe(200);
+    await expect(detailResponse.json()).resolves.toMatchObject({
+      id: "environment-self",
+      runners: [
+        expect.objectContaining({
+          id: "runner-1",
+          name: "Runner east",
+          runtimeUsage: [
+            {
+              runtime: "codex",
+              windows: [{ label: "5 hours", utilization: 30, resetsAt: "2026-09-01T17:00:00.000Z" }],
+            },
+          ],
+        }),
+        expect.objectContaining({
+          id: "runner-2",
+          name: "Runner west",
+          runtimeUsage: [
+            {
+              runtime: "claude-code",
+              windows: [{ label: "7 days", utilization: 65, resetsAt: "2026-09-08T12:00:00.000Z" }],
+            },
+          ],
+        }),
+      ],
     });
   });
 
@@ -317,12 +372,14 @@ describe("Agent and Machine projection HTTP resources", () => {
 
     const response = await browserPost("/machines", { name: "Build host" }, "machine-form-request-1");
     expect(response.status, await response.clone().text()).toBe(201);
-    await expect(response.json()).resolves.toMatchObject({
+    const created = await response.json();
+    expect(created).toMatchObject({
       machine: { id: "environment-created", status: "offline" },
       authCommand: 'ama-runner auth login --api-server "https://ama.projection.test"',
       startCommand:
         'ama-runner start --api-server "https://ama.projection.test" --project-id "ama-project-1" --environment-id "environment-created" --allow-unsafe-process',
     });
+    expect(created.machine).not.toHaveProperty("runners");
   });
 
   it("[spec: agents/authoritative-projection] [spec: agents/create-bound-agent] replays the winning Agent response when identical external creations complete concurrently", async () => {

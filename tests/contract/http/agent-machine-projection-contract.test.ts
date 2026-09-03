@@ -49,13 +49,41 @@ describe("Agent and Machine projection HTTP contract", () => {
     expect(openapi.components.schemas.TaskAssignmentWrite.properties).not.toHaveProperty("agentId");
   });
 
-  it("[spec: machines/environment-projection] publishes Machine list/detail and Environment archival", async () => {
+  it("[spec: machines/environment-projection] publishes per-Runner runtime usage on Machine resources", async () => {
     const openapi = await document();
     expect(openapi.paths["/machines"].get.security).toContainEqual({ realmroot: ["machine:read"] });
     expect(openapi.paths["/machines"].post.security).toContainEqual({ realmroot: ["machine:write"] });
     expect(openapi.paths["/machines/{machineId}"].get.security).toContainEqual({ realmroot: ["machine:read"] });
     expect(openapi.paths["/machines/{machineId}"].delete.security).toContainEqual({ realmroot: ["machine:write"] });
-    expect(openapi.components.schemas.Machine).toMatchObject({ type: "object", additionalProperties: false });
+    expect(openapi.paths["/machines"].get.responses["200"].content["application/json"].schema).toEqual({
+      $ref: "#/components/schemas/MachineCollection",
+    });
+    expect(openapi.paths["/machines/{machineId}"].get.responses["200"].content["application/json"].schema).toEqual({
+      $ref: "#/components/schemas/MachineDetail",
+    });
+    expect(openapi.components.schemas.Machine).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: expect.arrayContaining(["runnerCount"]),
+    });
+    expect(openapi.components.schemas.Machine.properties).not.toHaveProperty("runners");
+    expect(openapi.components.schemas.MachineDetail).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: expect.arrayContaining(["runnerCount", "runners"]),
+      properties: { runners: { type: "array", items: { $ref: "#/components/schemas/MachineRunner" } } },
+    });
+    expect(openapi.components.schemas.MachineRunner).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: expect.arrayContaining(["id", "name", "runtimes", "runtimeUsage"]),
+      properties: { runtimeUsage: { type: "array", items: { $ref: "#/components/schemas/MachineRuntimeUsage" } } },
+    });
+    expect(openapi.components.schemas.MachineRuntimeUsageWindow).toMatchObject({
+      required: ["label", "utilization", "resetsAt"],
+      properties: { utilization: { type: "number" }, resetsAt: { type: "string", format: "date-time" } },
+    });
     expect(openapi.components.schemas.MachineCreateResult.required).toEqual(expect.arrayContaining(["machine", "authCommand", "startCommand"]));
+    expect(openapi.components.schemas.MachineCreateResult.properties.machine).toEqual({ $ref: "#/components/schemas/Machine" });
   });
 });

@@ -157,6 +157,28 @@ export interface MachineRuntime {
   detail?: string;
 }
 
+export interface MachineRuntimeUsageWindow {
+  label: string;
+  utilization: number;
+  resets_at: string;
+}
+
+export interface MachineRuntimeUsage {
+  runtime: string;
+  windows: MachineRuntimeUsageWindow[];
+}
+
+export interface ProjectedMachineRunner {
+  id: string;
+  name: string;
+  state: "active" | "offline" | "draining" | "disabled";
+  current_load: number;
+  max_concurrent: number;
+  runtimes: MachineRuntime[];
+  runtime_usage: MachineRuntimeUsage[];
+  last_heartbeat_at: string | null;
+}
+
 export interface ProjectedMachine {
   id: string;
   name: string;
@@ -164,7 +186,8 @@ export interface ProjectedMachine {
   state: "online" | "offline" | "draining" | "disabled";
   current_load: number;
   max_concurrent: number;
-  runners: number;
+  runner_count: number;
+  runners: ProjectedMachineRunner[];
   runtimes: MachineRuntime[];
   last_heartbeat_at: string | null;
   created_at: string;

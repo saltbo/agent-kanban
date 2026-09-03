@@ -30,7 +30,10 @@ does not publish update or archive operations for existing Agents.
 
 A Machine is one self-hosted Agency Environment plus its current Runners.
 Collections exclude cloud Environments. The projection aggregates online state,
-heartbeat, runtimes, models, and capacity.
+heartbeat, runtimes, models, and capacity. The Machine detail representation also
+embeds each current Runner's identity, state, capacity, runtime inventory, usage
+windows, and heartbeat so consumers never merge quota reported by different
+Runner credentials without inflating collection responses.
 
 Creating a Machine creates the Environment and returns complete `ama-runner`
 authentication and start commands with the resolved Project and Environment.

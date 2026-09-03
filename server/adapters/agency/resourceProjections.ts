@@ -2,7 +2,8 @@ import type { Env } from "@server/env";
 import type { AgentProjectionPort } from "@server/usecases/agents/projectAgents";
 import { AmaProjectionError } from "@server/usecases/ama/failures";
 import type { MachineProjectionPort } from "@server/usecases/machines/projectMachines";
-import type { MachineRuntime, ProjectedAgent, ProjectedMachine } from "@shared";
+import type { MachineRuntime, MachineRuntimeUsage, ProjectedAgent, ProjectedMachine, ProjectedMachineRunner } from "@shared";
+import { parseScheduledAt } from "@shared";
 
 type AmaMetadata = {
   uid: string;
@@ -35,10 +36,15 @@ type AmaEnvironment = {
 
 type AmaRunner = {
   id: string;
+  name: string;
   environmentId: string | null;
   state: "active" | "draining" | "disabled" | "offline";
   currentLoad: number;
   maxConcurrent: number;
+  runtimeUsage: Array<{
+    runtime: string;
+    windows: Array<{ label: string; utilization: number; resetsAt: string }>;
+  }>;
   runtimes: MachineRuntime[];
   lastHeartbeatAt: string | null;
 };
@@ -305,7 +311,8 @@ function projectMachine(environment: AmaEnvironment, runners: AmaRunner[]): Proj
     state,
     current_load: active.reduce((total, runner) => total + runner.currentLoad, 0),
     max_concurrent: active.reduce((total, runner) => total + runner.maxConcurrent, 0),
-    runners: runners.length,
+    runner_count: runners.length,
+    runners: runners.map(projectMachineRunner),
     runtimes: [...runtimeByName.values()],
     last_heartbeat_at:
       runners
@@ -315,6 +322,30 @@ function projectMachine(environment: AmaEnvironment, runners: AmaRunner[]): Proj
         .at(-1) ?? null,
     created_at: environment.metadata.createdAt,
     updated_at: environment.metadata.updatedAt,
+  };
+}
+
+function projectMachineRunner(runner: AmaRunner): ProjectedMachineRunner {
+  return {
+    id: runner.id,
+    name: runner.name,
+    state: runner.state,
+    current_load: runner.currentLoad,
+    max_concurrent: runner.maxConcurrent,
+    runtimes: runner.runtimes,
+    runtime_usage: runner.runtimeUsage.map(projectRuntimeUsage),
+    last_heartbeat_at: runner.lastHeartbeatAt,
+  };
+}
+
+function projectRuntimeUsage(usage: AmaRunner["runtimeUsage"][number]): MachineRuntimeUsage {
+  return {
+    runtime: usage.runtime,
+    windows: usage.windows.map((window) => ({
+      label: window.label,
+      utilization: window.utilization,
+      resets_at: window.resetsAt,
+    })),
   };
 }
 
@@ -385,24 +416,45 @@ function decodeEnvironment(value: unknown): AmaEnvironment {
 function decodeRunner(value: unknown): AmaRunner {
   if (
     !isRecord(value) ||
-    !strings(value, ["id"]) ||
+    !strings(value, ["id", "name"]) ||
     (value.environmentId !== null && typeof value.environmentId !== "string") ||
     !["active", "draining", "disabled", "offline"].includes(String(value.state)) ||
     !Number.isInteger(value.currentLoad) ||
     !Number.isInteger(value.maxConcurrent) ||
+    !Array.isArray(value.runtimeUsage) ||
     !Array.isArray(value.runtimes) ||
     (value.lastHeartbeatAt !== null && typeof value.lastHeartbeatAt !== "string")
   )
     throw invalidResponse();
   return {
     id: value.id as string,
+    name: value.name as string,
     environmentId: value.environmentId as string | null,
     state: value.state as AmaRunner["state"],
     currentLoad: value.currentLoad as number,
     maxConcurrent: value.maxConcurrent as number,
+    runtimeUsage: value.runtimeUsage.map(decodeRuntimeUsage),
     runtimes: value.runtimes.map(decodeRuntime),
     lastHeartbeatAt: value.lastHeartbeatAt as string | null,
   };
+}
+
+function decodeRuntimeUsage(value: unknown): AmaRunner["runtimeUsage"][number] {
+  if (!isRecord(value) || !strings(value, ["runtime"]) || !Array.isArray(value.windows)) throw invalidResponse();
+  return { runtime: value.runtime as string, windows: value.windows.map(decodeRuntimeUsageWindow) };
+}
+
+function decodeRuntimeUsageWindow(value: unknown): AmaRunner["runtimeUsage"][number]["windows"][number] {
+  if (
+    !isRecord(value) ||
+    !strings(value, ["label", "resetsAt"]) ||
+    parseScheduledAt(value.resetsAt as string) === null ||
+    typeof value.utilization !== "number" ||
+    !Number.isFinite(value.utilization)
+  ) {
+    throw invalidResponse();
+  }
+  return { label: value.label as string, utilization: value.utilization, resetsAt: value.resetsAt as string };
 }
 
 function decodeRuntime(value: unknown): MachineRuntime {

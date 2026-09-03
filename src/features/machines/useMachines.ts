@@ -15,6 +15,27 @@ export interface MachineProjection {
   updatedAt: string;
 }
 
+export interface MachineDetailProjection extends MachineProjection {
+  runners: MachineRunnerProjection[];
+}
+
+export interface MachineRuntimeUsageWindow {
+  label: string;
+  utilization: number;
+  resetsAt: string;
+}
+
+export interface MachineRunnerProjection {
+  id: string;
+  name: string;
+  status: "active" | "offline" | "draining" | "disabled";
+  currentLoad: number;
+  maxLoad: number;
+  runtimes: Array<{ runtime: string; models: string[]; version?: string; state: string; detail?: string }>;
+  runtimeUsage: Array<{ runtime: string; windows: MachineRuntimeUsageWindow[] }>;
+  lastHeartbeatAt: string | null;
+}
+
 export interface MachineCreateResult {
   machine: MachineProjection;
   authCommand: string;
@@ -28,7 +49,7 @@ export function useMachines() {
 export function useMachine(machineId: string | undefined) {
   return useQuery({
     queryKey: ["machines", machineId],
-    queryFn: () => api.machines.get(machineId!) as Promise<MachineProjection>,
+    queryFn: () => api.machines.get(machineId!) as Promise<MachineDetailProjection>,
     enabled: Boolean(machineId),
   });
 }
