@@ -32,13 +32,7 @@ export function agentActorRequired(c: TaskContext): Response {
 }
 
 export function agentRuntimeSessionRequired(c: TaskContext): Response {
-  return v2Problem(
-    c,
-    403,
-    "runtime-session-required",
-    "Runtime Session required",
-    "Task Claim requires verified Realmroot Remote runtime Session context",
-  );
+  return v2Problem(c, 403, "runtime-session-required", "Runtime Session required", "Task Claim requires verified Agent runtime Session context");
 }
 
 export function taskNotFound(c: TaskContext, detail: string): Response {

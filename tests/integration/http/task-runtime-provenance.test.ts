@@ -66,7 +66,7 @@ describe("verified Task runtime provenance", () => {
 
   it("[spec: session-observation/trusted-binding] [spec: tasks/claim] requires a signed canonical runtime binding and makes exact retries idempotent while rejecting mismatch", async () => {
     const board = await createBoard(db, tenantId, "Runtime provenance", "ops");
-    const task = await createTask(db, tenantId, { title: "Claim from Remote", board_id: board.id });
+    const task = await createTask(db, tenantId, { title: "Claim from Agency Session", board_id: board.id });
     await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
       ownerId: tenantId,
       taskId: task.id,

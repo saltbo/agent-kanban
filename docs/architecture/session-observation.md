@@ -1,8 +1,8 @@
 # Session observation
 
-A successful Task Claim persists Remote-verified runtime and canonical Agency
-Session identity. That immutable binding is the only way a Task acquires a
-Session relationship.
+A successful Task Claim persists the runtime and canonical Agency Session
+identity from the verified Realmroot Agent binding. That immutable binding is
+the only way a Task acquires a Session relationship.
 
 When a human opens Task work activity, AK:
 

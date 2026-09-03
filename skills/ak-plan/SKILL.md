@@ -84,7 +84,7 @@ skill: read the current Review Submission and its `ETag`, verify the work, then
 reject or complete from a different verified actor. A rejection creates another
 work iteration and a later Review Submission with a new `ETag`.
 
-When one prerequisite completes, continue monitoring its dependents. Remote
+When one prerequisite completes, continue monitoring its dependents. Agency
 owns Agent execution; AK only exposes the updated dependency and Task state.
 Report the final Task states, review outcomes, and unresolved external blockers.
 

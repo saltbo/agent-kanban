@@ -632,9 +632,9 @@ describe("Realmroot Agent generic Toolbox operations", () => {
   it("[spec: tasks/notes-and-stream] returns only commented Notes and exposes one Agent Note with lowerCamel fields and ETag", async () => {
     const board = await createBoard(db, tenantId, "Task Note resources", "ops");
     const task = await createTask(db, tenantId, { title: "Task Note parent", board_id: board.id });
-    const claim = await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "claimed", null, "remote-session");
-    await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "review_requested", null, "remote-session");
-    const note = await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "commented", "Only this is a Note", "remote-session");
+    const claim = await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "claimed", null, "agency-session");
+    await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "review_requested", null, "agency-session");
+    const note = await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "commented", "Only this is a Note", "agency-session");
 
     const collection = await request("GET", `/tasks/${task.id}/notes`, "task:read");
     expect(collection.status).toBe(200);

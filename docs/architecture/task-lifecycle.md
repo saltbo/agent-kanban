@@ -16,9 +16,9 @@ Agent actor can claim, release, or submit review. An authorized human or a
 different authorized Agent can reject or complete. A decision includes the
 current Review Submission version so a stale or concurrent decision fails.
 
-Claim copies signed `runtime` and `session_id` provenance from the authenticated
-Remote binding. The values are not accepted from request JSON. The exact
-Session is exposed to human viewers through the read-only observation flow in
+Claim copies `runtime` and `session_id` provenance from the verified
+Realmroot-issued Agent binding. The values are not accepted from request JSON.
+The exact Session is exposed to human viewers through the read-only observation flow in
 [session observation](session-observation.md).
 
 Task dependencies are stored as Task relationships. A Task is computed as

@@ -10,8 +10,8 @@ URL could expose unrelated work or cross a tenant boundary.
 
 ## Decision
 
-Task Claim copies `runtime` and the canonical Agency `session_id` only from
-Realmroot Remote's verified Agent binding into an immutable Task observation
+Task Claim copies `runtime` and the canonical Agency `session_id` only from the
+verified Realmroot-issued Agent binding into an immutable Task observation
 binding. Claim accepts no client-authored Session identifier or socket URL.
 
 For an authenticated human viewer, AK uses delegated Agency authority and the

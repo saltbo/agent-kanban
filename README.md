@@ -6,8 +6,8 @@ Toolbox.
 
 v2 is a breaking architecture change:
 
-- Realmroot Remote and Agency own Agent identity, configuration, execution,
-  Sessions, Environments, Runners, health, quota, and usage.
+- Agency owns Agent identity, configuration, execution, Sessions, Environments,
+  Runners, health, quota, and usage. AMA Runner hosts self-hosted execution.
 - Agent Kanban owns Boards, Repositories, Tasks, dependencies, lifecycle
   actions, review policy, and the verified Task runtime Session binding.
 - Realmroot authenticates humans and Agents and supplies Toolbox access to the
@@ -46,7 +46,7 @@ generated commands.
 
 The installable Skills under `skills/` provide the supported workflows:
 
-- `agent-kanban`: execute an assigned Task from a Remote-hosted Session.
+- `agent-kanban`: execute an assigned Task from an Agency Session.
 - `ak-task`: create, assign, monitor, and review one Task.
 - `ak-plan`: plan and execute a multi-Task project.
 

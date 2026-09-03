@@ -4,13 +4,13 @@ Feature: Agency Session observation
   @journey:session-observation/trusted-binding @entrypoint:toolbox @proof:integration
   Scenario: Bind only verified execution provenance
     Given an authenticated Realmroot Agent claims its assigned Task
-    When its credential contains Realmroot Remote verified runtime and Session context
+    When its Realmroot-issued credential contains verified runtime and Session context
     Then AK stores that exact immutable observation binding
     And the claim request has no client writable Session id or socket address
 
   @journey:session-observation/exact-session @entrypoint:product-ui @proof:integration
   Scenario: Resolve and expose the exact Agency Session
-    Given Realmroot Remote signed a Task binding whose session_id is the canonical Agency Session id
+    Given a Realmroot-issued Agent binding contains the canonical Agency Session id
     When an authorized board viewer opens its work activity
     Then AK uses the current caller's delegated authority and tenant-mapped Agency Project to read the standard Session resource by id
     And AK verifies that the Session uid and projectId match the signed binding and mapped Project

@@ -18,7 +18,7 @@ Feature: Task lifecycle
   @journey:tasks/claim @entrypoint:toolbox @proof:integration
   Scenario: The assigned Agent claims a Task from its Agency Session
     Given a todo Task is assigned to the authenticated Realmroot Agent
-    When the Agent calls task claim with Remote verified execution provenance
+    When the Agent calls task claim with verified Realmroot Agent execution provenance
     Then AK moves the Task to in progress
     And AK binds the Task to that runtime and canonical Agency Session id for observation
 
