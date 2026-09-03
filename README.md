@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./public/logo.png" alt="Agent Kanban" width="520" />
+  <img src="./public/Logo.png" alt="Agent Kanban" width="520" />
 </p>
 
 <p align="center">
