@@ -1,11 +1,12 @@
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentDetailPage } from "../../../src/features/agents/AgentDetailPage";
 import { type AgentFilters, useAgents } from "../../../src/features/agents/useAgents";
+import { MachineDetailPage } from "../../../src/features/machines/MachineDetailPage";
 import { MachinesPage } from "../../../src/features/machines/MachinesPage";
 
 function wrapper(children: ReactNode, route = "/") {
@@ -222,5 +223,185 @@ describe("Machine projection browser mutations", () => {
       expect(timeout).toHaveBeenCalledWith(expect.any(Function), 30_000);
     });
     view.unmount();
+  });
+});
+
+describe("Machine detail Runner usage", () => {
+  it("[spec: machines/runner-aggregation] renders each runtime usage window within its owning Runner", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "/api/auth/session") return json(session());
+        if (url === "/api/boards") return json([]);
+        if (url === "/api/machines/environment-1") {
+          return json({
+            id: "environment-1",
+            name: "Build host",
+            description: null,
+            status: "online",
+            currentLoad: 2,
+            maxLoad: 4,
+            runnerCount: 2,
+            runners: [
+              {
+                id: "runner-east",
+                name: "Runner east",
+                status: "active",
+                currentLoad: 1,
+                maxLoad: 2,
+                runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
+                runtimeUsage: [
+                  {
+                    runtime: "codex",
+                    windows: [{ label: "5 hours", utilization: 18, resetsAt: "2026-09-01T17:00:00.000Z" }],
+                  },
+                  {
+                    runtime: "claude-code",
+                    windows: [{ label: "7 days", utilization: 40, resetsAt: "2026-09-08T12:00:00.000Z" }],
+                  },
+                ],
+                lastHeartbeatAt: "2026-09-01T12:01:00.000Z",
+              },
+              {
+                id: "runner-west",
+                name: "Runner west",
+                status: "active",
+                currentLoad: 1,
+                maxLoad: 2,
+                runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
+                runtimeUsage: [
+                  {
+                    runtime: "codex",
+                    windows: [{ label: "5 hours", utilization: 76, resetsAt: "2026-09-01T18:00:00.000Z" }],
+                  },
+                ],
+                lastHeartbeatAt: "2026-09-01T12:02:00.000Z",
+              },
+            ],
+            runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
+            lastHeartbeatAt: "2026-09-01T12:02:00.000Z",
+            createdAt: "2026-09-01T12:00:00.000Z",
+            updatedAt: "2026-09-01T12:02:00.000Z",
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    wrapper(
+      <Routes>
+        <Route path="/machines/:machineId" element={<MachineDetailPage />} />
+      </Routes>,
+      "/machines/environment-1",
+    );
+
+    const east = await screen.findByRole("region", { name: "Runner east" });
+    const west = screen.getByRole("region", { name: "Runner west" });
+    expect(within(east).getByText("18% used · 82% remaining")).toBeInTheDocument();
+    expect(within(west).getByText("76% used · 24% remaining")).toBeInTheDocument();
+    expect(within(east).getByRole("progressbar", { name: "codex 5 hours usage" })).toHaveAttribute("aria-valuenow", "18");
+    expect(within(west).getByRole("progressbar", { name: "codex 5 hours usage" })).toHaveAttribute("aria-valuenow", "76");
+    expect(within(east).getByText("claude-code")).toBeInTheDocument();
+    expect(within(east).getByText("Runtime inventory not reported")).toBeInTheDocument();
+    expect(within(east).getByText("40% used · 60% remaining")).toBeInTheDocument();
+  });
+
+  it("[spec: machines/runner-aggregation] renders the Machine empty state when no Runners have reported", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "/api/auth/session") return json(session());
+        if (url === "/api/boards") return json([]);
+        if (url === "/api/machines/environment-empty") {
+          return json({
+            id: "environment-empty",
+            name: "Empty host",
+            description: null,
+            status: "offline",
+            currentLoad: 0,
+            maxLoad: 0,
+            runnerCount: 0,
+            runners: [],
+            runtimes: [],
+            lastHeartbeatAt: null,
+            createdAt: "2026-09-01T12:00:00.000Z",
+            updatedAt: "2026-09-01T12:00:00.000Z",
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    wrapper(
+      <Routes>
+        <Route path="/machines/:machineId" element={<MachineDetailPage />} />
+      </Routes>,
+      "/machines/environment-empty",
+    );
+
+    expect(await screen.findByText("No Runners reported yet.")).toBeInTheDocument();
+  });
+
+  it("[spec: machines/runner-aggregation] distinguishes an empty Runner from a runtime without usage", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "/api/auth/session") return json(session());
+        if (url === "/api/boards") return json([]);
+        if (url === "/api/machines/environment-partial") {
+          return json({
+            id: "environment-partial",
+            name: "Partial host",
+            description: null,
+            status: "online",
+            currentLoad: 0,
+            maxLoad: 2,
+            runnerCount: 2,
+            runners: [
+              {
+                id: "runner-empty",
+                name: "Runner empty",
+                status: "active",
+                currentLoad: 0,
+                maxLoad: 1,
+                runtimes: [],
+                runtimeUsage: [],
+                lastHeartbeatAt: null,
+              },
+              {
+                id: "runner-no-usage",
+                name: "Runner no usage",
+                status: "active",
+                currentLoad: 0,
+                maxLoad: 1,
+                runtimes: [{ runtime: "copilot", models: ["gpt-5"], state: "ready" }],
+                runtimeUsage: [],
+                lastHeartbeatAt: null,
+              },
+            ],
+            runtimes: [{ runtime: "copilot", models: ["gpt-5"], state: "ready" }],
+            lastHeartbeatAt: null,
+            createdAt: "2026-09-01T12:00:00.000Z",
+            updatedAt: "2026-09-01T12:00:00.000Z",
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    wrapper(
+      <Routes>
+        <Route path="/machines/:machineId" element={<MachineDetailPage />} />
+      </Routes>,
+      "/machines/environment-partial",
+    );
+
+    const emptyRunner = await screen.findByRole("region", { name: "Runner empty" });
+    const noUsageRunner = screen.getByRole("region", { name: "Runner no usage" });
+    expect(within(emptyRunner).getByText("No runtimes reported by this Runner.")).toBeInTheDocument();
+    expect(within(noUsageRunner).getByText("Usage not reported.")).toBeInTheDocument();
   });
 });

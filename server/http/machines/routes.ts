@@ -1,5 +1,5 @@
 import type { Env } from "@server/env";
-import { machineRepresentation } from "@server/http/machines/representation";
+import { machineDetailRepresentation, machineRepresentation } from "@server/http/machines/representation";
 import { amaProjectionDependencies } from "@server/http/resource-server/amaProjectionDependencies";
 import { externalPageResponse, readExternalPage } from "@server/http/resource-server/externalPagination";
 import { representationEtag } from "@server/http/resource-server/representation";
@@ -57,7 +57,7 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
     const { adapter, projectId } = await amaProjectionDependencies(c, ["environments:read", "runners:read"]);
     const machine = await getProjectedMachine(adapter, projectId, c.req.param("machineId"));
     if (!machine) throw new HTTPException(404, { message: "Machine not found" });
-    const represented = machineRepresentation(machine, c.req.url);
+    const represented = machineDetailRepresentation(machine, c.req.url);
     c.header("ETag", await representationEtag(represented));
     return c.json(represented);
   });

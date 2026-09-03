@@ -14,7 +14,24 @@ const machine: ProjectedMachine = {
   state: "online",
   current_load: 3,
   max_concurrent: 6,
-  runners: 2,
+  runner_count: 1,
+  runners: [
+    {
+      id: "runner-1",
+      name: "Runner one",
+      state: "active",
+      current_load: 3,
+      max_concurrent: 6,
+      runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
+      runtime_usage: [
+        {
+          runtime: "codex",
+          windows: [{ label: "5 hours", utilization: 25, resets_at: "2026-09-01T17:00:00.000Z" }],
+        },
+      ],
+      last_heartbeat_at: "2026-09-01T12:00:01.000Z",
+    },
+  ],
   runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
   last_heartbeat_at: "2026-09-01T12:00:01.000Z",
   created_at: "2026-09-01T11:00:00.000Z",

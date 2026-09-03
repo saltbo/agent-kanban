@@ -290,7 +290,7 @@ describe("Agency Agent and Machine projection adapter", () => {
     });
   });
 
-  it("[spec: machines/environment-projection] filters self-hosted Environments and aggregates Runner runtime objects", async () => {
+  it("[spec: machines/environment-projection] filters self-hosted Environments and preserves runtime usage per Runner", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -308,12 +308,35 @@ describe("Agency Agent and Machine projection adapter", () => {
           data: [
             {
               id: "runner-1",
+              name: "Runner east",
               environmentId: "environment-self",
               state: "active",
               currentLoad: 2,
               maxConcurrent: 4,
+              runtimeUsage: [
+                {
+                  runtime: "codex",
+                  windows: [{ label: "5 hours", utilization: 28, resetsAt: "2026-09-01T17:00:00.000Z" }],
+                },
+              ],
               runtimes: [{ runtime: "codex", models: ["gpt-5.6"], version: "1", state: "ready" }],
               lastHeartbeatAt: "2026-09-01T12:01:00.000Z",
+            },
+            {
+              id: "runner-2",
+              name: "Runner west",
+              environmentId: "environment-self",
+              state: "active",
+              currentLoad: 1,
+              maxConcurrent: 3,
+              runtimeUsage: [
+                {
+                  runtime: "codex",
+                  windows: [{ label: "5 hours", utilization: 72, resetsAt: "2026-09-01T18:00:00.000Z" }],
+                },
+              ],
+              runtimes: [{ runtime: "codex", models: ["gpt-5.6"], version: "1", state: "ready" }],
+              lastHeartbeatAt: "2026-09-01T12:02:00.000Z",
             },
           ],
           pagination: { nextCursor: null, hasMore: false },
@@ -329,13 +352,71 @@ describe("Agency Agent and Machine projection adapter", () => {
           id: "environment-self",
           name: "Build host",
           state: "online",
-          current_load: 2,
-          max_concurrent: 4,
+          current_load: 3,
+          max_concurrent: 7,
           runtimes: [{ runtime: "codex", models: ["gpt-5.6"], version: "1", state: "ready" }],
+          runner_count: 2,
+          runners: [
+            expect.objectContaining({
+              id: "runner-1",
+              name: "Runner east",
+              runtime_usage: [
+                {
+                  runtime: "codex",
+                  windows: [{ label: "5 hours", utilization: 28, resets_at: "2026-09-01T17:00:00.000Z" }],
+                },
+              ],
+            }),
+            expect.objectContaining({
+              id: "runner-2",
+              name: "Runner west",
+              runtime_usage: [
+                {
+                  runtime: "codex",
+                  windows: [{ label: "5 hours", utilization: 72, resets_at: "2026-09-01T18:00:00.000Z" }],
+                },
+              ],
+            }),
+          ],
         }),
       ],
       nextCursor: null,
     });
+  });
+
+  it("[spec: machines/runner-aggregation] rejects a Runner usage window with an invalid reset timestamp", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/api/v1/environments") {
+          return Response.json({
+            data: [{ metadata: metadata("environment-self", "Build host"), spec: { type: "self_hosted" }, status: { phase: "active" } }],
+            pagination: { nextCursor: null, hasMore: false },
+          });
+        }
+        return Response.json({
+          data: [
+            {
+              id: "runner-invalid-reset",
+              name: "Runner invalid reset",
+              environmentId: "environment-self",
+              state: "active",
+              currentLoad: 0,
+              maxConcurrent: 1,
+              runtimeUsage: [{ runtime: "codex", windows: [{ label: "5 hours", utilization: 25, resetsAt: "not-a-date" }] }],
+              runtimes: [{ runtime: "codex", models: ["gpt-5.6"], state: "ready" }],
+              lastHeartbeatAt: "2026-09-01T12:01:00.000Z",
+            },
+          ],
+          pagination: { nextCursor: null, hasMore: false },
+        });
+      }),
+    );
+
+    await expect(
+      new AmaResourceProjectionAdapter(env, "ama-token").listMachinesPage({ projectId: "project-1", limit: 20, cursor: null }),
+    ).rejects.toMatchObject({ kind: "invalid-response", message: "AMA returned an invalid resource representation" });
   });
 
   it("[spec: agents/authoritative-projection] [spec: machines/environment-projection] preserves AMA Agent pages while hiding archived Machines", async () => {
@@ -406,10 +487,12 @@ describe("Agency Agent and Machine projection adapter", () => {
           data: [
             {
               id: `runner-${cursor ?? "first"}`,
+              name: `Runner ${cursor ?? "first"}`,
               environmentId: cursor ? "environment-2" : "environment-1",
               state: "active",
               currentLoad: 1,
               maxConcurrent: 2,
+              runtimeUsage: [],
               runtimes: [],
               lastHeartbeatAt: null,
             },
@@ -442,10 +525,12 @@ describe("Agency Agent and Machine projection adapter", () => {
         return Response.json({
           data: Array.from({ length: 101 }, (_, index) => ({
             id: `runner-${resultBoundRequests}-${index}`,
+            name: `Runner ${resultBoundRequests}-${index}`,
             environmentId: "environment-1",
             state: "offline",
             currentLoad: 0,
             maxConcurrent: 1,
+            runtimeUsage: [],
             runtimes: [],
             lastHeartbeatAt: null,
           })),

@@ -29,9 +29,10 @@ Feature: Machine projections
 
   @journey:machines/runner-aggregation @entrypoint:toolbox @proof:unit
   Scenario: Aggregate live Runner state into a Machine
-    Given Runners report heartbeats, runtimes, models, and capacity for a self-hosted Environment
+    Given Runners report heartbeats, runtimes, models, capacity, and runtime usage windows for a self-hosted Environment
     When AK projects that Environment as a Machine
     Then the Machine reports online state, last heartbeat, runtime inventory, and aggregate current and maximum load
+    And preserves each Runner and its runtime usage windows separately
 
   @journey:machines/archive-environment @entrypoint:toolbox @proof:integration
   Scenario: Archive a Machine's authoritative Environment
