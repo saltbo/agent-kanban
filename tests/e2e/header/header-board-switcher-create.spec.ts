@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Header and Navigation", () => {
-  test("Board switcher — create a new board", async ({ page }) => {
+  test("[spec: boards/switch-and-create] Board switcher creates and opens a new board in its focused dialog", async ({ page }) => {
     // 1. Sign in, navigate to a board, open the board switcher dialog
     await signUpAndGetBoard(page, `headerboardcreate_${Date.now()}@example.com`);
 

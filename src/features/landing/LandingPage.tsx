@@ -36,8 +36,8 @@ function Hero() {
         Orchestrate AI Coding Agents on a <span className="text-accent">Kanban Board</span>
       </h1>
       <p className="mt-6 text-base text-content-secondary leading-relaxed max-w-2xl mx-auto">
-        Remote and Agency run your Agents. Realmroot gives them identity and Toolbox access. Agent Kanban keeps Tasks, dependencies, progress, and
-        independent review visible in one board.
+        Agency coordinates your Agents, and AMA Runner hosts self-hosted execution. Realmroot gives them identity and Toolbox access. Agent Kanban
+        keeps Tasks, dependencies, progress, and independent review visible in one board.
       </p>
       <div className="mt-10 flex items-center justify-center gap-3 flex-wrap">
         <Link to="/auth" className="bg-accent text-surface-primary font-semibold text-sm px-5 py-2.5 rounded-lg hover:opacity-90 transition-opacity">

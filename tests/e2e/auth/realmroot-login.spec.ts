@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("Realmroot authentication", () => {
-  test("offers Realmroot as the only sign-in method", async ({ page }) => {
+  test("[spec: authentication/sign-in] offers Realmroot as the only sign-in method", async ({ page }) => {
     await page.goto("/auth");
 
     await expect(page.getByRole("heading", { name: "Sign in with Realmroot" })).toBeVisible();
@@ -29,7 +29,7 @@ test.describe("Realmroot authentication", () => {
     expect(loginRequests).toBe(1);
   });
 
-  test("requests the AK resource with browser and projection scopes for delegated AMA access", async ({ request }) => {
+  test("[spec: authentication/sign-in] requests the AK resource with PKCE and projection scopes", async ({ request }) => {
     const metadataResponse = await request.get("/.well-known/oauth-protected-resource/api");
     expect(metadataResponse.ok()).toBe(true);
     const metadata = (await metadataResponse.json()) as { resource: string };
@@ -39,6 +39,8 @@ test.describe("Realmroot authentication", () => {
     const authorizationUrl = new URL(login.headers().location);
     expect(authorizationUrl.origin + authorizationUrl.pathname).toBe("https://id.realmroot.dev/api/auth/oauth2/authorize");
     expect(authorizationUrl.searchParams.getAll("resource")).toEqual([metadata.resource]);
+    expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorizationUrl.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
     expect(new Set(authorizationUrl.searchParams.get("scope")?.split(" "))).toEqual(
       new Set([

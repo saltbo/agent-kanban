@@ -6,12 +6,13 @@ Toolbox.
 
 v2 is a breaking architecture change:
 
-- Realmroot Remote and Agency own Agent identity, configuration, execution,
-  Sessions, Environments, Runners, health, quota, and usage.
+- Agency owns Agent identity, configuration, execution, Sessions, Environments,
+  Runners, health, quota, and usage. AMA Runner hosts self-hosted execution.
 - Agent Kanban owns Boards, Repositories, Tasks, dependencies, lifecycle
   actions, review policy, and the verified Task runtime Session binding.
-- Realmroot authenticates humans and Agents and supplies Toolbox access to the
-  Agent Kanban Resource Server.
+- Human sign-in uses standard OIDC authorization code flow with PKCE; the
+  current provider is Realmroot. Agent access additionally uses Realmroot's
+  Agent identity and Toolbox extensions.
 - Agent Kanban no longer ships the `ak` CLI or a local Machine daemon.
 - Every Agency Agent may be assigned work. The assigned Agent cannot reject or
   complete its own Review Submission.
@@ -46,7 +47,7 @@ generated commands.
 
 The installable Skills under `skills/` provide the supported workflows:
 
-- `agent-kanban`: execute an assigned Task from a Remote-hosted Session.
+- `agent-kanban`: execute an assigned Task from an Agency Session.
 - `ak-task`: create, assign, monitor, and review one Task.
 - `ak-plan`: plan and execute a multi-Task project.
 
@@ -66,7 +67,7 @@ wire types in `shared/`, and BDD-lite product specifications in `spec/`.
 
 During development, the Agent states the observable behavior at risk and runs
 only the smallest exact cases that prove it. See
-`docs/designs/next/05-test-pyramid.md` for layer ownership and the decision
+`docs/architecture/test-pyramid.md` for layer ownership and the decision
 rule.
 
 The v2 implementation leaves legacy Agent/Machine/runtime rows unchanged and
@@ -75,14 +76,10 @@ is terminal before enabling v2.
 
 ## Documentation
 
-- `docs/designs/next/README.md`: v2 scope and implementation sequence.
-- `docs/designs/next/01-toolbox-command-surface.md`: Resource Server and
-  Toolbox command design.
-- `docs/designs/next/02-agent-role-and-authority.md`: assignment and review
-  authority.
-- `docs/designs/next/08-single-package-bdd-cutover.md`: current repository,
-  Remote execution, and Session observation boundary.
-- `docs/designs/next/06-v1-to-v2-upgrade.md`: deferred upgrade scope and its
-  terminal-Task precondition.
+- [`docs/architecture/`](docs/architecture/): how the deployed system works
+  now.
+- [`docs/adr/`](docs/adr/): accepted architectural decisions and trade-offs.
+- [`spec/`](spec/): executable product behavior and test traceability.
+- [`docs/operations/`](docs/operations/): deployment and upgrade procedures.
 
 License: FSL-1.1-ALv2.

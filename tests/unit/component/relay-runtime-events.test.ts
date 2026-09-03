@@ -19,7 +19,7 @@ function canonical(id: string, sequence: number, type: string, payload: Record<s
   });
 }
 
-describe("Realmroot Remote event projection", () => {
+describe("Agency Session event projection", () => {
   it("maps canonical AMA EventRecord user and assistant messages", () => {
     const events = [
       canonical("turn-1", 1, "turn.started", {

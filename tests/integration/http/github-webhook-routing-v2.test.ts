@@ -34,7 +34,7 @@ describe("v2 GitHub webhook routing without Maintainers", () => {
     },
   );
 
-  it("keeps pull_request task routing without a maintainer_dispatch response", async () => {
+  it("[spec: repositories/pull-request-update] keeps pull_request task routing without a maintainer_dispatch response", async () => {
     const body = JSON.stringify({ action: "opened", pull_request: { html_url: "https://github.com/acme/repo/pull/1", merged: false } });
 
     const response = await webhookRequest("pull_request", body);

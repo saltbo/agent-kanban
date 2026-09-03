@@ -8,10 +8,14 @@ import { LandingPage } from "../../../src/features/landing/LandingPage";
 vi.mock("../../../src/features/landing/DemoBoard", () => ({ DemoBoard: () => React.createElement("div", null, "Board demo") }));
 
 describe("LandingPage v2 product copy", () => {
-  it("presents Remote, Agency, Realmroot Toolbox, and independent review without legacy architecture copy", () => {
+  it("presents Agency, AMA Runner, Realmroot Toolbox, and independent review without legacy architecture copy", () => {
     render(React.createElement(MemoryRouter, null, React.createElement(LandingPage)));
 
-    expect(screen.getByText(/Remote and Agency run your Agents\. Realmroot gives them identity and Toolbox access\./)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Agency coordinates your Agents, and AMA Runner hosts self-hosted execution\. Realmroot gives them identity and Toolbox access\./,
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("Toolbox-Native Workflow")).toBeInTheDocument();
     expect(screen.getByText("Realmroot Agent Identity")).toBeInTheDocument();
     expect(screen.getByText("AMA Runtime Ownership")).toBeInTheDocument();

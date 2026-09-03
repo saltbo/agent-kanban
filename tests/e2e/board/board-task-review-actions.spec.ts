@@ -5,7 +5,7 @@ const API_VERSION = "2026-08-29";
 const REVIEW_ETAG = '"review-submission-v1"';
 
 test.describe("Board Page", () => {
-  test("human review actions use the canonical ETag-protected resources", async ({ page }) => {
+  test("[spec: tasks/human-review] human review actions use the canonical version-protected resources", async ({ page }) => {
     await signUpAndGetBoard(page, `reviewactions_${Date.now()}@example.com`);
 
     const boardId = page.url().split("/boards/")[1];
@@ -62,8 +62,8 @@ test.describe("Board Page", () => {
           method: "PUT",
           path: `/api/task-review-rejections/${rejectTaskId}`,
           apiVersion: API_VERSION,
-          ifMatch: REVIEW_ETAG,
-          body: {},
+          ifMatch: undefined,
+          body: { reviewSubmissionVersion: "review-submission-v1" },
         },
         {
           method: "GET",
@@ -76,8 +76,8 @@ test.describe("Board Page", () => {
           method: "PUT",
           path: `/api/task-review-completions/${completeTaskId}`,
           apiVersion: API_VERSION,
-          ifMatch: REVIEW_ETAG,
-          body: {},
+          ifMatch: undefined,
+          body: { reviewSubmissionVersion: "review-submission-v1" },
         },
       ]);
     expect(legacyCommandCalls).toEqual([]);

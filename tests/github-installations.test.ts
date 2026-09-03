@@ -636,7 +636,7 @@ describe("handleGithubInstallationEvent", () => {
     expect(row!.suspended_at).toBeNull();
   });
 
-  it("is idempotent: sending 'created' twice results in one row", async () => {
+  it("[spec: repositories/github-lifecycle] is idempotent: sending 'created' twice results in one row", async () => {
     const { handleGithubInstallationEvent } = await import("../server/adapters/github/githubWebhook");
     const id = Math.floor(Math.random() * 1_000_000) + 1_380_000;
     const payload = {
@@ -819,7 +819,7 @@ describe("repoAppStatus / repoAppStatusBatch", () => {
     expect(await repoAppStatus(db, OWNER_A, "caseorg/myrepo")).toBe("covered");
   });
 
-  it("cross-tenant isolation: owner B's install on 'sharedacct' does not cover owner A's query", async () => {
+  it("[spec: repositories/github-lifecycle] cross-tenant isolation: owner B's install on 'sharedacct' does not cover owner A's query", async () => {
     const { repoAppStatus } = await import("../server/adapters/github/githubInstallations");
     await installFor(OWNER_B, "sharedacct", 1005, "all");
     // Owner A has no installation on sharedacct
@@ -904,7 +904,7 @@ describe("getInstallationsForOwner", () => {
 // ─── 11. Webhook route — installation + installation_repositories events ──────
 
 describe("POST /api/webhooks/github-app — installation events", () => {
-  it("handles installation 'created' event via route", async () => {
+  it("[spec: repositories/github-lifecycle] handles signed installation 'created' event via route", async () => {
     const id = Math.floor(Math.random() * 1_000_000) + 4_000_000;
     const payload = JSON.stringify({
       action: "created",
@@ -946,7 +946,7 @@ describe("POST /api/webhooks/github-app — installation events", () => {
     expect(row).toBeNull();
   });
 
-  it("handles installation_repositories 'added' event via route", async () => {
+  it("[spec: repositories/github-lifecycle] handles signed installation_repositories 'added' event via route", async () => {
     const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
     const id = Math.floor(Math.random() * 1_000_000) + 4_200_000;
     await upsertInstallation(db, {

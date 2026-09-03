@@ -31,7 +31,7 @@ Use the selected Agent's `subject` as the Assignment actor ID; never use its
 AK projection ID or an Agency object ID. If no suitable Agent exists and the
 caller is authorized to provision one, create it through AK's generic
 `/agents` collection operation. AK orchestrates the upstream Identity and
-Agent creation; execution remains owned by Realmroot Remote and Agency.
+Agent creation; execution remains owned by Agency.
 
 Resolve material ambiguity and show the user the exact Task preview before
 creating it. The preview must include title, Board, Repository, assignee,
@@ -60,7 +60,7 @@ invocation whose outcome remained unknown.
 
 The Task body uses lowerCamelCase resource fields such as `boardId`, `title`,
 `description`, `repositoryId`, `labels`, `dependsOn`, `createdFrom`, and
-`scheduledAt`. Assignment records intent only; Remote owns starting and
+`scheduledAt`. Assignment records intent only; Agency owns starting and
 hosting the Agent. Retry the same Assignment after an unknown outcome; do not
 create another Task or Assignment.
 

@@ -19,7 +19,7 @@ describe("v2 upgrade preflight", () => {
     expect(result.status).toBe(0);
   });
 
-  it("allows an all-terminal Task database", () => {
+  it("[spec: operations/v2-upgrade-gate] allows an all-terminal Task database", () => {
     const result = runPreflight({ taskRows: [] });
 
     expect(result.status).toBe(0);
@@ -36,7 +36,7 @@ describe("v2 upgrade preflight", () => {
     expect(readFileSync(result.argumentsFile, "utf8")).not.toContain("SELECT id, status FROM tasks");
   });
 
-  it("rejects todo, in-progress, and in-review Tasks and reports every blocking id", () => {
+  it("[spec: operations/v2-upgrade-gate] rejects todo, in-progress, and in-review Tasks and reports every blocking id", () => {
     const result = runPreflight({
       taskRows: [
         { id: "task-todo", status: "todo" },

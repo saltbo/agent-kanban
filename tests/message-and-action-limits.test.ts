@@ -68,7 +68,7 @@ describe("getTaskActions — no since (tail window)", () => {
     expect(actions[0].action).toBe("created");
   });
 
-  it("returns results in ascending created_at order", async () => {
+  it("[spec: tasks/notes-and-stream] returns results in ascending created_at order", async () => {
     await insertActions(taskId, 2);
     const { getTaskActions } = await import("../server/adapters/d1/taskRepo");
     const actions = await getTaskActions(env.DB, taskId);

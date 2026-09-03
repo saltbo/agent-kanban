@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Repositories Page", () => {
-  test("Remove a repository", async ({ page }) => {
+  test("[spec: repositories/manual-management] Remove a repository", async ({ page }) => {
     // 1. Sign in, navigate to /repositories with at least one repository present
     await signUpAndGetBoard(page, `repos_remove_${Date.now()}@example.com`);
     await page.goto("/repositories");

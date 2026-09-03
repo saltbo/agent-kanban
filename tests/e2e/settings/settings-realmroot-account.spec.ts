@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Realmroot account settings", () => {
-  test("shows the Realmroot identity represented by the AK session", async ({ page }) => {
+  test("[spec: authentication/account] shows the Realmroot identity represented by the AK session", async ({ page }) => {
     const email = `settings_realmroot_${Date.now()}@example.com`;
     await signUpAndGetBoard(page, email, "Realmroot Settings User");
 
@@ -16,7 +16,7 @@ test.describe("Realmroot account settings", () => {
     await expect(page.getByRole("button", { name: /Manage in Realmroot/ })).toBeVisible();
   });
 
-  test("delegates account management and exposes no legacy credential controls", async ({ page, context }) => {
+  test("[spec: authentication/account] delegates account management and exposes no legacy credential controls", async ({ page, context }) => {
     await signUpAndGetBoard(page, `settings_delegate_${Date.now()}@example.com`);
     await context.route("https://id.realmroot.dev/**", (route) =>
       route.fulfill({ status: 200, contentType: "text/html", body: "<main>Realmroot console</main>" }),

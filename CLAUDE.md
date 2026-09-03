@@ -32,15 +32,15 @@ In QA mode, flag any code that doesn't match DESIGN.md.
   have no v2 repository or business-logic consumer; no raw SQL in route handlers
 - Error handling: v2 Resource operations use RFC 9457 `application/problem+json`; browser-internal legacy routes retain the centralized `{ error: { code, message } }` envelope.
 - Claim atomicity: db.batch() for race-condition-free task claims
-- Auth: Realmroot authenticates humans and Agency Agents using AK as a native Resource Server. Resource tokens require DPoP; browser users use AK's opaque server Session Cookie. Business data is scoped by the canonical Realmroot tenant ID in `owner_id`.
-- Realmroot Remote owns Agent and Session execution; Agency owns the authoritative Agent, Project, Environment, Runner, and Session resources. AK may hold a server-side Agency grant and translate Project, Agent, and Environment lifecycle for its public projections, but it stores no local Agent/Machine entity and never creates, messages, or closes Agency Sessions.
+- Auth: browser sign-in uses standard OIDC authorization code flow with PKCE and an opaque AK Session Cookie; Realmroot is the configured provider. Resource-token access uses Realmroot's Toolbox client profile with standard DPoP. Realmroot's Agent actor chain identifies Agent callers, its optional organization claim selects organization tenancy, and its runtime binding is required specifically for Task Claim. Business data is scoped by the normalized OIDC subject or Realmroot organization ID in `owner_id`.
+- Agency owns Agent and Session execution and the authoritative Agent, Project, Environment, Runner, and Session resources. AMA Runner hosts self-hosted execution. AK may hold a server-side Agency grant and translate Project, Agent, and Environment lifecycle for its public projections, but it stores no local Agent/Machine entity and never creates, messages, or closes Agency Sessions.
 - The dependency direction is strictly AK to Agency. Agency must not contain AK-specific names, client configuration, routes, query parameters, authorization branches, fixtures, or compatibility behavior; AK owns every business-specific binding to generic Agency resources.
 - Task lifecycle: Todo → Todo+assigned → In Progress (Agent Claim) → In Review (Review Submission) → Done (Review Completion) or Cancelled. Assignment does not dispatch runtime work. The assignee cannot complete or reject its own Review Submission.
-- Task Claim stores the verified `runtime` and `session_id` supplied by Remote's signed Agent binding. Never accept a caller-authored Session id/socket URL or infer a latest Session by Agent.
+- Task Claim stores the verified `runtime` and `session_id` carried by the Realmroot-issued Agent binding. Never accept a caller-authored Session id/socket URL or infer a latest Session by Agent.
 - Task dependencies: `depends_on` JSON array, cycle detection via recursive CTE (taskDeps.ts), `blocked` computed on read
 - Task origin: `created_from` for single-level subtask tracking
 - SSE: TransformStream-based, 2s poll for 25s (CF Workers limit), Last-Event-ID resume via Task Note ID → timestamp resolution. Task streams emit Task Notes only.
-- Agency is the source of truth for runtime work. Remote's signed binding supplies claim provenance; AK resolves that exact binding through Agency and relays Session events read-only without forwarding runtime commands.
+- Agency is the source of truth for runtime work. The Realmroot-issued Agent binding supplies claim provenance; AK resolves that exact Session through Agency and relays Session events read-only without forwarding runtime commands.
 - The v2 `ak` CLI is removed. Do not add new CLI commands or runtime behavior; expose Agent operations through the Resource Server and Realmroot Toolbox.
 - v1-to-v2 data migration is a separate deliverable. Do not add compatibility
   readers, verifiers, cleanup ledgers, destructive cutover jobs, or legacy
@@ -65,7 +65,7 @@ After every significant code change, follow this sequence:
    - PASS → proceed to step 3.
 
 **Ownership rule**: you (main agent) only modify source code. Test code is owned by test agents — all test modifications go through them.
-3. **Agent development verification** — follow `docs/designs/next/05-test-pyramid.md`.
+3. **Agent development verification** — follow `docs/architecture/test-pyramid.md`.
    Before running anything, identify the observable behavior changed and the
    smallest set of exact cases that proves it. Run only those cases. Do not
    default to a whole test file, package, layer, or repository suite.
@@ -76,7 +76,7 @@ After every significant code change, follow this sequence:
 ## Testing
 - Framework: vitest (root `vitest.config.ts`)
 - Normative layer and case-placement rules:
-  `docs/designs/next/05-test-pyramid.md`
+  `docs/architecture/test-pyramid.md`
 - Default run: exact named cases selected from the changed behavior. Use an
   owning file only when every case in it is relevant. Do not run a complete
   layer or default to `npx vitest run`.

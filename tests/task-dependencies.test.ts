@@ -50,7 +50,7 @@ describe("task dependencies", () => {
     });
   }
 
-  it("listTasks returns depends_on for each task", async () => {
+  it("[spec: tasks/structured-fields] listTasks returns depends_on for each task", async () => {
     const { listTasks } = await import("../server/adapters/d1/taskRepo");
     const t1 = await createTask({ title: "dep-parent" });
     const t2 = await createTask({ title: "dep-child", depends_on: [t1.id] });
@@ -60,7 +60,7 @@ describe("task dependencies", () => {
     expect(child.depends_on).toEqual([t1.id]);
   });
 
-  it("rejects cross-tenant parent and dependency task references on create and update", async () => {
+  it("[spec: tasks/structured-fields] [spec: tasks/dependency-blocking] rejects cross-tenant parent and dependency task references on create and update", async () => {
     const otherOwner = "test-user-deps-other";
     await seedUser(env.DB, otherOwner, "deps-other@example.com");
     const { createBoard } = await import("../server/adapters/d1/boardRepo");
@@ -101,7 +101,7 @@ describe("task dependencies", () => {
     expect(child.depends_on).toContain(t2.id);
   });
 
-  it("blocked is true when dependency is not done", async () => {
+  it("[spec: tasks/dependency-blocking] blocked is true when dependency is not done", async () => {
     const { listTasks } = await import("../server/adapters/d1/taskRepo");
     const t1 = await createTask({ title: "blocker" });
     const t2 = await createTask({ title: "blocked-task", depends_on: [t1.id] });
@@ -109,6 +109,14 @@ describe("task dependencies", () => {
     const tasks = await listTasks(env.DB, userId, { board_id: boardId });
     const child = tasks.find((t: any) => t.id === t2.id);
     expect(child!.blocked).toBe(true);
+  });
+
+  it("[spec: tasks/dependency-blocking] rejects cyclic dependency relationships", async () => {
+    const { updateTask } = await import("../server/adapters/d1/taskRepo");
+    const first = await createTask({ title: "cycle-first" });
+    const second = await createTask({ title: "cycle-second", depends_on: [first.id] });
+
+    await expect(updateTask(env.DB, first.id, { depends_on: [second.id] }, userId)).rejects.toThrow("Circular dependency detected");
   });
 
   it("blocked is false when dependency is done", async () => {

@@ -1,6 +1,6 @@
 ---
 name: agent-kanban
-description: Work on an assigned Agent Kanban v2 Task through Realmroot Toolbox. Use when a Remote-hosted Agent needs to inspect, claim, update, or submit assigned work.
+description: Work on an assigned Agent Kanban v2 Task through Realmroot Toolbox. Use when an Agent running in an Agency Session needs to inspect, claim, update, or submit assigned work.
 ---
 
 # Agent Kanban v2 assigned Agent

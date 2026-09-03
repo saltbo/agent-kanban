@@ -6,7 +6,7 @@ Toolbox commands published by the Agent Kanban Resource Server.
 
 ## Runtime ownership
 
-- Realmroot Remote and Agency own Agent identities, configuration, Sessions,
+- Agency owns Agent identities, configuration, Sessions,
   Environments, Runners, execution, health, quota, and usage.
 - Agent Kanban owns boards, tasks, dependencies, task events, review policy,
   and the verified Task-to-runtime-Session observation binding.
@@ -33,10 +33,12 @@ Toolbox commands published by the Agent Kanban Resource Server.
 
 ## Authentication
 
-Realmroot authenticates humans and Remote-hosted Agents against Agent Kanban as a
-Resource Server. Business data is scoped by the canonical Realmroot tenant ID.
-The browser uses an Agent Kanban Session Cookie after Realmroot sign-in. Agents
-use the Realmroot credential mode issued for Toolbox access.
+Human browser sign-in uses standard OIDC authorization code flow with PKCE;
+Realmroot is the current provider. Agents running in Agency Sessions use
+Realmroot's additional Agent identity and Toolbox profile against Agent Kanban
+as a Resource Server. Business data is scoped by the normalized OIDC subject or
+Realmroot organization ID. The browser uses an Agent Kanban Session Cookie;
+Agents use the Realmroot credential mode issued for Toolbox access.
 
 ## Discovery
 

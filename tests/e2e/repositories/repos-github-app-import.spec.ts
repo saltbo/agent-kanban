@@ -42,7 +42,7 @@ const CREATED_REPO = {
 };
 
 test.describe("Repositories GitHub App", () => {
-  test("browse and import a repo from the GitHub App tab", async ({ page }) => {
+  test("[spec: repositories/github-import] browse and import a repo from the GitHub App tab", async ({ page }) => {
     // 1. Sign in and navigate to /repositories
     await signUpAndGetBoard(page, `repos_github_app_${Date.now()}@example.com`);
 

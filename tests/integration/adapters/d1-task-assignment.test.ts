@@ -48,7 +48,7 @@ describe("D1 Task Assignment", () => {
     });
   });
 
-  it("deletes the Session binding on release so the Task can be claimed with new Remote provenance", async () => {
+  it("deletes the Session binding on release so the Task can be claimed with new Agency Session provenance", async () => {
     const { mf, db } = await setupMiniflare();
     resources.push(mf);
     const ownerId = `tenant-release-${randomUUID()}`;
@@ -65,7 +65,7 @@ describe("D1 Task Assignment", () => {
       ownerId,
       taskId: task.id,
       agentActorId: "actor-target",
-      runtime: "remote",
+      runtime: "codex",
       runtimeSessionId: "resume-first",
     });
 
@@ -82,12 +82,12 @@ describe("D1 Task Assignment", () => {
         ownerId,
         taskId: task.id,
         agentActorId: "actor-target",
-        runtime: "remote",
+        runtime: "codex",
         runtimeSessionId: "resume-second",
       }),
-    ).resolves.toMatchObject({ created: true, claim: { runtime: "remote", runtimeSessionId: "resume-second" } });
+    ).resolves.toMatchObject({ created: true, claim: { runtime: "codex", runtimeSessionId: "resume-second" } });
     await expect(
       db.prepare("SELECT runtime, runtime_session_id FROM task_session_bindings WHERE task_id = ?").bind(task.id).first(),
-    ).resolves.toEqual({ runtime: "remote", runtime_session_id: "resume-second" });
+    ).resolves.toEqual({ runtime: "codex", runtime_session_id: "resume-second" });
   });
 });

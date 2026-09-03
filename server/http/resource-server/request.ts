@@ -19,10 +19,10 @@ export function isResourcePrincipal(c: ApiContext): boolean {
 export function resolveActor(c: ApiContext): { actorType: TaskActionWriteActorType; actorId: string; sessionId: null } {
   const identity = c.get("identityType") || "user";
   if (identity !== "user" && identity !== "realmroot:agent") {
-    throw new HTTPException(403, { message: "Realmroot User or Agent identity is required" });
+    throw new HTTPException(403, { message: "User or Agent identity is required" });
   }
   const actorId = identity === "user" ? c.get("ownerId") : c.get("principal")?.actorId;
-  if (!actorId) throw new HTTPException(403, { message: "Realmroot actor identity is required" });
+  if (!actorId) throw new HTTPException(403, { message: "Actor identity is required" });
   return { actorType: identity, actorId, sessionId: null };
 }
 
