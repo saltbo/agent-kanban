@@ -40,6 +40,14 @@ Feature: Agent projections
     And the detail lists AK Tasks whose assignee is the Agent's Realmroot subject
     And the pages offer no create, edit, or archive controls
 
+  @journey:agents/primary-navigation @entrypoint:product-ui @proof:e2e
+  Scenario: Open Agent and Machine resources from the primary navigation
+    Given a human is using the authenticated product
+    When the header is visible on desktop or mobile
+    Then Agents and Machines are visible text links in the primary navigation
+    And the current resource page is identified as active
+    And neither link is duplicated in the account menu
+
   @journey:agents/public-identity-profile @entrypoint:product-ui @proof:unit
   Scenario: Display current Agent identity details
     Given an Agent or assigned Task exposes a stable Agent subject
