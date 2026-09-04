@@ -164,6 +164,120 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     }
   });
 
+  it.each(["user", "agent"] as const)(
+    "[spec: tasks/assign] [spec: tasks/reject-review] uses the raw subject as Inbox Context for a %s token without an organization",
+    async (tokenKind) => {
+      env = {
+        ...env,
+        OIDC_ISSUER: issuer,
+        INBOX_RESOURCE: inboxResource,
+        INBOX_API_VERSION: "2026-08-31",
+        OIDC_SERVICE_CLIENT_ID: "agent-kanban",
+        OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
+      };
+      const subjectId = `019ff-${tokenKind}-subject`;
+      const ownerId = `user:${subjectId}`;
+      await seedUser(db, ownerId, `${tokenKind}-without-org@example.test`);
+
+      for (const event of ["assigned", "review_rejected"] as const) {
+        machineTokenRequests = [];
+        inboxMessageRequests = [];
+        const assigneeActorId = `${tokenKind}-${event}-assignee`;
+        const board = await createBoard(db, ownerId, `${tokenKind} ${event} without org`, "ops");
+        const task = await createTask(db, ownerId, { title: `${tokenKind} ${event} without org`, board_id: board.id });
+        let path = `/task-assignments/${task.id}`;
+        let scope = "task:assign";
+        let body: unknown = { agentActorId: assigneeActorId };
+        if (event === "review_rejected") {
+          await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
+            ownerId,
+            taskId: task.id,
+            assigneeActorId,
+            assignedByActorId: "assigner",
+          });
+          await db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
+          const submission = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
+            ownerId,
+            taskId: task.id,
+            agentActorId: assigneeActorId,
+            pullRequestUrl: null,
+          });
+          path = `/task-review-rejections/${task.id}`;
+          scope = "task:reject";
+          body = { reviewSubmissionVersion: submission.version, reason: "use the native Context" };
+        }
+
+        const url = `${resource}${path}`;
+        const authority = await realmrootAgentAuthority(url, "PUT", scope, `${tokenKind}-reviewer`, undefined, {
+          organizationId: null,
+          principalType: tokenKind === "user" ? "human" : "agent",
+          subjectId,
+        });
+        const response = await api.fetch(
+          new Request(url, {
+            method: "PUT",
+            headers: {
+              authorization: `DPoP ${authority.accessToken}`,
+              dpop: authority.proof,
+              "API-Version": "2026-08-29",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(body),
+          }),
+          env,
+        );
+
+        expect([200, 201], await response.clone().text()).toContain(response.status);
+        await expect(db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(board.id).first()).resolves.toEqual({ owner_id: ownerId });
+        expect(inboxMessageRequests).toHaveLength(1);
+        const message = (await inboxMessageRequests[0]!.clone().json()) as { content: { text: string } };
+        expect.soft(message.content.text).toContain(`AK Context ID: ${subjectId}`);
+        expect.soft(message.content.text).toContain(`--context ${subjectId}`);
+        expect.soft(message.content.text).not.toContain(`--context ${ownerId}`);
+      }
+    },
+  );
+
+  it("[spec: tasks/assign] uses the raw subject as Inbox Context for a user-scoped web session", async () => {
+    env = {
+      ...env,
+      OIDC_ISSUER: issuer,
+      INBOX_RESOURCE: inboxResource,
+      INBOX_API_VERSION: "2026-08-31",
+      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
+      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
+    };
+    const subjectId = "019ff-web-session-subject";
+    const ownerId = `user:${subjectId}`;
+    await seedUser(db, ownerId, "web-session-without-org@example.test");
+    const session = await createTestWebSession(db, ownerId, { subjectId });
+    const board = await createBoard(db, ownerId, "Web session without org", "ops");
+    const task = await createTask(db, ownerId, { title: "Web session assignment without org", board_id: board.id });
+    await realmrootAgentAuthority(`${resource}/task-assignments/bootstrap`, "PUT", "task:assign");
+
+    const response = await api.fetch(
+      new Request(`${resource}/task-assignments/${task.id}`, {
+        method: "PUT",
+        headers: {
+          cookie: session.cookie,
+          "x-csrf-token": session.csrfToken,
+          "API-Version": "2026-08-29",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ agentActorId: "web-session-assignee" }),
+      }),
+      env,
+    );
+
+    expect([200, 201], await response.clone().text()).toContain(response.status);
+    await expect(db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(board.id).first()).resolves.toEqual({ owner_id: ownerId });
+    expect(inboxMessageRequests).toHaveLength(1);
+    const message = (await inboxMessageRequests[0]!.clone().json()) as { content: { text: string } };
+    expect(message.content.text).toContain(`AK Context ID: ${subjectId}`);
+    expect(message.content.text).toContain(`--context ${subjectId}`);
+    expect(message.content.text).not.toContain(`--context ${ownerId}`);
+  });
+
   it.each(["completion", "cancellation"] as const)(
     "[spec: tasks/complete-review] [spec: tasks/cancel] does not notify Inbox after terminal Task %s",
     async (kind) => {
@@ -1295,6 +1409,7 @@ async function realmrootAgentAuthority(
   scope: string,
   actorId = "actor-toolbox",
   authorityUrls: { issuer: string; jwksUri: string } = { issuer, jwksUri },
+  options: { organizationId?: string | null; principalType?: "human" | "agent"; subjectId?: string } = {},
 ) {
   const authorityIssuer = authorityUrls.issuer;
   const authorityJwksUri = authorityUrls.jwksUri;
@@ -1330,17 +1445,18 @@ async function realmrootAgentAuthority(
   const dpopKeys = await generateKeyPair("ES256", { extractable: true });
   const dpopPublicJwk = await exportJWK(dpopKeys.publicKey);
   const thumbprint = await calculateJwkThumbprint(dpopPublicJwk);
+  const organizationId = options.organizationId === undefined ? tenantId : options.organizationId;
   const accessToken = await new SignJWT({
     scope,
     client_id: "realmroot-cli",
     cnf: { jkt: thumbprint },
-    act: { iss: authorityIssuer, sub: actorId },
-    "urn:realmroot:params:oauth:org": tenantId,
+    ...(options.principalType === "human" ? {} : { act: { iss: authorityIssuer, sub: actorId } }),
+    ...(organizationId === null ? {} : { "urn:realmroot:params:oauth:org": organizationId }),
   })
     .setProtectedHeader({ alg: "ES256", kid: issuerPublicJwk.kid, typ: "at+jwt" })
     .setIssuer(authorityIssuer)
     .setAudience(resource)
-    .setSubject("controller-toolbox")
+    .setSubject(options.subjectId ?? "controller-toolbox")
     .setIssuedAt()
     .setExpirationTime("5m")
     .sign(issuerKeys.privateKey);

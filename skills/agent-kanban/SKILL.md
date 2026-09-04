@@ -93,11 +93,10 @@ of guessing flags:
 realmroot toolbox agent-kanban task review <task-id> --generate-body
 ```
 
-Assignment, review rejection, completion, and cancellation arrive through
-Inbox. Treat the message as a wake-up or state-change signal, then reread the
-Task through Toolbox before acting; the Task resource is authoritative.
-If the reread Task is `done` or `cancelled`, stop without adding Notes,
-claiming, or submitting another Review Submission.
+Assignment and review rejection arrive through Inbox. Use the exact AK Context
+ID carried by the message for every Toolbox operation, then reread the Task
+before acting; the Task resource is authoritative. Completion and cancellation
+are terminal transitions and do not create Agent Inbox work.
 
 ## Failure handling
 

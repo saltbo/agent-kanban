@@ -70,6 +70,7 @@ export type RealmrootPrincipal = {
   source: "session" | "token";
   type: "human" | "machine" | "agent" | "service";
   subjectId: string;
+  contextId: string;
   actorId?: string;
   controllerSubjectId?: string;
   runtime?: string;
@@ -259,7 +260,14 @@ export async function authenticateWebSession(c: Context<{ Bindings: Env }>): Pro
     role: stored.role,
   });
   c.set("session", { id: stored.id, expiresAt: new Date(stored.expires_at), csrfToken: stored.csrf_token });
-  return { source: "session", type: "human", subjectId: stored.subject_id, tenantId: stored.tenant_id, scopes: [] };
+  return {
+    source: "session",
+    type: "human",
+    subjectId: stored.subject_id,
+    contextId: stored.tenant_id.startsWith("user:") ? stored.subject_id : stored.tenant_id,
+    tenantId: stored.tenant_id,
+    scopes: [],
+  };
 }
 
 export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>): Promise<RealmrootPrincipal> {
@@ -301,6 +309,7 @@ export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>):
     source: "token",
     type,
     subjectId,
+    contextId: contextFromClaims(claims),
     ...(type === "agent" ? { actorId: realmrootAgentId!, controllerSubjectId: subjectId } : {}),
     ...(runtimeBinding ? { runtime: runtimeBinding.runtime, runtimeSessionId: runtimeBinding.sessionId } : {}),
     tenantId: tenantFromClaims(claims),
@@ -536,6 +545,13 @@ export function tenantFromClaims(claims: JWTPayload): string {
   if (typeof organization === "string" && organization) return organization;
   if (typeof claims.sub !== "string" || !claims.sub) throw new AuthError("Realmroot subject is missing");
   return `user:${claims.sub}`;
+}
+
+function contextFromClaims(claims: JWTPayload): string {
+  const organization = claims[ORG_CLAIM];
+  if (typeof organization === "string" && organization) return organization;
+  if (typeof claims.sub !== "string" || !claims.sub) throw new AuthError("Realmroot subject is missing");
+  return claims.sub;
 }
 
 function objectClaim(value: unknown): Record<string, unknown> | null {
