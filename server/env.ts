@@ -33,6 +33,7 @@ declare module "hono" {
       source: "session" | "token";
       type: "human" | "machine" | "agent" | "service";
       subjectId: string;
+      contextId: string;
       actorId?: string;
       controllerSubjectId?: string;
       runtime?: string;

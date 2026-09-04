@@ -6,7 +6,7 @@
       "type": "archive",
       "description": "Work on an assigned Agent Kanban v2 Task through Realmroot Toolbox. Use when an Agent running in an Agency Session needs to inspect, claim, update, or submit assigned work.",
       "url": "/.well-known/agent-skills/agent-kanban.tar.gz",
-      "digest": "sha256:44285b7d34b6524e028b8f42a814113937930c1a42b5cf1b8f73e52ded8a6773"
+      "digest": "sha256:e191374cdab194ff1c0b29fe262785e3c1c4fdc2db626a3d58adc11f8bca41bf"
     },
     {
       "name": "ak-plan",
