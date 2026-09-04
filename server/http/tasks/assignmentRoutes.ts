@@ -45,7 +45,7 @@ async function replaceAssignment(c: TaskContext): Promise<Response> {
     await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
       taskId: result.assignment.taskId,
       assigneeActorId: result.assignment.agentActorId,
-      contextId: c.get("principal").contextId,
+      ownerId: c.get("ownerId"),
       event: "assigned",
       version: result.version,
     });

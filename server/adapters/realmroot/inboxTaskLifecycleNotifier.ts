@@ -1,11 +1,6 @@
 import { realmrootClientCredentialsToken } from "@server/adapters/realmroot/clientCredentials";
-import { akResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
-import {
-  type TaskLifecycleEvent,
-  TaskLifecycleNotificationFailure,
-  type TaskLifecycleNotifier,
-} from "@server/usecases/tasks/taskLifecycleNotifications";
+import { TaskLifecycleNotificationFailure, type TaskLifecycleNotifier } from "@server/usecases/tasks/taskLifecycleNotifications";
 
 export function inboxTaskLifecycleNotifier(env: Env): TaskLifecycleNotifier {
   return {
@@ -29,8 +24,8 @@ export function inboxTaskLifecycleNotifier(env: Env): TaskLifecycleNotifier {
           },
           body: JSON.stringify({
             recipients: [`agent:${notification.assigneeActorId}`],
-            subject: subject(notification.event),
-            content: { text: content(env, notification) },
+            subject: "Agent Kanban notification",
+            content: { text: content(notification) },
             routingKey: `agent-kanban:task:${notification.taskId}`,
           }),
           signal: AbortSignal.timeout(10_000),
@@ -54,13 +49,6 @@ function requireConfiguration(env: Env): void {
   }
 }
 
-function subject(event: TaskLifecycleEvent): string {
-  if (event === "assigned") return "Agent Kanban task assigned";
-  return "Agent Kanban review rejected";
-}
-
-function content(env: Env, notification: { taskId: string; contextId: string; event: TaskLifecycleEvent; reason?: string | null }): string {
-  const taskUrl = `${akResource(env)}/tasks/${notification.taskId}`;
-  const reason = notification.reason ? `\nReview reason: ${notification.reason}` : "";
-  return `Task ${notification.taskId} changed: ${notification.event}.${reason}\nAK Context ID: ${notification.contextId}\nRead the current Task before acting: realmroot toolbox get ${taskUrl} --context ${notification.contextId} --json\nCanonical resource: ${taskUrl}`;
+function content(notification: { taskId: string; ownerId: string }): string {
+  return `Task ID: ${notification.taskId}\nOwner ID: ${notification.ownerId}`;
 }

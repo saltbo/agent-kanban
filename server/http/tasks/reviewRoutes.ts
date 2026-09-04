@@ -86,10 +86,9 @@ async function replaceReviewRejection(c: TaskContext): Promise<Response> {
     await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
       taskId: result.rejection.taskId,
       assigneeActorId: result.assigneeActorId,
-      contextId: c.get("principal").contextId,
+      ownerId: c.get("ownerId"),
       event: "review_rejected",
       version: result.version,
-      reason: result.rejection.reason,
     });
     c.header("Location", resourceLocation(c, "task-review-rejections", result.rejection.taskId));
     c.header("ETag", `"${result.version}"`);

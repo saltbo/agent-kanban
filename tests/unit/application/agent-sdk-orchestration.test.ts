@@ -67,9 +67,7 @@ describe("Agent SDK orchestration", () => {
               agentId: "agent-1",
               environmentId: null,
               runtime: "codex",
-              promptTemplate: expect.stringMatching(
-                /(?=.*Use the Agent Kanban work skill)(?=.*AK Context ID)(?=.*(?:must not|never|do not).*default Context)/is,
-              ),
+              promptTemplate: "An Agent Kanban notification is available.",
             },
           },
         },

@@ -3,10 +3,9 @@ export type TaskLifecycleEvent = "assigned" | "review_rejected";
 export interface TaskLifecycleNotification {
   taskId: string;
   assigneeActorId: string;
-  contextId: string;
+  ownerId: string;
   event: TaskLifecycleEvent;
   version: string;
-  reason?: string | null;
 }
 
 export interface TaskLifecycleNotifier {
