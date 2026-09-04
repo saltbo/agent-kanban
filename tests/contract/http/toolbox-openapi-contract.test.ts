@@ -352,12 +352,7 @@ describe("published Resource Server contract", () => {
 
   it("documents committed notification failures only for Inbox-notifying Task mutations", async () => {
     const toolbox = await document();
-    const expected = [
-      "PUT /task-assignments/{taskId}",
-      "PUT /task-review-rejections/{taskId}",
-      "PUT /task-review-completions/{taskId}",
-      "PUT /task-cancellations/{taskId}",
-    ];
+    const expected = ["PUT /task-assignments/{taskId}", "PUT /task-review-rejections/{taskId}"];
     const actual: string[] = [];
     for (const [path, pathItem] of Object.entries(toolbox.paths)) {
       const operation = pathItem.put;
