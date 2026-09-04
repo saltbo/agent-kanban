@@ -86,6 +86,7 @@ async function replaceReviewRejection(c: TaskContext): Promise<Response> {
     await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
       taskId: result.rejection.taskId,
       assigneeActorId: result.assigneeActorId,
+      contextId: c.get("ownerId"),
       event: "review_rejected",
       version: result.version,
       reason: result.rejection.reason,
@@ -109,12 +110,6 @@ async function replaceReviewCompletion(c: TaskContext): Promise<Response> {
       taskId: c.req.param("taskId")!,
       reviewSubmissionVersion: input.reviewSubmissionVersion,
       actor,
-    });
-    await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
-      taskId: result.completion.taskId,
-      assigneeActorId: result.assigneeActorId,
-      event: "completed",
-      version: result.version,
     });
     c.header("Location", resourceLocation(c, "task-review-completions", result.completion.taskId));
     c.header("ETag", `"${result.version}"`);

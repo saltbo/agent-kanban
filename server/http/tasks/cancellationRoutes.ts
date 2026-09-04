@@ -1,5 +1,4 @@
 import { d1TaskCancellationRepository } from "@server/adapters/d1/tasks/d1TaskCancellations";
-import { inboxTaskLifecycleNotifier } from "@server/adapters/realmroot/inboxTaskLifecycleNotifier";
 import type { Env } from "@server/env";
 import { v2Problem } from "@server/http/middleware/v2Contract";
 import {
@@ -11,7 +10,6 @@ import {
   taskWorkflowActor,
 } from "@server/http/tasks/workflowSupport";
 import { replaceTaskCancellation, TaskCancellationFailure } from "@server/usecases/tasks/replaceTaskCancellation";
-import { notifyTaskLifecycle } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { Hono } from "hono";
 
 export function registerTaskCancellationRoutes(api: Hono<{ Bindings: Env }>): void {
@@ -34,14 +32,6 @@ async function replaceCancellation(c: TaskContext): Promise<Response> {
       taskId: c.req.param("taskId")!,
       actor,
     });
-    if (result.assigneeActorId) {
-      await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
-        taskId: result.cancellation.taskId,
-        assigneeActorId: result.assigneeActorId,
-        event: "cancelled",
-        version: result.version,
-      });
-    }
     c.header("Location", resourceLocation(c, "task-cancellations", result.cancellation.taskId));
     c.header("ETag", `"${result.version}"`);
     return c.json(result.cancellation, result.created ? 201 : 200);

@@ -2,7 +2,7 @@ import { type Agent, EnborApiError, type EnborClient, type RuntimeName } from "@
 
 const AGENT_KANBAN_SKILL = "saltbo/agent-kanban@agent-kanban";
 const TASK_INBOX_PROMPT =
-  "A task notification from Agent Kanban is ready. Use the Agent Kanban work skill to read the referenced Task, claim it, perform the requested work, record useful progress, and submit the result for review.";
+  "A task notification from Agent Kanban is ready. Use the exact AK Context ID carried by the Inbox message for every Realmroot Toolbox operation; do not rely on a default Context. Use the Agent Kanban work skill to read the referenced Task, claim it, perform the requested work, record useful progress, and submit the result for review.";
 
 export interface CreateAgencyAgentInput {
   name: string;

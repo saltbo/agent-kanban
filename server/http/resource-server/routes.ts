@@ -342,13 +342,13 @@ function toolboxDocument(env: Env) {
       },
       "/task-review-completions/{taskId}": {
         parameters: [taskId],
-        put: notifyingWorkflow("replaceTaskReviewCompletion", "task:complete", "complete", "TaskReviewCompletion", {
+        put: workflow("replaceTaskReviewCompletion", "task:complete", "complete", "TaskReviewCompletion", {
           requestBody: { required: true, ...json({ $ref: "#/components/schemas/TaskReviewCompletionWrite" }) },
         }),
       },
       "/task-cancellations/{taskId}": {
         parameters: [taskId],
-        put: notifyingWorkflow("replaceTaskCancellation", "task:cancel", "cancel", "TaskCancellation"),
+        put: workflow("replaceTaskCancellation", "task:cancel", "cancel", "TaskCancellation"),
       },
       "/task-events": {
         get: {

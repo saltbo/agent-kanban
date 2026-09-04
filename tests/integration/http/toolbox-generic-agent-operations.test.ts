@@ -48,7 +48,7 @@ afterEach(async () => {
 });
 
 describe("Realmroot Agent generic Toolbox operations", () => {
-  it("[spec: tasks/cancel] notifies Inbox after Task lifecycle writes, retries notification on idempotent replay, and maps failure to 503", async () => {
+  it("[spec: tasks/assign] [spec: tasks/reject-review] notifies Inbox with tenant Context after actionable Task lifecycle writes", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     env = {
       ...env,
@@ -59,7 +59,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
     };
 
-    for (const kind of ["assignment", "rejection", "completion", "cancellation"] as const) {
+    for (const kind of ["assignment", "rejection"] as const) {
       inboxResponseStatus = 201;
       oidcDiscoveryRequests = 0;
       machineTokenRequests = [];
@@ -77,17 +77,6 @@ describe("Realmroot Agent generic Toolbox operations", () => {
         scope = "task:assign";
         body = { agentActorId: assigneeActorId };
         event = "assigned";
-      } else if (kind === "cancellation") {
-        await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
-          ownerId: tenantId,
-          taskId: task.id,
-          assigneeActorId,
-          assignedByActorId: "assigner",
-        });
-        path = `/task-cancellations/${task.id}`;
-        scope = "task:cancel";
-        body = undefined;
-        event = "cancelled";
       } else {
         await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
           ownerId: tenantId,
@@ -102,10 +91,10 @@ describe("Realmroot Agent generic Toolbox operations", () => {
           agentActorId: assigneeActorId,
           pullRequestUrl: null,
         });
-        path = `/task-review-${kind === "rejection" ? "rejections" : "completions"}/${task.id}`;
-        scope = kind === "rejection" ? "task:reject" : "task:complete";
-        body = { reviewSubmissionVersion: submission.version, ...(kind === "rejection" ? { reason: "needs changes" } : {}) };
-        event = kind === "rejection" ? "review_rejected" : "completed";
+        path = `/task-review-rejections/${task.id}`;
+        scope = "task:reject";
+        body = { reviewSubmissionVersion: submission.version, reason: "needs changes" };
+        event = "review_rejected";
       }
 
       const invoke = () => request("PUT", path, scope, body, true, "2026-08-29", null, "lifecycle-reviewer");
@@ -146,19 +135,18 @@ describe("Realmroot Agent generic Toolbox operations", () => {
           routingKey: `agent-kanban:task:${task.id}`,
         });
         expect(message.content.text).toContain(`${resource}/tasks/${task.id}`);
+        expect(message.content.text).toContain(`AK Context ID: ${tenantId}`);
+        expect(message.content.text).toContain(`realmroot toolbox get ${resource}/tasks/${task.id} --context ${tenantId} --json`);
         expect(message.content.text).not.toContain("API-Version");
         expect(message.content.text).not.toContain("agent-kanban");
       }
       expect(idempotencyKeys.size).toBe(1);
-      if (kind === "cancellation") {
-        await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({ status: "cancelled" });
-      }
     }
 
     const completionEvents = consoleError.mock.calls
       .map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>)
       .filter((entry) => entry.name === "api" && entry.msg === "request completed" && entry.status === 503);
-    expect(completionEvents).toHaveLength(4);
+    expect(completionEvents).toHaveLength(2);
     for (const event of completionEvents) {
       expect(event).toEqual(
         expect.objectContaining({
@@ -175,6 +163,55 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       );
     }
   });
+
+  it.each(["completion", "cancellation"] as const)(
+    "[spec: tasks/complete-review] [spec: tasks/cancel] does not notify Inbox after terminal Task %s",
+    async (kind) => {
+      env = {
+        ...env,
+        OIDC_ISSUER: issuer,
+        INBOX_RESOURCE: inboxResource,
+        INBOX_API_VERSION: "2026-08-31",
+        OIDC_SERVICE_CLIENT_ID: "agent-kanban",
+        OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
+      };
+      inboxResponseStatus = 503;
+      const assigneeActorId = `terminal-${kind}-agent`;
+      const board = await createBoard(db, tenantId, `Terminal ${kind}`, "ops");
+      const task = await createTask(db, tenantId, { title: `Terminal ${kind} Task`, board_id: board.id });
+      await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
+        ownerId: tenantId,
+        taskId: task.id,
+        assigneeActorId,
+        assignedByActorId: "assigner",
+      });
+
+      let path = `/task-cancellations/${task.id}`;
+      let scope = "task:cancel";
+      let body: unknown;
+      if (kind === "completion") {
+        await db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
+        const submission = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
+          ownerId: tenantId,
+          taskId: task.id,
+          agentActorId: assigneeActorId,
+          pullRequestUrl: null,
+        });
+        path = `/task-review-completions/${task.id}`;
+        scope = "task:complete";
+        body = { reviewSubmissionVersion: submission.version };
+      }
+
+      const response = await request("PUT", path, scope, body, true, "2026-08-29", null, "lifecycle-reviewer");
+
+      expect(response.status, await response.clone().text()).toBe(201);
+      expect(machineTokenRequests).toHaveLength(0);
+      expect(inboxMessageRequests).toHaveLength(0);
+      await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
+        status: kind === "completion" ? "done" : "cancelled",
+      });
+    },
+  );
 
   it("rejects schema-invalid resource writes without durable side effects", async () => {
     const board = await createBoard(db, tenantId, "Schema validation board", "ops");
@@ -990,8 +1027,8 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       });
     }
 
-    expect(machineTokenRequests).toHaveLength(2);
-    expect(inboxMessageRequests).toHaveLength(2);
+    expect(machineTokenRequests).toHaveLength(1);
+    expect(inboxMessageRequests).toHaveLength(1);
     const messages = await Promise.all(
       inboxMessageRequests.map(
         async (messageRequest) =>
@@ -1001,9 +1038,8 @@ describe("Realmroot Agent generic Toolbox operations", () => {
           },
       ),
     );
-    expect(messages.map(({ recipients }) => recipients)).toEqual([["agent:assigned-agent"], ["agent:assigned-agent"]]);
+    expect(messages.map(({ recipients }) => recipients)).toEqual([["agent:assigned-agent"]]);
     expect(messages[0].content.text).toContain("review_rejected");
-    expect(messages[1].content.text).toContain("completed");
   });
 
   it("rejects stale reviewSubmissionVersion bodies for rejection and completion", async () => {

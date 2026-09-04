@@ -56,13 +56,11 @@ function requireConfiguration(env: Env): void {
 
 function subject(event: TaskLifecycleEvent): string {
   if (event === "assigned") return "Agent Kanban task assigned";
-  if (event === "review_rejected") return "Agent Kanban review rejected";
-  if (event === "completed") return "Agent Kanban task accepted";
-  return "Agent Kanban task cancelled";
+  return "Agent Kanban review rejected";
 }
 
-function content(env: Env, notification: { taskId: string; event: TaskLifecycleEvent; reason?: string | null }): string {
+function content(env: Env, notification: { taskId: string; contextId: string; event: TaskLifecycleEvent; reason?: string | null }): string {
   const taskUrl = `${akResource(env)}/tasks/${notification.taskId}`;
   const reason = notification.reason ? `\nReview reason: ${notification.reason}` : "";
-  return `Task ${notification.taskId} changed: ${notification.event}.${reason}\nRead the current Task before acting: realmroot toolbox get ${taskUrl} --json\nCanonical resource: ${taskUrl}`;
+  return `Task ${notification.taskId} changed: ${notification.event}.${reason}\nAK Context ID: ${notification.contextId}\nRead the current Task before acting: realmroot toolbox get ${taskUrl} --context ${notification.contextId} --json\nCanonical resource: ${taskUrl}`;
 }
