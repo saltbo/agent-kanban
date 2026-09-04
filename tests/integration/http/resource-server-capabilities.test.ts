@@ -11,6 +11,24 @@ const env = {
 const resource = `${env.AK_PUBLIC_ORIGIN}/api`;
 
 describe("Resource Server HTTP capabilities", () => {
+  it("serves interactive API documentation for the canonical OpenAPI document", async () => {
+    const docs = await api.request("/api/docs", {}, env);
+    const openapi = await api.request("/api/openapi.json", {}, env);
+
+    expect(docs.status).toBe(200);
+    expect(docs.headers.get("content-type")).toContain("text/html");
+    const html = await docs.text();
+    expect(html).toContain("Agent Kanban API Docs");
+    expect(html).toContain("/api/openapi.json");
+
+    expect(openapi.status).toBe(200);
+    expect(openapi.headers.get("content-type")).toContain("application/json");
+    await expect(openapi.json()).resolves.toMatchObject({
+      openapi: "3.1.0",
+      info: { title: "Agent Kanban API" },
+    });
+  });
+
   it("[spec: resource-server/discovery] publishes protected-resource and Toolbox discovery over HTTP", async () => {
     const metadata = await api.request("/.well-known/oauth-protected-resource/api", {}, env);
     const service = await api.request("/api", {}, env);

@@ -1,3 +1,4 @@
+import { Scalar } from "@scalar/hono-api-reference";
 import { RESOURCE_SCOPES } from "@server/auth/realmroot";
 import { akPublicUrl, akResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
@@ -27,6 +28,30 @@ export function registerResourceServerRoutes(app: Api): void {
     });
   });
   app.get("/api/openapi.json", (c) => c.json(toolboxDocument(c.env)));
+  app.get(
+    "/api/docs",
+    Scalar({
+      url: "/api/openapi.json",
+      pageTitle: "Agent Kanban API Docs",
+      theme: "default",
+      darkMode: true,
+      customCss: `
+        :root {
+          --scalar-font: "Geist", ui-sans-serif, system-ui, sans-serif;
+          --scalar-font-code: "Geist Mono", ui-monospace, monospace;
+          --scalar-color-accent: #0891b2;
+          --scalar-background-accent: rgba(8, 145, 178, 0.1);
+        }
+        .dark-mode {
+          --scalar-color-accent: #22d3ee;
+          --scalar-background-1: #09090b;
+          --scalar-background-2: #18181b;
+          --scalar-background-3: #27272a;
+          --scalar-background-accent: rgba(34, 211, 238, 0.1);
+        }
+      `,
+    }),
+  );
   app.get("/api/toolbox/openapi.json", (c) => c.notFound());
 }
 
