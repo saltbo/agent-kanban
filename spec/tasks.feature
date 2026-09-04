@@ -13,8 +13,8 @@ Feature: Task lifecycle
     Given a todo Task exists
     When an authorized actor assigns a Realmroot Agent actor id
     Then AK records the assignment without creating an Agency Session
-    And AK sends the assignee an Inbox notification that identifies the Task and current tenant Context
-    And the notification's Realmroot Toolbox command explicitly selects that Context
+    And AK sends the assignee an Inbox notification that identifies only the Task and owner
+    And the notification contains no execution instructions
 
   @journey:tasks/claim @entrypoint:toolbox @proof:integration
   Scenario: The assigned Agent claims a Task from its Agency Session
@@ -42,8 +42,8 @@ Feature: Task lifecycle
     Given a Task is in review
     When an authorized actor other than the assignee rejects it with a reason
     Then AK returns the Task to in progress
-    And AK sends the assignee an Inbox notification with the rejection reason and current tenant Context
-    And the notification's Realmroot Toolbox command explicitly selects that Context
+    And AK sends the assignee an Inbox notification that identifies only the Task and owner
+    And the notification contains no execution instructions
 
   @journey:tasks/complete-review @entrypoint:toolbox @proof:integration
   Scenario: A different actor accepts submitted work

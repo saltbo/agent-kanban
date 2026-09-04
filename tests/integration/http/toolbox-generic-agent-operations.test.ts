@@ -48,7 +48,7 @@ afterEach(async () => {
 });
 
 describe("Realmroot Agent generic Toolbox operations", () => {
-  it("[spec: tasks/assign] [spec: tasks/reject-review] notifies Inbox with tenant Context after actionable Task lifecycle writes", async () => {
+  it("[spec: tasks/assign] [spec: tasks/reject-review] notifies Inbox with only the Task and organization owner references", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     env = {
       ...env,
@@ -70,13 +70,11 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       let path: string;
       let scope: string;
       let body: unknown;
-      let event: string;
 
       if (kind === "assignment") {
         path = `/task-assignments/${task.id}`;
         scope = "task:assign";
         body = { agentActorId: assigneeActorId };
-        event = "assigned";
       } else {
         await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
           ownerId: tenantId,
@@ -94,7 +92,6 @@ describe("Realmroot Agent generic Toolbox operations", () => {
         path = `/task-review-rejections/${task.id}`;
         scope = "task:reject";
         body = { reviewSubmissionVersion: submission.version, reason: "needs changes" };
-        event = "review_rejected";
       }
 
       const invoke = () => request("PUT", path, scope, body, true, "2026-08-29", null, "lifecycle-reviewer");
@@ -126,19 +123,16 @@ describe("Realmroot Agent generic Toolbox operations", () => {
         idempotencyKeys.add(messageRequest.headers.get("Idempotency-Key")!);
         const message = (await messageRequest.clone().json()) as {
           recipients: string[];
+          subject: string;
           content: { text: string };
           routingKey: string;
         };
-        expect(message).toMatchObject({
+        expect(message).toEqual({
           recipients: [`agent:${assigneeActorId}`],
-          content: { text: expect.stringContaining(event) },
+          subject: "Agent Kanban notification",
+          content: { text: `Task ID: ${task.id}\nOwner ID: ${tenantId}` },
           routingKey: `agent-kanban:task:${task.id}`,
         });
-        expect(message.content.text).toContain(`${resource}/tasks/${task.id}`);
-        expect(message.content.text).toContain(`AK Context ID: ${tenantId}`);
-        expect(message.content.text).toContain(`realmroot toolbox get ${resource}/tasks/${task.id} --context ${tenantId} --json`);
-        expect(message.content.text).not.toContain("API-Version");
-        expect(message.content.text).not.toContain("agent-kanban");
       }
       expect(idempotencyKeys.size).toBe(1);
     }
@@ -165,7 +159,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
   });
 
   it.each(["user", "agent"] as const)(
-    "[spec: tasks/assign] [spec: tasks/reject-review] uses the raw subject as Inbox Context for a %s token without an organization",
+    "[spec: tasks/assign] [spec: tasks/reject-review] preserves the personal AK owner reference for a %s token without an organization",
     async (tokenKind) => {
       env = {
         ...env,
@@ -231,14 +225,12 @@ describe("Realmroot Agent generic Toolbox operations", () => {
         await expect(db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(board.id).first()).resolves.toEqual({ owner_id: ownerId });
         expect(inboxMessageRequests).toHaveLength(1);
         const message = (await inboxMessageRequests[0]!.clone().json()) as { content: { text: string } };
-        expect.soft(message.content.text).toContain(`AK Context ID: ${subjectId}`);
-        expect.soft(message.content.text).toContain(`--context ${subjectId}`);
-        expect.soft(message.content.text).not.toContain(`--context ${ownerId}`);
+        expect(message.content.text).toBe(`Task ID: ${task.id}\nOwner ID: ${ownerId}`);
       }
     },
   );
 
-  it("[spec: tasks/assign] uses the raw subject as Inbox Context for a user-scoped web session", async () => {
+  it("[spec: tasks/assign] preserves the personal AK owner reference for a user-scoped web session", async () => {
     env = {
       ...env,
       OIDC_ISSUER: issuer,
@@ -273,9 +265,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     await expect(db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(board.id).first()).resolves.toEqual({ owner_id: ownerId });
     expect(inboxMessageRequests).toHaveLength(1);
     const message = (await inboxMessageRequests[0]!.clone().json()) as { content: { text: string } };
-    expect(message.content.text).toContain(`AK Context ID: ${subjectId}`);
-    expect(message.content.text).toContain(`--context ${subjectId}`);
-    expect(message.content.text).not.toContain(`--context ${ownerId}`);
+    expect(message.content.text).toBe(`Task ID: ${task.id}\nOwner ID: ${ownerId}`);
   });
 
   it.each(["completion", "cancellation"] as const)(
@@ -1112,9 +1102,11 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
     };
     await realmrootAgentAuthority(`${resource}/task-review-rejections/bootstrap`, "PUT", "task:reject");
+    const decidedTaskIds: string[] = [];
 
     for (const kind of ["rejections", "completions"] as const) {
       const task = await reviewReadyTask(tenantId, board.id, `Human ${kind}`, "assigned-agent");
+      decidedTaskIds.push(task.id);
       const submitted = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
         ownerId: tenantId,
         taskId: task.id,
@@ -1153,7 +1145,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       ),
     );
     expect(messages.map(({ recipients }) => recipients)).toEqual([["agent:assigned-agent"]]);
-    expect(messages[0].content.text).toContain("review_rejected");
+    expect(messages[0].content.text).toBe(`Task ID: ${decidedTaskIds[0]}\nOwner ID: ${tenantId}`);
   });
 
   it("rejects stale reviewSubmissionVersion bodies for rejection and completion", async () => {

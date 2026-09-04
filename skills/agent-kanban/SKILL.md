@@ -93,10 +93,19 @@ of guessing flags:
 realmroot toolbox agent-kanban task review <task-id> --generate-body
 ```
 
-Assignment and review rejection arrive through Inbox. Use the exact AK Context
-ID carried by the message for every Toolbox operation, then reread the Task
-before acting; the Task resource is authoritative. Completion and cancellation
-are terminal transitions and do not create Agent Inbox work.
+Assignment and review rejection arrive through Inbox as business references:
+
+```text
+Task ID: <task-id>
+Owner ID: <owner-id>
+```
+
+The message contains no execution instructions. The Owner ID identifies the AK
+tenant. For native Realmroot resources, translate a personal Owner ID encoded
+as `user:<subject-id>` to the Context ID `<subject-id>`; use an organization
+Owner ID unchanged. Use that Context for Toolbox operations, then reread the
+Task before acting because the Task resource is authoritative. Completion and
+cancellation are terminal transitions and do not create Agent Inbox work.
 
 ## Failure handling
 
