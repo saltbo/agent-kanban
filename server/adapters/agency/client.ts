@@ -1,6 +1,6 @@
-import { createEnborClient, type EnborClient } from "@realmroot/enbor-sdk";
+import { type CreateTriggerRequest, createEnborClient, EnborApiError, type EnborClient, type Trigger } from "@realmroot/enbor-sdk";
 
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 export function createAgencyClient(
   baseUrl: string,
@@ -20,5 +20,23 @@ export function createAgencyClient(
   client.raw.setConfig({
     fetch: (input, init) => sdkFetch(new Request(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })),
   });
+  const createTrigger = client.triggers.create;
+  client.triggers.create = ((body: CreateTriggerRequest, idempotencyKey?: string) =>
+    idempotencyKey ? createIdempotentTrigger(client, body, idempotencyKey) : createTrigger(body)) as EnborClient["triggers"]["create"];
   return client;
+}
+
+async function createIdempotentTrigger(client: EnborClient, body: CreateTriggerRequest, idempotencyKey: string): Promise<Trigger> {
+  const result = (await client.raw.post({
+    url: "/api/v1/triggers",
+    body,
+    headers: { "Content-Type": "application/json", "idempotency-key": idempotencyKey },
+  })) as { data?: Trigger; error?: unknown; response?: Response };
+  if (result.response?.ok && result.error === undefined && result.data) return result.data;
+  const responseBody = result.error ?? result.data;
+  throw new EnborApiError(
+    result.response?.status,
+    typeof responseBody === "string" ? responseBody : JSON.stringify(responseBody ?? {}),
+    responseBody,
+  );
 }

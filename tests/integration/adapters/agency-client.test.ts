@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe("Agency SDK client", () => {
-  it("applies a 10 second deadline signal to SDK requests", async () => {
+  it("applies a 30 second deadline signal to SDK requests", async () => {
     const controller = new AbortController();
     const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
     const requests: Request[] = [];
@@ -25,7 +25,7 @@ describe("Agency SDK client", () => {
     await client.projects.list({ limit: 100 });
 
     expect(timeout).toHaveBeenCalledOnce();
-    expect(timeout).toHaveBeenCalledWith(10_000);
+    expect(timeout).toHaveBeenCalledWith(30_000);
     expect(requests).toHaveLength(1);
     expect(requests[0]!.signal.aborted).toBe(false);
     controller.abort();

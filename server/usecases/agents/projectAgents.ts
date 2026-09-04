@@ -1,5 +1,9 @@
 import { type Agent, EnborApiError, type EnborClient, type RuntimeName } from "@realmroot/enbor-sdk";
 
+const AGENT_KANBAN_SKILL = "saltbo/agent-kanban@agent-kanban";
+const TASK_INBOX_PROMPT =
+  "A task notification from Agent Kanban is ready. Use the Agent Kanban work skill to read the referenced Task, claim it, perform the requested work, record useful progress, and submit the result for review.";
+
 export interface CreateAgencyAgentInput {
   name: string;
   description?: string | null;
@@ -20,15 +24,16 @@ export async function createAgencyAgent(client: EnborClient, input: CreateAgency
     },
     await derivedKey(input.idempotencyKey, "identity"),
   );
+  let agent: Agent;
   try {
-    return await client.agents.create(
+    agent = await client.agents.create(
       {
         metadata: { name: input.name, description: input.description },
         spec: {
           systemPrompt: input.systemPrompt,
           provider: input.provider,
           model: input.model,
-          skills: input.skills,
+          skills: withAgentKanbanSkill(input.skills),
           identityRef: identity.metadata.uid,
         },
       },
@@ -47,6 +52,44 @@ export async function createAgencyAgent(client: EnborClient, input: CreateAgency
     }
     throw error;
   }
+  const createTrigger = client.triggers.create as (
+    body: Parameters<EnborClient["triggers"]["create"]>[0],
+    idempotencyKey?: string,
+  ) => ReturnType<EnborClient["triggers"]["create"]>;
+  const trigger = await createTrigger(
+    {
+      metadata: { name: triggerName(input.name) },
+      spec: {
+        source: { type: "inbox" },
+        template: {
+          metadata: {
+            labels: { "agent-kanban.dev/managed-by": "agent-kanban" },
+            annotations: { "agent-kanban.dev/agent-id": agent.metadata.uid },
+          },
+          spec: {
+            agentId: agent.metadata.uid,
+            environmentId: null,
+            runtime: input.runtime,
+            promptTemplate: TASK_INBOX_PROMPT,
+          },
+        },
+      },
+    },
+    await derivedKey(input.idempotencyKey, "trigger"),
+  );
+  if (trigger.status.subscription?.phase !== "active") {
+    throw new EnborApiError(502, "Enbor did not activate the Agent Inbox Trigger", trigger);
+  }
+  return agent;
+}
+
+function withAgentKanbanSkill(skills: string[] | undefined): string[] {
+  return skills?.includes(AGENT_KANBAN_SKILL) ? skills : [...(skills ?? []), AGENT_KANBAN_SKILL];
+}
+
+function triggerName(agentName: string): string {
+  const suffix = " task inbox";
+  return `${agentName.slice(0, 160 - suffix.length)}${suffix}`;
 }
 
 async function derivedKey(parent: string, stage: string): Promise<string> {
