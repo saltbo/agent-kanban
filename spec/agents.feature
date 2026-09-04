@@ -28,7 +28,8 @@ Feature: Agent projections
   Scenario: Create an Agent with its Realmroot identity
     Given an authorized caller supplies complete Agent configuration
     When the caller creates an Agent through AK
-    Then AK creates a same-tenant Realmroot Identity and bound Enbor Agent
+    Then AK creates a same-tenant Realmroot Identity and bound Enbor Agent with the Agent Kanban work skill
+    And AK creates an active Inbox Trigger that uses automatic Environment placement
     And replays the compound operation without duplicate resources when its Idempotency-Key is retried
     And stores no local Agent entity
 

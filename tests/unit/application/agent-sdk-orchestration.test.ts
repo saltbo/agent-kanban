@@ -4,16 +4,19 @@ import { createAgencyAgent } from "../../../server/usecases/agents/projectAgents
 
 const identity = { metadata: { uid: "identity-1" } } as Identity;
 const agent = { metadata: { uid: "agent-1" } } as Agent;
+const trigger = { status: { subscription: { phase: "active" } } };
 
 function harness() {
   const createIdentity = vi.fn().mockResolvedValue(identity);
   const deleteIdentity = vi.fn().mockResolvedValue(undefined);
   const createAgent = vi.fn().mockResolvedValue(agent);
+  const createTrigger = vi.fn().mockResolvedValue(trigger);
   const client = {
     identities: { create: createIdentity, delete: deleteIdentity },
     agents: { create: createAgent },
+    triggers: { create: createTrigger },
   } as unknown as EnborClient;
-  return { client, createIdentity, deleteIdentity, createAgent };
+  return { client, createIdentity, deleteIdentity, createAgent, createTrigger };
 }
 
 const input = {
@@ -30,7 +33,7 @@ const input = {
 
 describe("Agent SDK orchestration", () => {
   it("[spec: agents/create-bound-agent] creates the SDK Identity before the bound SDK Agent", async () => {
-    const { client, createIdentity, deleteIdentity, createAgent } = harness();
+    const { client, createIdentity, deleteIdentity, createAgent, createTrigger } = harness();
 
     await expect(createAgencyAgent(client, input)).resolves.toBe(agent);
     expect(createIdentity).toHaveBeenCalledWith(
@@ -44,14 +47,47 @@ describe("Agent SDK orchestration", () => {
           systemPrompt: "Build reliable APIs",
           provider: "openai",
           model: "gpt-5.6",
-          skills: ["agent-kanban"],
+          skills: ["agent-kanban", "saltbo/agent-kanban@agent-kanban"],
           identityRef: "identity-1",
         },
       },
       expect.stringMatching(/^ak-[a-f0-9]{64}$/),
     );
+    expect(createTrigger).toHaveBeenCalledWith(
+      {
+        metadata: { name: "Backend task inbox" },
+        spec: {
+          source: { type: "inbox" },
+          template: {
+            metadata: {
+              labels: { "agent-kanban.dev/managed-by": "agent-kanban" },
+              annotations: { "agent-kanban.dev/agent-id": "agent-1" },
+            },
+            spec: {
+              agentId: "agent-1",
+              environmentId: null,
+              runtime: "codex",
+              promptTemplate: expect.stringContaining("Use the Agent Kanban work skill"),
+            },
+          },
+        },
+      },
+      expect.stringMatching(/^ak-[a-f0-9]{64}$/),
+    );
     expect(createIdentity.mock.calls[0]![1]).not.toBe(createAgent.mock.calls[0]![1]);
+    expect(createTrigger.mock.calls[0]![1]).not.toBe(createIdentity.mock.calls[0]![1]);
+    expect(createTrigger.mock.calls[0]![1]).not.toBe(createAgent.mock.calls[0]![1]);
     expect(deleteIdentity).not.toHaveBeenCalled();
+  });
+
+  it("[spec: agents/create-bound-agent] fails when Enbor does not activate the Inbox Trigger", async () => {
+    const { client, createTrigger } = harness();
+    createTrigger.mockResolvedValue({ status: { subscription: { phase: "error" } } });
+
+    await expect(createAgencyAgent(client, input)).rejects.toMatchObject({
+      status: 502,
+      responseText: "Enbor did not activate the Agent Inbox Trigger",
+    });
   });
 
   it("[spec: agents/create-bound-agent] deletes the created Identity when SDK Agent creation is permanently rejected", async () => {

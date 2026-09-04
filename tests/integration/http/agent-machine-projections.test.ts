@@ -451,11 +451,13 @@ describe("Agent and Machine projection HTTP resources", () => {
     const synchronizeAgentCreations = twoRequestBarrier();
     let identityCreates = 0;
     let agentCreates = 0;
+    let triggerCreates = 0;
     const identityUpstreamKeys: string[] = [];
     const agentUpstreamKeys: string[] = [];
+    const triggerUpstreamKeys: string[] = [];
     vi.stubGlobal(
       "fetch",
-      delegatedAgencyFetch(["identities:write", "agents:write"], async (request) => {
+      delegatedAgencyFetch(["identities:write", "agents:write", "triggers:write"], async (request) => {
         const path = new URL(request.url).pathname;
         if (path === "/api/v1/identities") {
           identityCreates += 1;
@@ -472,11 +474,31 @@ describe("Agent and Machine projection HTTP resources", () => {
               systemPrompt: "Handle concurrent work",
               provider: null,
               model: null,
-              skills: [],
+              skills: ["saltbo/agent-kanban@agent-kanban"],
               allowedTools: [],
               identity: { subject: "agent-concurrent-subject", username: "concurrent-agent", runtime: "codex" },
             },
             status: { phase: "active", schedulable: true },
+          });
+        }
+        if (path === "/api/v1/triggers") {
+          triggerCreates += 1;
+          triggerUpstreamKeys.push(request.headers.get("Idempotency-Key")!);
+          expect(await request.json()).toMatchObject({
+            spec: {
+              source: { type: "inbox" },
+              template: {
+                metadata: {
+                  labels: { "agent-kanban.dev/managed-by": "agent-kanban" },
+                  annotations: { "agent-kanban.dev/agent-id": "agent-concurrent" },
+                },
+                spec: { agentId: "agent-concurrent", environmentId: null, runtime: "codex" },
+              },
+            },
+          });
+          return Response.json({
+            metadata: metadata("trigger-concurrent", "Concurrent Agent task inbox"),
+            status: { subscription: { phase: "active" } },
           });
         }
         throw new Error(`Unexpected Enbor request ${request.method} ${path}`);
@@ -494,6 +516,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(missingKey.status).toBe(400);
     expect(identityCreates).toBe(0);
     expect(agentCreates).toBe(0);
+    expect(triggerCreates).toBe(0);
 
     const responses = await Promise.all([browserPost("/agents", body, key), browserPost("/agents", body, key)]);
     expect(responses.map((response) => response.status)).toEqual([201, 201]);
@@ -509,6 +532,7 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(snapshots[1]).toEqual(snapshots[0]);
     expect(identityCreates).toBe(2);
     expect(agentCreates).toBe(2);
+    expect(triggerCreates).toBe(2);
     await expect(
       fixture.db
         .prepare("SELECT COUNT(*) AS count FROM resource_idempotency_records WHERE resource_kind = ? AND idempotency_key = ?")
@@ -520,14 +544,18 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(conflict.status).toBe(422);
     expect(identityCreates).toBe(2);
     expect(agentCreates).toBe(2);
+    expect(triggerCreates).toBe(2);
 
     const otherSession = await browserSessionFor("projection-human-other");
     const otherCaller = await browserPost("/agents", { ...body, name: "Other caller Agent" }, key, otherSession);
     expect(otherCaller.status, await otherCaller.clone().text()).toBe(201);
     expect(identityUpstreamKeys[0]).toBe(identityUpstreamKeys[1]);
     expect(agentUpstreamKeys[0]).toBe(agentUpstreamKeys[1]);
+    expect(triggerUpstreamKeys[0]).toBe(triggerUpstreamKeys[1]);
+    expect(new Set([identityUpstreamKeys[0], agentUpstreamKeys[0], triggerUpstreamKeys[0]]).size).toBe(3);
     expect(identityUpstreamKeys[2]).not.toBe(identityUpstreamKeys[0]);
     expect(agentUpstreamKeys[2]).not.toBe(agentUpstreamKeys[0]);
+    expect(triggerUpstreamKeys[2]).not.toBe(triggerUpstreamKeys[0]);
     await expect(
       fixture.db
         .prepare("SELECT COUNT(*) AS count FROM resource_idempotency_records WHERE resource_kind = ? AND idempotency_key = ?")
