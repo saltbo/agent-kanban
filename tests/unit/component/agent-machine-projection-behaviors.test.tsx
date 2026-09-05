@@ -82,6 +82,7 @@ describe("Agent projection browser queries", () => {
         }
         if (url === "/api/tasks?assignedTo=realmroot%3Aagent%2Fexact-subject") {
           return json({
+            pagination: { pageSize: 50 },
             items: [
               {
                 id: "task-1",
