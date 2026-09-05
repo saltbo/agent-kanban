@@ -108,10 +108,10 @@ describe("HTTP route module structure", () => {
     }
   });
 
-  it("keeps the Task workflow entry as a registration-only split-module aggregator", async () => {
+  it("keeps the remaining Task workflow entry as a registration-only split-module aggregator", async () => {
     const source = await readFile(path.join(httpRoot, "tasks/routes.ts"), "utf8");
 
-    for (const module of ["assignmentRoutes", "claimRoutes", "cancellationRoutes", "eventRoutes", "reviewRoutes"]) {
+    for (const module of ["claimRoutes", "eventRoutes"]) {
       expect(source).toContain(`@server/http/tasks/${module}`);
     }
     expect(source).not.toMatch(/@server\/(?:adapters|usecases)\/|api\.(?:get|put|post|patch|delete)\(|\basync function\b/);

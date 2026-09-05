@@ -13,7 +13,7 @@ import type { PageWindow } from "@server/domain/pagination";
 import { ApplicationError } from "@server/usecases/applicationError";
 import type { BoardAction, CreateTaskInput, Task, TaskAction, TaskActionType, TaskActionWriteActorType, TaskWithNotes } from "@shared";
 
-const TASK_ACTION_WRITE_ACTOR_TYPES = new Set<TaskActionWriteActorType>(["user", "realmroot:agent", "system"]);
+const TASK_ACTION_WRITE_ACTOR_TYPES = new Set<TaskActionWriteActorType>(["user", "machine", "service", "realmroot:agent", "system"]);
 
 function assertTaskActionWriteActorType(actorType: TaskActionWriteActorType): void {
   if (!TASK_ACTION_WRITE_ACTOR_TYPES.has(actorType)) {
@@ -136,6 +136,7 @@ export async function createTask(
     : false;
   const createdTask: Task & { depends_on: string[] } = {
     id: taskId,
+    version: 1,
     board_id: board.id,
     seq: allocation.seq,
     status: "todo",
@@ -189,6 +190,18 @@ export async function createTask(
         "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, 'created', NULL, NULL, ?)",
       )
       .bind(logId, taskId, actorType, actorId, now),
+    ...(input.created_from
+      ? [
+          db
+            .prepare(`
+              UPDATE tasks
+              SET version = version + 1, updated_at = ?
+              WHERE id = ?
+                AND EXISTS (SELECT 1 FROM tasks child WHERE child.id = ? AND child.created_from = tasks.id)
+            `)
+            .bind(now, input.created_from, taskId),
+        ]
+      : []),
     ...(input.depends_on || []).map((depId) => db.prepare("INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)").bind(taskId, depId)),
     ...(input.repository_id
       ? [db.prepare("INSERT OR IGNORE INTO board_repositories (board_id, repository_id) VALUES (?, ?)").bind(board.id, input.repository_id)]
@@ -212,14 +225,6 @@ export async function createTask(
   const created = await getTask(db, taskId, ownerId);
   if (!created) throw new Error("Task creation committed without a readable Task");
   return created;
-}
-
-export async function assertTaskOwner(db: D1, taskId: string, ownerId: string): Promise<void> {
-  const row = await db
-    .prepare("SELECT 1 FROM tasks t JOIN boards b ON t.board_id = b.id WHERE t.id = ? AND b.owner_id = ?")
-    .bind(taskId, ownerId)
-    .first();
-  if (!row) throw new ApplicationError("not-found", "Task not found");
 }
 
 export async function listTasks(
@@ -359,7 +364,7 @@ async function hydrateListedTasks(db: D1, tasks: Task[]): Promise<Task[]> {
 export async function getTask(db: D1, taskId: string, ownerId: string): Promise<TaskWithNotes | null> {
   const task = await db
     .prepare(`
-    SELECT t.*, r.name as repository_name,
+    SELECT t.*, r.name as repository_name, b.type AS board_type,
       (SELECT COUNT(*) FROM tasks sub WHERE sub.created_from = t.id) as subtask_count
     FROM tasks t
     LEFT JOIN repositories r ON t.repository_id = r.id
@@ -406,6 +411,7 @@ export async function updateTask(
     depends_on?: string[];
   },
   ownerId?: string,
+  expectedVersion?: number,
 ): Promise<Task | null> {
   const task = ownerId
     ? await db
@@ -424,7 +430,6 @@ export async function updateTask(
       const hasCycle = await detectCycle(db, taskId, updates.depends_on);
       if (hasCycle) throw new ApplicationError("invalid-request", "Circular dependency detected");
     }
-    await setDependencies(db, taskId, updates.depends_on);
   }
   if (updates.labels !== undefined) {
     await assertKnownLabels(db, task.board_id, updates.labels);
@@ -434,8 +439,13 @@ export async function updateTask(
   }
 
   const now = new Date().toISOString();
-  const sets: string[] = ["updated_at = ?"];
+  const sets: string[] = ["updated_at = ?", "version = version + 1"];
   const binds: unknown[] = [now];
+  const transitionToken = expectedVersion !== undefined && updates.depends_on !== undefined ? newLongId() : null;
+  if (transitionToken) {
+    sets.push("transition_token = ?");
+    binds.push(transitionToken);
+  }
 
   const jsonFields = new Set(["labels", "input", "metadata"]);
   const allowedFields = ["title", "description", "repository_id", "labels", "pr_url", "input", "metadata", "position", "scheduled_at"] as const;
@@ -449,10 +459,32 @@ export async function updateTask(
 
   binds.push(taskId);
   if (ownerId) binds.push(ownerId);
-  await db
-    .prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?${ownerId ? " AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)" : ""}`)
-    .bind(...binds)
-    .run();
+  if (expectedVersion !== undefined) binds.push(expectedVersion);
+  const updateStatement = db
+    .prepare(
+      `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?${ownerId ? " AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)" : ""}${
+        expectedVersion !== undefined ? " AND version = ? AND transition_token IS NULL" : ""
+      }`,
+    )
+    .bind(...binds);
+  const results = transitionToken
+    ? await db.batch([
+        updateStatement,
+        db
+          .prepare("DELETE FROM task_dependencies WHERE task_id = ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND transition_token = ?)")
+          .bind(taskId, taskId, transitionToken),
+        ...updates.depends_on!.map((dependencyId) =>
+          db
+            .prepare(
+              "INSERT INTO task_dependencies (task_id, depends_on) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND transition_token = ?)",
+            )
+            .bind(taskId, dependencyId, taskId, transitionToken),
+        ),
+        db.prepare("UPDATE tasks SET transition_token = NULL WHERE id = ? AND transition_token = ?").bind(taskId, transitionToken),
+      ])
+    : [await updateStatement.run()];
+  if ((results[0]?.meta?.changes ?? 0) !== 1) return null;
+  if (!transitionToken && updates.depends_on !== undefined) await setDependencies(db, taskId, updates.depends_on);
   if (updates.repository_id) await recordBoardRepository(db, task.board_id, updates.repository_id);
   const updated = await db
     .prepare(`SELECT tasks.* FROM tasks WHERE id = ?${ownerId ? " AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)" : ""}`)
@@ -461,20 +493,67 @@ export async function updateTask(
   return updated ? parseTask(updated) : null;
 }
 
-export async function deleteTask(db: D1, taskId: string, ownerId: string): Promise<boolean> {
+export async function deleteTask(db: D1, taskId: string, ownerId: string, expectedVersion?: number): Promise<boolean> {
   const task = await db
     .prepare(
-      `SELECT t.status, t.assigned_to FROM tasks t
+      `SELECT t.status, t.assigned_to, t.created_from FROM tasks t
        JOIN boards b ON b.id = t.board_id
        WHERE t.id = ? AND b.owner_id = ?`,
     )
     .bind(taskId, ownerId)
-    .first<{ status: string; assigned_to: string | null }>();
+    .first<{ status: string; assigned_to: string | null; created_from: string | null }>();
   if (!task) return false;
 
   const canDelete = task.status === "todo" || task.status === "cancelled";
   if (!canDelete) {
     throw new ApplicationError("conflict", `Cannot delete task in ${task.status}${task.assigned_to ? " (assigned)" : ""} status`);
+  }
+
+  if (expectedVersion !== undefined) {
+    const transitionToken = newLongId();
+    const now = new Date().toISOString();
+    const results = await db.batch([
+      db
+        .prepare(`
+          UPDATE tasks SET transition_token = ?
+          WHERE id = ?
+            AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
+            AND status IN ('todo', 'cancelled')
+            AND version = ?
+            AND transition_token IS NULL
+        `)
+        .bind(transitionToken, taskId, ownerId, expectedVersion),
+      ...(task.created_from
+        ? [
+            db
+              .prepare(`
+                UPDATE tasks
+                SET version = version + 1, updated_at = ?
+                WHERE id = ?
+                  AND EXISTS (SELECT 1 FROM tasks child WHERE child.id = ? AND child.transition_token = ?)
+              `)
+              .bind(now, task.created_from, taskId, transitionToken),
+          ]
+        : []),
+      db
+        .prepare(`
+          UPDATE tasks
+          SET version = version + 1, updated_at = ?
+          WHERE id IN (SELECT task_id FROM task_dependencies WHERE depends_on = ?)
+            AND EXISTS (SELECT 1 FROM tasks dependency WHERE dependency.id = ? AND dependency.transition_token = ?)
+        `)
+        .bind(now, taskId, taskId, transitionToken),
+      db
+        .prepare(`
+          UPDATE tasks
+          SET version = version + 1, updated_at = ?
+          WHERE created_from = ?
+            AND EXISTS (SELECT 1 FROM tasks parent WHERE parent.id = ? AND parent.transition_token = ?)
+        `)
+        .bind(now, taskId, taskId, transitionToken),
+      db.prepare("DELETE FROM tasks WHERE id = ? AND transition_token = ?").bind(taskId, transitionToken),
+    ]);
+    return (results[0]?.meta?.changes ?? 0) === 1;
   }
 
   const result = await db
@@ -525,8 +604,11 @@ export async function addTaskAction(
     created_at: now,
   };
   try {
-    if (idempotency) await db.batch([insertion, completeIdempotency(db, idempotency, actionId, taskAction)]);
-    else await insertion.run();
+    await db.batch([
+      insertion,
+      db.prepare("UPDATE tasks SET version = version + 1, updated_at = ? WHERE id = ?").bind(now, taskId),
+      ...(idempotency ? [completeIdempotency(db, idempotency, actionId, taskAction)] : []),
+    ]);
   } catch (error) {
     if (!idempotency) throw error;
     const replay = await resolveIdempotentResponse(db, idempotency);

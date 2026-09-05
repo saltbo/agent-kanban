@@ -5,6 +5,7 @@ export interface TaskReviewSubmissionCommit {
 }
 
 export interface TaskReviewSubmissionTarget {
+  version: number;
   status: string;
   assignedTo: string | null;
   assigneeIdentityType: string | null;
@@ -20,6 +21,7 @@ export interface TaskReviewSubmissionRepository {
     agentActorId: string;
     expectedPullRequestUrl: string | null;
     pullRequestUrl: string | null;
+    expectedTaskVersion?: number;
   }): Promise<TaskReviewSubmissionCommit | null>;
 }
 
@@ -63,10 +65,11 @@ export async function readTaskReviewSubmission(
 
 export async function replaceTaskReviewSubmission(
   repository: TaskReviewSubmissionRepository,
-  input: { ownerId: string; taskId: string; agentActorId: string; pullRequestUrl: string | null },
+  input: { ownerId: string; taskId: string; agentActorId: string; pullRequestUrl: string | null; expectedTaskVersion?: number },
 ): Promise<{ submission: TaskReviewSubmission; version: string; created: boolean }> {
   const target = await repository.findTarget(input.ownerId, input.taskId);
   if (!target) throw new TaskReviewSubmissionFailure("TASK_NOT_FOUND", "Task not found");
+  assertTaskVersion(target.version, input.expectedTaskVersion);
   if (target.assigneeIdentityType !== "realmroot_actor" || target.assignedTo !== input.agentActorId) {
     throw new TaskReviewSubmissionFailure("TASK_REVIEW_FORBIDDEN", "Only the assigned Agent may submit this Task for review");
   }
@@ -87,6 +90,7 @@ export async function replaceTaskReviewSubmission(
   });
   if (!committed) {
     const winner = await repository.findTarget(input.ownerId, input.taskId);
+    if (winner) assertTaskVersion(winner.version, input.expectedTaskVersion);
     if (
       winner?.status === "in_review" &&
       winner.assignedTo === input.agentActorId &&
@@ -102,6 +106,12 @@ export async function replaceTaskReviewSubmission(
   }
 
   return submissionResult(input.taskId, input.agentActorId, committed, true);
+}
+
+function assertTaskVersion(actual: number, expected?: number): void {
+  if (expected !== undefined && actual !== expected) {
+    throw new TaskReviewSubmissionFailure("TASK_REVIEW_CONFLICT", "Task changed before review submission was committed");
+  }
 }
 
 function submissionResult(

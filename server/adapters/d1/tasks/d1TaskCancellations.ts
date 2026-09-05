@@ -6,7 +6,7 @@ export function d1TaskCancellationRepository(db: D1): TaskCancellationRepository
     async findTarget(ownerId, taskId) {
       const row = await db
         .prepare(`
-          SELECT t.status, t.assigned_to, t.assignee_identity_type,
+          SELECT t.version, t.status, t.assigned_to, t.assignee_identity_type,
             cancellation.id AS cancellation_id,
             cancellation.actor_type AS cancellation_actor_type,
             cancellation.actor_id AS cancellation_actor_id,
@@ -24,6 +24,7 @@ export function d1TaskCancellationRepository(db: D1): TaskCancellationRepository
         `)
         .bind(taskId, ownerId)
         .first<{
+          version: number;
           status: string;
           assigned_to: string | null;
           assignee_identity_type: string | null;
@@ -35,6 +36,7 @@ export function d1TaskCancellationRepository(db: D1): TaskCancellationRepository
         }>();
       if (!row) return null;
       return {
+        version: row.version,
         status: row.status,
         assignedTo: row.assigned_to,
         assigneeIdentityType: row.assignee_identity_type,
@@ -64,6 +66,7 @@ export function d1TaskCancellationRepository(db: D1): TaskCancellationRepository
               creation_token = NULL,
               active_claim_id = NULL,
               updated_at = ?,
+              version = version + 1,
               transition_token = ?
             WHERE id = ?
               AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
@@ -73,8 +76,11 @@ export function d1TaskCancellationRepository(db: D1): TaskCancellationRepository
                 SELECT 1 FROM task_review_decisions decision
                 WHERE decision.task_id = tasks.id AND decision.effect_state = 'pending'
               )
+              ${input.expectedTaskVersion !== undefined ? "AND version = ?" : ""}
           `)
-          .bind(cancelledAt, actionId, input.taskId, input.ownerId),
+          .bind(
+            ...[cancelledAt, actionId, input.taskId, input.ownerId, ...(input.expectedTaskVersion === undefined ? [] : [input.expectedTaskVersion])],
+          ),
         db
           .prepare(`
             INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at)
@@ -83,6 +89,17 @@ export function d1TaskCancellationRepository(db: D1): TaskCancellationRepository
             WHERE id = ? AND transition_token = ?
           `)
           .bind(actionId, input.taskId, actorType, input.actor.id, input.assigneeActorId, cancelledAt, input.taskId, actionId),
+        db
+          .prepare(`
+            UPDATE tasks
+            SET version = version + 1, updated_at = ?
+            WHERE id IN (SELECT task_id FROM task_dependencies WHERE depends_on = ?)
+              AND EXISTS (
+                SELECT 1 FROM tasks cancelled
+                WHERE cancelled.id = ? AND cancelled.status = 'cancelled' AND cancelled.transition_token = ?
+              )
+          `)
+          .bind(cancelledAt, input.taskId, input.taskId, actionId),
         db.prepare("UPDATE tasks SET transition_token = NULL WHERE id = ? AND transition_token = ?").bind(input.taskId, actionId),
       ]);
       return (results[0]?.meta?.changes ?? 0) === 1
@@ -98,14 +115,15 @@ export function d1TaskCancellationRepository(db: D1): TaskCancellationRepository
   };
 }
 
-function storedActorType(actor: TaskCancellationActor): "realmroot:agent" | "user" | "system" {
+function storedActorType(actor: TaskCancellationActor): "realmroot:agent" | "user" | "machine" | "service" | "system" {
   if (actor.type === "agent") return "realmroot:agent";
   if (actor.type === "human") return "user";
-  return "system";
+  return actor.type;
 }
 
 function cancellationActorType(actorType: string): StoredTaskCancellation["actorType"] {
   if (actorType === "realmroot:agent") return "agent";
   if (actorType === "user") return "human";
-  return "system";
+  if (actorType === "machine" || actorType === "service" || actorType === "system") return actorType;
+  throw new TypeError(`Unsupported Task cancellation actor type: ${actorType}`);
 }

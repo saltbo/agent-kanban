@@ -27,6 +27,7 @@ describe("Agent Skills Discovery artifacts", () => {
   it("[spec: resource-server/agent-skills] publishes every owned Skill as a complete digest-verified 0.2.0 archive", async () => {
     const index = JSON.parse(await readFile(path.join(publishedRoot, "index.json"), "utf8")) as DiscoveryIndex;
     const skillNames = (await Array.fromAsync(glob("*/SKILL.md", { cwd: skillsRoot }))).map(path.dirname).sort();
+    const publishedInstructions: string[] = [];
 
     expect(index.$schema).toBe("https://schemas.agentskills.io/discovery/0.2.0/schema.json");
     expect(index.skills.map(({ name }) => name)).toEqual(skillNames);
@@ -47,9 +48,26 @@ describe("Agent Skills Discovery artifacts", () => {
       const sourceFiles = await listFiles(path.join(skillsRoot, skill.name));
       expect([...archivedFiles.keys()].sort()).toEqual(sourceFiles);
       expect(sourceFiles).toContain("SKILL.md");
+      publishedInstructions.push(archivedFiles.get("SKILL.md")!.toString());
       for (const relativePath of sourceFiles) {
         expect(archivedFiles.get(relativePath)?.equals(await readFile(path.join(skillsRoot, skill.name, relativePath)))).toBe(true);
       }
+    }
+
+    const instructions = publishedInstructions.join("\n");
+    expect(instructions).toContain("agent-kanban/tasks/<task-id>/claims");
+    expect(instructions).toContain("realmroot toolbox patch agent-kanban/tasks/<task-id>");
+    expect(instructions).not.toContain('If-Match: "<task-etag>"');
+    expect(instructions).toContain('If-Match: "<claim-etag>"');
+    for (const legacyPath of [
+      "agent-kanban/task-assignments",
+      "agent-kanban/task-claims",
+      "agent-kanban/task-review-submissions",
+      "agent-kanban/task-review-rejections",
+      "agent-kanban/task-review-completions",
+      "agent-kanban/task-cancellations",
+    ]) {
+      expect(instructions).not.toContain(legacyPath);
     }
   });
 

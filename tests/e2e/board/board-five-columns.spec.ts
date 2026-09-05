@@ -5,12 +5,12 @@ import { expect, test } from "@playwright/test";
 import { seedTask, signUpAndGetBoard } from "../../helpers/auth";
 
 test.describe("Board Page", () => {
-  test("[spec: boards/observe-work] Board page renders Tasks in five lifecycle columns", async ({ page }) => {
+  test("[spec: boards/observe-work] Board page consumes canonical Board and Task representations", async ({ page }) => {
     // 1. Sign in with valid credentials and navigate to a board at /boards/:boardId
     await signUpAndGetBoard(page, `boardcolumns_${Date.now()}@example.com`);
     const boardId = page.url().split("/boards/")[1];
     const taskTitle = `Observed Task ${Date.now()}`;
-    seedTask(boardId, taskTitle, "todo");
+    seedTask(boardId, taskTitle, "in_progress");
     await page.reload();
 
     // expect: The board page is displayed
@@ -27,7 +27,11 @@ test.describe("Board Page", () => {
     await expect(columnGrid.getByText("In Review")).toBeVisible();
     await expect(columnGrid.getByText("Done")).toBeVisible();
     await expect(columnGrid.getByText("Cancelled")).toBeVisible();
-    await expect(columnGrid.getByText(taskTitle)).toBeVisible();
+    const inProgressColumn = columnGrid.locator("> div").filter({ has: page.getByText("In Progress", { exact: true }) });
+    await expect(inProgressColumn.getByText(taskTitle)).toBeVisible();
+
+    await inProgressColumn.getByText(taskTitle).click();
+    await expect(page.getByRole("heading", { name: taskTitle })).toBeVisible();
 
     // Five column dividers should be present
     const columns = columnGrid.locator("> div");

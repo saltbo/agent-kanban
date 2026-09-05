@@ -148,19 +148,21 @@ realmroot toolbox post agent-kanban/tasks \
   @task.json --json
 ```
 
-Task lifecycle resources publish a small set of Agent Kanban-specific commands:
+Task and Claim mutations use the same generic resource commands:
 
 ```bash
-realmroot toolbox agent-kanban task claim <task-id> --json
-realmroot toolbox agent-kanban task review <task-id> \
-  '{"pullRequestUrl":"https://github.com/owner/repo/pull/123"}' --json
+realmroot toolbox post agent-kanban/tasks/<task-id>/claims --json
+realmroot toolbox get agent-kanban/tasks/<task-id> --include --json
+realmroot toolbox patch agent-kanban/tasks/<task-id> \
+  --content-type application/merge-patch+json \
+  '{"status":"in-review","pullRequestUrl":"https://github.com/owner/repo/pull/123"}' --json
 realmroot toolbox agent-kanban task wait <task-id> in-review \
   --wait-seconds 25 --json
 ```
 
-Do not invent resource-first CRUD aliases. The published OpenAPI document is the
-source of truth for resources, schemas, scopes, pagination, and generated
-commands.
+`task wait` is the only generated resource-first convenience command. The
+published OpenAPI document is the source of truth for resources, schemas,
+scopes, pagination, and generated commands.
 
 Realmroot Toolbox v0.5.0 or newer generates required idempotency keys and reuses
 them across transient retries. Provide an explicit key only when recovering an

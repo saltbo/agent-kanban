@@ -170,7 +170,7 @@ test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses i
   await dialog.getByRole("button", { name: /Your Computer/ }).click();
   await expect(page.getByRole("dialog", { name: "Start Enbor Runner" })).toBeVisible();
   expect(idempotencyKeys).toHaveLength(2);
-  expect(idempotencyKeys[0]).not.toBe("");
+  expect(idempotencyKeys[0]).toMatch(/^"[A-Za-z0-9._:-]{8,200}"$/);
   expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
 });
 

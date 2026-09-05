@@ -11,36 +11,37 @@ Feature: Task lifecycle
   @journey:tasks/assign @entrypoint:toolbox @proof:integration
   Scenario: Assign a Task to a Realmroot Agent
     Given a todo Task exists
-    When an authorized actor assigns a Realmroot Agent actor id
-    Then AK records the assignment without creating an Agency Session
+    When an authorized actor patches the Task assignedTo field
+    Then AK atomically records the assignment without creating an Agency Session
     And AK sends the assignee an Inbox notification that identifies only the Task and owner
     And the notification contains no execution instructions
 
   @journey:tasks/claim @entrypoint:toolbox @proof:integration
   Scenario: The assigned Agent claims a Task from its Agency Session
     Given a todo Task is assigned to the authenticated Realmroot Agent
-    When the Agent calls task claim with verified Realmroot Agent execution provenance
+    When the Agent posts to the Task Claim collection with verified Realmroot Agent execution provenance
     Then AK moves the Task to in progress
     And AK binds the Task to that runtime and canonical Agency Session id for observation
+    And returns an addressable Claim member with its own current version
 
   @journey:tasks/release @entrypoint:toolbox @proof:integration
   Scenario: The assignee releases its current Claim
     Given the assigned Agent has claimed the Task
-    When that Agent deletes the Claim with its current version
+    When that Agent deletes the nested Claim member by Claim id and current Claim version
     Then AK returns the Task to todo while preserving the assignment
     And another Agent or a stale Claim version cannot release it
 
   @journey:tasks/submit-review @entrypoint:toolbox @proof:integration
   Scenario: The assignee submits work for review
     Given the assigned Agent has claimed the Task
-    When that Agent creates the Task Review Submission
+    When that Agent patches the Task status to in review
     Then AK moves the Task to in review and preserves the Session binding
-    And the Review Submission exposes the version required for a later review decision
+    And returns the updated Task with its next current version
 
   @journey:tasks/reject-review @entrypoint:toolbox @proof:integration
   Scenario: A different actor rejects submitted work
     Given a Task is in review
-    When an authorized actor other than the assignee rejects it with a reason
+    When an authorized actor other than the assignee patches the Task status to in progress with a reason
     Then AK returns the Task to in progress
     And AK sends the assignee an Inbox notification that identifies only the Task and owner
     And the notification contains no execution instructions
@@ -48,27 +49,27 @@ Feature: Task lifecycle
   @journey:tasks/complete-review @entrypoint:toolbox @proof:integration
   Scenario: A different actor accepts submitted work
     Given a Task is in review
-    When an authorized actor other than the assignee completes it
+    When an authorized actor other than the assignee patches the Task status to done
     Then AK moves the Task to done without closing the Agency Session
     And AK sends no Inbox notification for the terminal transition
 
   @journey:tasks/cancel @entrypoint:toolbox @proof:integration
   Scenario: Cancel an assigned Task
     Given an assigned Task is not done or cancelled
-    When an authorized actor cancels it
+    When an authorized actor patches the Task status to cancelled
     Then AK moves the Task to cancelled
     And AK sends no Inbox notification for the terminal transition
 
   @journey:tasks/self-review @entrypoint:toolbox @proof:unit
   Scenario: The assignee cannot decide its own submission
     Given a Task is in review
-    When the assignee attempts to reject or complete it
+    When the assignee attempts to patch its status to in progress or done
     Then AK rejects the decision without changing the Task
 
   @journey:tasks/wait @entrypoint:toolbox @proof:unit
   Scenario: Wait for a bounded Task condition
-    Given a caller supplies Tasks, a target status, and an optional cursor
-    When the caller waits for Task events
+    Given a caller selects one Task by path and supplies a target status and optional cursor
+    When the caller waits on that Task's nested events resource
     Then AK returns when the condition changes, is reached, or the bounded wait expires
 
   @journey:tasks/structured-fields @entrypoint:toolbox @proof:integration
@@ -96,5 +97,5 @@ Feature: Task lifecycle
   Scenario: Review submitted work from the board
     Given a human opens a Task in review
     When the human rejects or completes the current Review Submission
-    Then the browser sends the canonical version-protected decision resource
+    Then the browser sends a Task status merge patch
     And refreshes the Task from the authoritative response

@@ -6,19 +6,26 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 export const V2_API_VERSION = SHARED_V2_API_VERSION;
 
 export function isPublishedV2Operation(method: string, path: string): boolean {
-  if (/^\/api\/task-(?:claims|assignments|cancellations|events|review-submissions|review-rejections|review-completions)(?:\/|$)/.test(path)) {
-    return true;
-  }
+  if (/^\/api\/tasks\/[^/]+\/events$/.test(path)) return method === "GET";
+  if (/^\/api\/tasks\/[^/]+\/claims$/.test(path)) return method === "POST";
+  if (/^\/api\/tasks\/[^/]+\/claims\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
   if (path === "/api/boards") return method === "GET" || method === "POST";
-  if (/^\/api\/boards\/[^/]+$/.test(path)) return method === "GET";
+  if (/^\/api\/boards\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH" || method === "DELETE";
+  if (/^\/api\/boards\/[^/]+\/labels$/.test(path)) return method === "POST";
+  if (/^\/api\/boards\/[^/]+\/labels\/[^/]+$/.test(path)) return method === "PATCH" || method === "DELETE";
+  if (/^\/api\/boards\/[^/]+\/stream$/.test(path)) return method === "GET";
   if (path === "/api/repositories") return method === "GET" || method === "POST";
-  if (/^\/api\/repositories\/[^/]+$/.test(path)) return method === "GET";
+  if (/^\/api\/repositories\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
+  if (path === "/api/github-app/config" || path === "/api/github-app/repositories") return method === "GET";
+  if (/^\/api\/repository-installations\/[^/]+$/.test(path)) return method === "PUT";
   if (path === "/api/agents") return method === "GET" || method === "POST";
   if (/^\/api\/agents\/[^/]+$/.test(path)) return method === "GET";
   if (path === "/api/machines") return method === "GET" || method === "POST";
   if (/^\/api\/machines\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
   if (path === "/api/tasks") return method === "GET" || method === "POST";
-  if (/^\/api\/tasks\/[^/]+$/.test(path)) return method === "GET";
+  if (/^\/api\/tasks\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH" || method === "DELETE";
+  if (/^\/api\/tasks\/[^/]+\/session(?:\/ws)?$/.test(path)) return method === "GET";
+  if (/^\/api\/tasks\/[^/]+\/stream$/.test(path)) return method === "GET";
   if (/^\/api\/tasks\/[^/]+\/notes$/.test(path)) return method === "GET" || method === "POST";
   if (/^\/api\/tasks\/[^/]+\/notes\/[^/]+$/.test(path)) return method === "GET";
   return false;

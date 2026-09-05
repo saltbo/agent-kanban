@@ -125,8 +125,19 @@ export async function getRepository(db: D1, id: string, ownerId: string): Promis
 }
 
 export async function deleteRepository(db: D1, id: string, ownerId: string): Promise<boolean> {
-  const result = await db.prepare("DELETE FROM repositories WHERE id = ? AND owner_id = ?").bind(id, ownerId).run();
-  return result.meta.changes > 0;
+  const now = new Date().toISOString();
+  const results = await db.batch([
+    db
+      .prepare(`
+        UPDATE tasks
+        SET version = version + 1, updated_at = ?
+        WHERE repository_id = ?
+          AND EXISTS (SELECT 1 FROM repositories WHERE id = ? AND owner_id = ?)
+      `)
+      .bind(now, id, id, ownerId),
+    db.prepare("DELETE FROM repositories WHERE id = ? AND owner_id = ?").bind(id, ownerId),
+  ]);
+  return (results[1]?.meta?.changes ?? 0) > 0;
 }
 
 export function githubRepoRef(url: string) {

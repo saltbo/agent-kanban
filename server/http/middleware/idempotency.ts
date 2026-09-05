@@ -11,13 +11,10 @@ import { apiErrorHandler } from "@server/http/middleware/errorHandler";
 import { effectiveApiVersion, v2Problem } from "@server/http/middleware/v2Contract";
 import type { Context, ErrorHandler, Next } from "hono";
 
-const IDEMPOTENCY_KEY_VALUE = /^[A-Za-z0-9._:-]{8,200}$/;
-
 export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next: Next): Promise<Response | undefined> {
   const principal = c.get("principal");
   const resourceKind = creationResourceKind(c.req.method, c.req.path);
-  const browserProjectionCreation = principal.source === "session" && (resourceKind === "agent" || resourceKind === "machine");
-  if (!resourceKind || (principal.source !== "token" && !browserProjectionCreation)) {
+  if (!resourceKind) {
     await next();
     return undefined;
   }
@@ -26,7 +23,7 @@ export async function idempotencyMiddleware(c: Context<{ Bindings: Env }>, next:
   if (!fieldValue) {
     return v2Problem(c, 400, "idempotency-key-required", "Idempotency key required", "Idempotency-Key is required for this creation");
   }
-  const key = parseIdempotencyKey(fieldValue, principal.source === "session");
+  const key = parseIdempotencyKey(fieldValue);
   if (!key) {
     return v2Problem(
       c,
@@ -107,13 +104,13 @@ function creationResourceKind(method: string, path: string): string | null {
   if (path === "/api/agents") return "agent";
   if (path === "/api/machines") return "machine";
   if (/^\/api\/tasks\/[^/]+\/notes$/.test(path)) return "task-note";
+  if (/^\/api\/tasks\/[^/]+\/claims$/.test(path)) return "task-claim";
   return null;
 }
 
-function parseIdempotencyKey(fieldValue: string, allowUnquotedBrowserValue: boolean): string | null {
+function parseIdempotencyKey(fieldValue: string): string | null {
   const quoted = /^"([A-Za-z0-9._:-]{8,200})"$/.exec(fieldValue);
   if (quoted) return quoted[1];
-  if (allowUnquotedBrowserValue && IDEMPOTENCY_KEY_VALUE.test(fieldValue)) return fieldValue;
   return null;
 }
 

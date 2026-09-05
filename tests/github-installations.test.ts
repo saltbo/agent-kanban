@@ -1015,7 +1015,8 @@ describe("GET /api/github-app/config", () => {
     const json = (await res.json()) as any;
     expect(json.configured).toBe(false);
     expect(json.slug).toBeNull();
-    expect(json.install_url).toBeNull();
+    expect(json.installUrl).toBeNull();
+    expect(json).not.toHaveProperty("install_url");
     expect(json.installed).toBe(false);
     expect(json.accounts).toEqual([]);
   });
@@ -1038,7 +1039,8 @@ describe("GET /api/github-app/config", () => {
     const json = (await res.json()) as any;
     expect(json.configured).toBe(true);
     expect(json.slug).toBe("agent-kanban");
-    expect(json.install_url).toBe("https://github.com/apps/agent-kanban/installations/new");
+    expect(json.installUrl).toBe("https://github.com/apps/agent-kanban/installations/new");
+    expect(json).not.toHaveProperty("install_url");
     expect(json.installed).toBe(false);
     expect(json.accounts).toEqual([]);
   });
@@ -1091,6 +1093,96 @@ describe("GET /api/github-app/config", () => {
     const json = (await res.json()) as any;
     expect(json.installed).toBe(false);
     expect(json.accounts).toEqual([]);
+  });
+});
+
+describe("canonical GitHub App HTTP resources", () => {
+  it("keeps the setup callback public and redirects without mutating an installation", async () => {
+    const installationId = 8_500_001;
+    const before = await db.prepare("SELECT COUNT(*) AS count FROM github_installations WHERE installation_id = ?").bind(installationId).first();
+
+    const response = await apiRequest("GET", `/api/github-app/setup?installation_id=${installationId}`);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(`/repositories?installation_id=${installationId}`);
+    await expect(
+      db.prepare("SELECT COUNT(*) AS count FROM github_installations WHERE installation_id = ?").bind(installationId).first(),
+    ).resolves.toEqual(before);
+  });
+
+  it("returns GitHub repositories with canonical camelCase fields", async () => {
+    const { upsertInstallation } = await import("../server/adapters/github/githubInstallations");
+    const { token, userId } = await createVerifiedUserToken();
+    const installationId = 8_500_002;
+    await upsertInstallation(db, {
+      installationId,
+      ownerId: userId,
+      accountLogin: "camel-org",
+      accountId: 8500002,
+      accountType: "Organization",
+      repositorySelection: "all",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.includes(`/app/installations/${installationId}/access_tokens`)) {
+          return Response.json({ token: "installation-token" }, { status: 201 });
+        }
+        if (url.includes("/installation/repositories")) {
+          return Response.json({
+            repositories: [
+              {
+                full_name: "camel-org/camel-repo",
+                name: "camel-repo",
+                clone_url: "https://github.com/camel-org/camel-repo.git",
+                private: true,
+              },
+            ],
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const response = await apiRequest(
+      "GET",
+      "/api/github-app/repositories",
+      undefined,
+      {},
+      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey, GITHUB_APP_SLUG: "agent-kanban" },
+      token,
+    );
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      installed: true,
+      repositories: [
+        {
+          fullName: "camel-org/camel-repo",
+          name: "camel-repo",
+          cloneUrl: "https://github.com/camel-org/camel-repo.git",
+          private: true,
+          alreadyAdded: false,
+        },
+      ],
+    });
+  });
+
+  it("requires browser CSRF and repository:write scope before accepting an installation", async () => {
+    const userId = `github-install-scope-${randomUUID()}`;
+    await seedUser(db, userId, `${userId}@test.local`);
+    const fullSession = await createTestWebSession(db, userId);
+    const readOnlySession = await createTestWebSession(db, userId, { scopes: ["repository:read"] });
+    const path = "/api/repository-installations/8500003";
+
+    const missingCsrf = await apiRequest("PUT", path, undefined, { cookie: fullSession.cookie });
+    expect(missingCsrf.status).toBe(403);
+    await expect(missingCsrf.json()).resolves.toMatchObject({ detail: "Invalid CSRF token" });
+
+    const missingScope = await apiRequest("PUT", path, undefined, {}, {}, `${readOnlySession.token}:csrf:${readOnlySession.csrfToken}`);
+    expect(missingScope.status).toBe(403);
+    await expect(missingScope.json()).resolves.toMatchObject({ detail: "Missing scope: repository:write" });
   });
 });
 

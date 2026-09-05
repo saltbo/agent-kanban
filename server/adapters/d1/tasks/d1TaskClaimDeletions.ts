@@ -49,6 +49,7 @@ export function d1TaskClaimDeletionRepository(db: D1): TaskClaimDeletionReposito
               creation_token = NULL,
               active_claim_id = NULL,
               updated_at = ?,
+              version = version + 1,
               transition_token = ?
             WHERE id = ?
               AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)

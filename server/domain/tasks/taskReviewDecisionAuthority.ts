@@ -1,4 +1,7 @@
-export type TaskReviewDecisionActor = { type: "agent"; id: string } | { type: "human"; id: string } | { type: "system"; id: string };
+export type TaskReviewDecisionActor = {
+  type: "agent" | "human" | "machine" | "service" | "system";
+  id: string;
+};
 
 export type TaskReviewDecisionAuthority = "allowed" | "unsupported-assignee" | "self-review";
 

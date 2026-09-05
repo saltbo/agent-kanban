@@ -72,8 +72,8 @@ export function seedTask(boardId: string, title: string, status: "todo" | "in_pr
 async function firstBoardId(page: Page): Promise<string | null> {
   return page.evaluate(async () => {
     const res = await fetch("/api/boards", { credentials: "include" });
-    const boards = (await res.json()) as { id: string }[];
-    return boards[0]?.id ?? null;
+    const responsePage = (await res.json()) as { items: { id: string }[] };
+    return responsePage.items[0]?.id ?? null;
   });
 }
 

@@ -58,13 +58,6 @@ test.describe("Realmroot authentication", () => {
         "machine:write",
         "task:read",
         "task:write",
-        "task:assign",
-        "task:claim",
-        "task:release",
-        "task:review",
-        "task:reject",
-        "task:complete",
-        "task:cancel",
       ]),
     );
   });

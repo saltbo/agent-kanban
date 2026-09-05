@@ -6,7 +6,7 @@ export function d1TaskReviewSubmissionRepository(db: D1): TaskReviewSubmissionRe
     async findTarget(ownerId, taskId) {
       const row = await db
         .prepare(`
-          SELECT t.status, t.assigned_to, t.assignee_identity_type, t.pr_url,
+          SELECT t.version, t.status, t.assigned_to, t.assignee_identity_type, t.pr_url,
             submission.id AS submission_id,
             submission.created_at AS submitted_at,
             submission.detail AS submitted_pr_url
@@ -27,6 +27,7 @@ export function d1TaskReviewSubmissionRepository(db: D1): TaskReviewSubmissionRe
         `)
         .bind(taskId, ownerId)
         .first<{
+          version: number;
           status: string;
           assigned_to: string | null;
           assignee_identity_type: string | null;
@@ -37,6 +38,7 @@ export function d1TaskReviewSubmissionRepository(db: D1): TaskReviewSubmissionRe
         }>();
       return row
         ? {
+            version: row.version,
             status: row.status,
             assignedTo: row.assigned_to,
             assigneeIdentityType: row.assignee_identity_type,
@@ -62,6 +64,7 @@ export function d1TaskReviewSubmissionRepository(db: D1): TaskReviewSubmissionRe
               status = 'in_review',
               pr_url = ?,
               updated_at = ?,
+              version = version + 1,
               transition_token = ?
             WHERE id = ?
               AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
@@ -74,6 +77,7 @@ export function d1TaskReviewSubmissionRepository(db: D1): TaskReviewSubmissionRe
                 SELECT 1 FROM task_review_decisions decision
                 WHERE decision.task_id = tasks.id AND decision.effect_state = 'pending'
               )
+              ${input.expectedTaskVersion !== undefined ? "AND version = ?" : ""}
           `)
           .bind(
             input.pullRequestUrl,
@@ -84,6 +88,7 @@ export function d1TaskReviewSubmissionRepository(db: D1): TaskReviewSubmissionRe
             input.agentActorId,
             input.expectedPullRequestUrl,
             input.expectedPullRequestUrl,
+            ...(input.expectedTaskVersion === undefined ? [] : [input.expectedTaskVersion]),
           ),
         db
           .prepare(`

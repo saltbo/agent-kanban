@@ -6,7 +6,7 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
     async findTarget(ownerId, taskId) {
       const row = await db
         .prepare(`
-          SELECT t.status, t.assigned_to, t.assignee_identity_type,
+          SELECT t.version, t.status, t.assigned_to, t.assignee_identity_type,
             assignment.id AS assignment_id,
             assignment.actor_id AS assigned_by_actor_id,
             assignment.created_at AS assigned_at
@@ -25,6 +25,7 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
         `)
         .bind(taskId, ownerId)
         .first<{
+          version: number;
           status: string;
           assigned_to: string | null;
           assignee_identity_type: string | null;
@@ -34,6 +35,7 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
         }>();
       return row
         ? {
+            version: row.version,
             status: row.status,
             assignedTo: row.assigned_to,
             assigneeIdentityType: row.assignee_identity_type,
@@ -58,14 +60,25 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
               assigned_to = ?,
               assignee_identity_type = 'realmroot_actor',
               updated_at = ?,
+              version = version + 1,
               transition_token = ?
             WHERE id = ?
               AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
               AND status = 'todo'
               AND assigned_to IS NULL
               AND transition_token IS NULL
+              ${input.expectedTaskVersion !== undefined ? "AND version = ?" : ""}
           `)
-          .bind(input.assigneeActorId, assignedAt, actionId, input.taskId, input.ownerId),
+          .bind(
+            ...[
+              input.assigneeActorId,
+              assignedAt,
+              actionId,
+              input.taskId,
+              input.ownerId,
+              ...(input.expectedTaskVersion === undefined ? [] : [input.expectedTaskVersion]),
+            ],
+          ),
         db
           .prepare(`
             INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at)
@@ -94,7 +107,7 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
           `)
           .bind(input.taskId, actionId, actionId),
       ]);
-      return (results[0]?.meta?.changes ?? 0) === 1 && (results[1]?.meta?.changes ?? 0) === 1
+      return (results[0]?.meta?.changes ?? 0) === 1 && (results[2]?.meta?.changes ?? 0) === 1
         ? {
             actionId,
             assignedAt,

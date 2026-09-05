@@ -6,11 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { createRepository } from "../../../server/adapters/d1/repositoryRepo";
 import { addTaskAction, createTask } from "../../../server/adapters/d1/taskRepo";
-import { d1TaskAssignmentRepository } from "../../../server/adapters/d1/tasks/d1TaskAssignments";
 import { d1TaskReviewSubmissionRepository } from "../../../server/adapters/d1/tasks/d1TaskReviewSubmissions";
 import type { Env } from "../../../server/env";
 import { api } from "../../../server/http/app";
-import { replaceTaskAssignment } from "../../../server/usecases/tasks/replaceTaskAssignment";
 import { replaceTaskReviewSubmission } from "../../../server/usecases/tasks/replaceTaskReviewSubmission";
 import { createTestEnv, createTestWebSession, seedUser, setupMiniflare } from "../../helpers/db";
 
@@ -25,17 +23,11 @@ const inboxResource = "https://inbox.test/api";
 let mf: Awaited<ReturnType<typeof setupMiniflare>>["mf"];
 let db: D1Database;
 let env: Env;
-let inboxResponseStatus: number;
-let oidcDiscoveryRequests: number;
-let machineTokenRequests: Request[];
 let inboxMessageRequests: Request[];
 
 beforeEach(async () => {
   ({ mf, db } = await setupMiniflare());
   env = { ...createTestEnv(), DB: db, AK_PUBLIC_ORIGIN: new URL(resource).origin } as Env;
-  inboxResponseStatus = 201;
-  oidcDiscoveryRequests = 0;
-  machineTokenRequests = [];
   inboxMessageRequests = [];
   await seedUser(db, tenantId, "toolbox-generic@example.test");
   await seedUser(db, foreignTenantId, "toolbox-foreign@example.test");
@@ -48,275 +40,21 @@ afterEach(async () => {
 });
 
 describe("Realmroot Agent generic Toolbox operations", () => {
-  it("[spec: tasks/assign] [spec: tasks/reject-review] notifies Inbox with only the Task and organization owner references", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    env = {
-      ...env,
-      OIDC_ISSUER: issuer,
-      INBOX_RESOURCE: inboxResource,
-      INBOX_API_VERSION: "2026-08-31",
-      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
-      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
-    };
+  it.each([
+    ["PUT", "/task-assignments/task-id"],
+    ["PUT", "/task-claims/task-id"],
+    ["DELETE", "/task-claims/task-id"],
+    ["GET", "/task-review-submissions/task-id"],
+    ["PUT", "/task-review-submissions/task-id"],
+    ["PUT", "/task-review-rejections/task-id"],
+    ["PUT", "/task-review-completions/task-id"],
+    ["PUT", "/task-cancellations/task-id"],
+    ["GET", "/task-events?taskId=task-id&until=done"],
+  ] as const)("returns 404 for the removed legacy Task workflow operation %s %s", async (method, path) => {
+    const response = await request(method, path, "task:read");
 
-    for (const kind of ["assignment", "rejection"] as const) {
-      inboxResponseStatus = 201;
-      oidcDiscoveryRequests = 0;
-      machineTokenRequests = [];
-      inboxMessageRequests = [];
-      const assigneeActorId = `notified-${kind}-agent`;
-      const board = await createBoard(db, tenantId, `Inbox ${kind}`, "ops");
-      const task = await createTask(db, tenantId, { title: `Inbox ${kind} Task`, board_id: board.id });
-      let path: string;
-      let scope: string;
-      let body: unknown;
-
-      if (kind === "assignment") {
-        path = `/task-assignments/${task.id}`;
-        scope = "task:assign";
-        body = { agentActorId: assigneeActorId };
-      } else {
-        await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
-          ownerId: tenantId,
-          taskId: task.id,
-          assigneeActorId,
-          assignedByActorId: "assigner",
-        });
-        await db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
-        const submission = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-          ownerId: tenantId,
-          taskId: task.id,
-          agentActorId: assigneeActorId,
-          pullRequestUrl: null,
-        });
-        path = `/task-review-rejections/${task.id}`;
-        scope = "task:reject";
-        body = { reviewSubmissionVersion: submission.version, reason: "needs changes" };
-      }
-
-      const invoke = () => request("PUT", path, scope, body, true, "2026-08-29", null, "lifecycle-reviewer");
-      const created = await invoke();
-      expect([200, 201], `${kind} create: ${await created.clone().text()}`).toContain(created.status);
-      const replayed = await invoke();
-      expect(replayed.status, `${kind} replay: ${await replayed.clone().text()}`).toBe(200);
-      inboxResponseStatus = 503;
-      const unavailable = await invoke();
-      expect(unavailable.status).toBe(503);
-      expect(unavailable.headers.get("Retry-After")).toBe("5");
-      await expect(unavailable.json()).resolves.toMatchObject({
-        status: 503,
-        type: `${resource}/problems/task-notification-unavailable`,
-      });
-
-      expect(oidcDiscoveryRequests).toBeGreaterThanOrEqual(3);
-      expect(machineTokenRequests).toHaveLength(3);
-      expect(inboxMessageRequests).toHaveLength(3);
-      for (const tokenRequest of machineTokenRequests) {
-        expect(tokenRequest.headers.get("Authorization")).toBe(`Basic ${btoa("agent-kanban:inbox-client-secret")}`);
-        await expect(tokenRequest.clone().text()).resolves.toContain(`resource=${encodeURIComponent(inboxResource)}`);
-        await expect(tokenRequest.clone().text()).resolves.toContain("scope=messages%3Acreate");
-      }
-      const idempotencyKeys = new Set<string>();
-      for (const messageRequest of inboxMessageRequests) {
-        expect(messageRequest.headers.get("Authorization")).toBe("Bearer inbox-machine-token");
-        expect(messageRequest.headers.get("API-Version")).toBe("2026-08-31");
-        idempotencyKeys.add(messageRequest.headers.get("Idempotency-Key")!);
-        const message = (await messageRequest.clone().json()) as {
-          recipients: string[];
-          subject: string;
-          content: { text: string };
-          routingKey: string;
-        };
-        expect(message).toEqual({
-          recipients: [`agent:${assigneeActorId}`],
-          subject: "Agent Kanban notification",
-          content: { text: `Task ID: ${task.id}\nOwner ID: ${tenantId}` },
-          routingKey: `agent-kanban:task:${task.id}`,
-        });
-      }
-      expect(idempotencyKeys.size).toBe(1);
-    }
-
-    const completionEvents = consoleError.mock.calls
-      .map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>)
-      .filter((entry) => entry.name === "api" && entry.msg === "request completed" && entry.status === 503);
-    expect(completionEvents).toHaveLength(2);
-    for (const event of completionEvents) {
-      expect(event).toEqual(
-        expect.objectContaining({
-          result: "server_error",
-          error_name: "TaskLifecycleNotificationFailure",
-          error_message: "Inbox rejected the task notification",
-          error_stack: expect.stringContaining("Inbox rejected the task notification"),
-          error_cause: expect.objectContaining({
-            name: "Error",
-            message: "Inbox responded with HTTP 503",
-            stack: expect.stringContaining("Inbox responded with HTTP 503"),
-          }),
-        }),
-      );
-    }
+    expect(response.status).toBe(404);
   });
-
-  it.each(["user", "agent"] as const)(
-    "[spec: tasks/assign] [spec: tasks/reject-review] preserves the personal AK owner reference for a %s token without an organization",
-    async (tokenKind) => {
-      env = {
-        ...env,
-        OIDC_ISSUER: issuer,
-        INBOX_RESOURCE: inboxResource,
-        INBOX_API_VERSION: "2026-08-31",
-        OIDC_SERVICE_CLIENT_ID: "agent-kanban",
-        OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
-      };
-      const subjectId = `019ff-${tokenKind}-subject`;
-      const ownerId = `user:${subjectId}`;
-      await seedUser(db, ownerId, `${tokenKind}-without-org@example.test`);
-
-      for (const event of ["assigned", "review_rejected"] as const) {
-        machineTokenRequests = [];
-        inboxMessageRequests = [];
-        const assigneeActorId = `${tokenKind}-${event}-assignee`;
-        const board = await createBoard(db, ownerId, `${tokenKind} ${event} without org`, "ops");
-        const task = await createTask(db, ownerId, { title: `${tokenKind} ${event} without org`, board_id: board.id });
-        let path = `/task-assignments/${task.id}`;
-        let scope = "task:assign";
-        let body: unknown = { agentActorId: assigneeActorId };
-        if (event === "review_rejected") {
-          await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
-            ownerId,
-            taskId: task.id,
-            assigneeActorId,
-            assignedByActorId: "assigner",
-          });
-          await db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
-          const submission = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-            ownerId,
-            taskId: task.id,
-            agentActorId: assigneeActorId,
-            pullRequestUrl: null,
-          });
-          path = `/task-review-rejections/${task.id}`;
-          scope = "task:reject";
-          body = { reviewSubmissionVersion: submission.version, reason: "use the native Context" };
-        }
-
-        const url = `${resource}${path}`;
-        const authority = await realmrootAgentAuthority(url, "PUT", scope, `${tokenKind}-reviewer`, undefined, {
-          organizationId: null,
-          principalType: tokenKind === "user" ? "human" : "agent",
-          subjectId,
-        });
-        const response = await api.fetch(
-          new Request(url, {
-            method: "PUT",
-            headers: {
-              authorization: `DPoP ${authority.accessToken}`,
-              dpop: authority.proof,
-              "API-Version": "2026-08-29",
-              "content-type": "application/json",
-            },
-            body: JSON.stringify(body),
-          }),
-          env,
-        );
-
-        expect([200, 201], await response.clone().text()).toContain(response.status);
-        await expect(db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(board.id).first()).resolves.toEqual({ owner_id: ownerId });
-        expect(inboxMessageRequests).toHaveLength(1);
-        const message = (await inboxMessageRequests[0]!.clone().json()) as { content: { text: string } };
-        expect(message.content.text).toBe(`Task ID: ${task.id}\nOwner ID: ${ownerId}`);
-      }
-    },
-  );
-
-  it("[spec: tasks/assign] preserves the personal AK owner reference for a user-scoped web session", async () => {
-    env = {
-      ...env,
-      OIDC_ISSUER: issuer,
-      INBOX_RESOURCE: inboxResource,
-      INBOX_API_VERSION: "2026-08-31",
-      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
-      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
-    };
-    const subjectId = "019ff-web-session-subject";
-    const ownerId = `user:${subjectId}`;
-    await seedUser(db, ownerId, "web-session-without-org@example.test");
-    const session = await createTestWebSession(db, ownerId, { subjectId });
-    const board = await createBoard(db, ownerId, "Web session without org", "ops");
-    const task = await createTask(db, ownerId, { title: "Web session assignment without org", board_id: board.id });
-    await realmrootAgentAuthority(`${resource}/task-assignments/bootstrap`, "PUT", "task:assign");
-
-    const response = await api.fetch(
-      new Request(`${resource}/task-assignments/${task.id}`, {
-        method: "PUT",
-        headers: {
-          cookie: session.cookie,
-          "x-csrf-token": session.csrfToken,
-          "API-Version": "2026-08-29",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ agentActorId: "web-session-assignee" }),
-      }),
-      env,
-    );
-
-    expect([200, 201], await response.clone().text()).toContain(response.status);
-    await expect(db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(board.id).first()).resolves.toEqual({ owner_id: ownerId });
-    expect(inboxMessageRequests).toHaveLength(1);
-    const message = (await inboxMessageRequests[0]!.clone().json()) as { content: { text: string } };
-    expect(message.content.text).toBe(`Task ID: ${task.id}\nOwner ID: ${ownerId}`);
-  });
-
-  it.each(["completion", "cancellation"] as const)(
-    "[spec: tasks/complete-review] [spec: tasks/cancel] does not notify Inbox after terminal Task %s",
-    async (kind) => {
-      env = {
-        ...env,
-        OIDC_ISSUER: issuer,
-        INBOX_RESOURCE: inboxResource,
-        INBOX_API_VERSION: "2026-08-31",
-        OIDC_SERVICE_CLIENT_ID: "agent-kanban",
-        OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
-      };
-      inboxResponseStatus = 503;
-      const assigneeActorId = `terminal-${kind}-agent`;
-      const board = await createBoard(db, tenantId, `Terminal ${kind}`, "ops");
-      const task = await createTask(db, tenantId, { title: `Terminal ${kind} Task`, board_id: board.id });
-      await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
-        ownerId: tenantId,
-        taskId: task.id,
-        assigneeActorId,
-        assignedByActorId: "assigner",
-      });
-
-      let path = `/task-cancellations/${task.id}`;
-      let scope = "task:cancel";
-      let body: unknown;
-      if (kind === "completion") {
-        await db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
-        const submission = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-          ownerId: tenantId,
-          taskId: task.id,
-          agentActorId: assigneeActorId,
-          pullRequestUrl: null,
-        });
-        path = `/task-review-completions/${task.id}`;
-        scope = "task:complete";
-        body = { reviewSubmissionVersion: submission.version };
-      }
-
-      const response = await request("PUT", path, scope, body, true, "2026-08-29", null, "lifecycle-reviewer");
-
-      expect(response.status, await response.clone().text()).toBe(201);
-      expect(machineTokenRequests).toHaveLength(0);
-      expect(inboxMessageRequests).toHaveLength(0);
-      await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
-        status: kind === "completion" ? "done" : "cancelled",
-      });
-    },
-  );
-
   it("rejects schema-invalid resource writes without durable side effects", async () => {
     const board = await createBoard(db, tenantId, "Schema validation board", "ops");
     const noteParent = await createTask(db, tenantId, { title: "Schema validation note parent", board_id: board.id });
@@ -633,13 +371,37 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     },
   );
 
-  it("returns paginated lowerCamel Agent collections while preserving browser arrays and snake_case", async () => {
+  it("replays the same idempotent creation across token and browser Session authentication", async () => {
+    const board = await createBoard(db, tenantId, "Cross-auth idempotency", "ops");
+    const body = { title: "Cross-auth Task", boardId: board.id };
+    const key = "cross-auth-same-request";
+    const session = await createTestWebSession(db, tenantId, { subjectId: "actor-toolbox", scopes: ["task:write"] });
+
+    const created = await request("POST", "/tasks", "task:write", body, true, "2026-08-29", key);
+    const deniedReplay = await request("POST", "/tasks", "task:read", body, true, "2026-08-29", key);
+    const replayed = await browserMutation(session, "POST", "/tasks", body, key);
+
+    expect(created.status, await created.clone().text()).toBe(201);
+    expect(deniedReplay.status).toBe(403);
+    expect(deniedReplay.headers.get("Idempotency-Replayed")).toBeNull();
+    await expect(deniedReplay.json()).resolves.toMatchObject({ detail: "Missing scope: task:write" });
+    expect(replayed.status, await replayed.clone().text()).toBe(201);
+    expect(replayed.headers.get("Idempotency-Replayed")).toBe("true");
+    expect(await replayed.text()).toBe(await created.text());
+    await expect(
+      db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE board_id = ? AND title = ?").bind(board.id, body.title).first(),
+    ).resolves.toEqual({
+      count: 1,
+    });
+  });
+
+  it("returns canonical paginated resources identically to tokens and browser Sessions", async () => {
     const firstBoard = await createBoard(db, tenantId, "Collection board one", "ops");
     const secondBoard = await createBoard(db, tenantId, "Collection board two", "ops");
-    await createRepository(db, tenantId, { name: "collection-repository", url: "https://github.com/example/collection.git" });
+    const repository = await createRepository(db, tenantId, { name: "collection-repository", url: "https://github.com/example/collection.git" });
     const task = await createTask(db, tenantId, { title: "Collection Task", board_id: firstBoard.id });
     await db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
-    await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "commented", "Collection note");
+    const note = await addTaskAction(db, task.id, "realmroot:agent", "actor-toolbox", "commented", "Collection note");
 
     const firstPage = await request("GET", "/boards?pageSize=1", "board:read");
     expect(firstPage.status).toBe(200);
@@ -690,17 +452,21 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     await expect(agentNotes.json()).resolves.toMatchObject({ items: expect.arrayContaining([expect.objectContaining({ taskId: task.id })]) });
 
     const session = await createTestWebSession(db, tenantId);
-    for (const path of ["/boards", "/repositories", "/tasks", `/tasks/${task.id}/notes`] as const) {
-      const response = await browserRequest(session, path);
-      expect(response.status, path).toBe(200);
-      expect(await response.json()).toEqual(expect.any(Array));
+    for (const [path, scope] of [
+      ["/boards", "board:read"],
+      ["/repositories", "repository:read"],
+      ["/tasks?status=in-progress", "task:read"],
+      [`/tasks/${task.id}/notes`, "task:read"],
+      [`/boards/${firstBoard.id}`, "board:read"],
+      [`/repositories/${repository.id}`, "repository:read"],
+      [`/tasks/${task.id}`, "task:read"],
+      [`/tasks/${task.id}/notes/${note.id}`, "task:read"],
+    ] as const) {
+      const tokenResponse = await request("GET", path, scope);
+      const sessionResponse = await browserRequest(session, path);
+      expect(sessionResponse.status, path).toBe(tokenResponse.status);
+      expect(await sessionResponse.json(), path).toEqual(await tokenResponse.json());
     }
-    const browserTasks = await browserRequest(session, "/tasks");
-    await expect(browserTasks.json()).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ board_id: firstBoard.id, status: "in_progress" })]),
-    );
-    const browserNotes = await browserRequest(session, `/tasks/${task.id}/notes`);
-    await expect(browserNotes.json()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ task_id: task.id })]));
     expect([firstBoard.id, secondBoard.id]).toHaveLength(2);
   });
 
@@ -739,12 +505,12 @@ describe("Realmroot Agent generic Toolbox operations", () => {
 
     const task = await createTask(db, tenantId, { title: "Default version Task Event", board_id: boardId });
     await db.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(task.id).run();
-    const event = await request("GET", `/task-events?taskId=${task.id}&until=in-review&waitSeconds=0`, "task:read", undefined, false);
+    const event = await request("GET", `/tasks/${task.id}/events?until=in-review&waitSeconds=0`, "task:read", undefined, false);
     const eventBody = (await event.json()) as { cursor: string };
     env = { ...env, OIDC_WEB_CLIENT_SECRET: "rotated-web-secret-again" };
     const eventContinuation = await request(
       "GET",
-      `/task-events?taskId=${task.id}&until=in-review&waitSeconds=0&cursor=${encodeURIComponent(eventBody.cursor)}`,
+      `/tasks/${task.id}/events?until=in-review&waitSeconds=0&cursor=${encodeURIComponent(eventBody.cursor)}`,
       "task:read",
       undefined,
       false,
@@ -804,12 +570,182 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     });
   });
 
+  it("changes the parent Task ETag when a Task Note is created", async () => {
+    const board = await createBoard(db, tenantId, "Task Note ETag", "ops");
+    const task = await createTask(db, tenantId, { title: "Task Note ETag parent", board_id: board.id });
+    const session = await createTestWebSession(db, tenantId, { subjectId: "task-note-author" });
+    const before = await browserRequest(session, `/tasks/${task.id}`);
+    const beforeEtag = before.headers.get("ETag");
+
+    const created = await browserMutation(
+      session,
+      "POST",
+      `/tasks/${task.id}/notes`,
+      { detail: "This Note changes the Task representation" },
+      "task-note-etag",
+    );
+
+    expect(created.status, await created.clone().text()).toBe(201);
+    const after = await browserRequest(session, `/tasks/${task.id}`);
+    expect(after.status).toBe(200);
+    expect(after.headers.get("ETag")).not.toBe(beforeEtag);
+  });
+
+  it("changes the parent Task ETag when a createdFrom child is created and deleted", async () => {
+    const board = await createBoard(db, tenantId, "Subtask parent ETag", "ops");
+    const parent = await createTask(db, tenantId, { title: "Subtask parent", board_id: board.id });
+    const session = await createTestWebSession(db, tenantId, { subjectId: "subtask-author" });
+    const initialParent = await browserRequest(session, `/tasks/${parent.id}`);
+    const initialEtag = initialParent.headers.get("ETag");
+
+    const created = await browserMutation(
+      session,
+      "POST",
+      "/tasks",
+      { title: "Child Task", boardId: board.id, createdFrom: parent.id },
+      "created-from-child",
+    );
+    expect(created.status, await created.clone().text()).toBe(201);
+    const child = (await created.json()) as { id: string };
+
+    const afterCreate = await browserRequest(session, `/tasks/${parent.id}`);
+    expect(afterCreate.headers.get("ETag")).not.toBe(initialEtag);
+    const childCurrent = await browserRequest(session, `/tasks/${child.id}`);
+    const deleted = await browserTaskDelete(session, child.id, childCurrent.headers.get("ETag")!);
+    expect(deleted.status, await deleted.clone().text()).toBe(204);
+
+    const afterDelete = await browserRequest(session, `/tasks/${parent.id}`);
+    expect(afterDelete.headers.get("ETag")).not.toBe(afterCreate.headers.get("ETag"));
+  });
+
+  it("changes an associated Task ETag and clears its Repository projection when the Repository is deleted", async () => {
+    const board = await createBoard(db, tenantId, "Repository deletion Task ETag", "dev");
+    const repository = await createRepository(db, tenantId, {
+      name: "deleted-repository",
+      url: "https://github.com/example/deleted-repository.git",
+    });
+    const task = await createTask(db, tenantId, {
+      title: "Repository-linked Task",
+      board_id: board.id,
+      repository_id: repository.id,
+    });
+    const session = await createTestWebSession(db, tenantId, { subjectId: "repository-deleter" });
+    const before = await browserRequest(session, `/tasks/${task.id}`);
+    expect(await before.clone().json()).toMatchObject({ repositoryId: repository.id, repositoryName: repository.name });
+    const beforeEtag = before.headers.get("ETag");
+
+    const deleted = await request("DELETE", `/repositories/${repository.id}`, "repository:write");
+
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+    const after = await browserRequest(session, `/tasks/${task.id}`);
+    expect(after.headers.get("ETag")).not.toBe(beforeEtag);
+    expect(await after.json()).toMatchObject({ repositoryId: null, repositoryName: null });
+  });
+
+  it("changes a createdFrom child ETag and clears its parent reference when the parent Task is deleted", async () => {
+    const board = await createBoard(db, tenantId, "Parent deletion child ETag", "ops");
+    const parent = await createTask(db, tenantId, { title: "Deleted parent", board_id: board.id });
+    const child = await createTask(db, tenantId, { title: "Surviving child", board_id: board.id, created_from: parent.id });
+    const session = await createTestWebSession(db, tenantId, { subjectId: "parent-deleter" });
+    const before = await browserRequest(session, `/tasks/${child.id}`);
+    expect(await before.clone().json()).toMatchObject({ createdFrom: parent.id });
+    const beforeEtag = before.headers.get("ETag");
+    const parentCurrent = await browserRequest(session, `/tasks/${parent.id}`);
+
+    const deleted = await browserTaskDelete(session, parent.id, parentCurrent.headers.get("ETag")!);
+
+    expect(deleted.status, await deleted.clone().text()).toBe(204);
+    const after = await browserRequest(session, `/tasks/${child.id}`);
+    expect(after.headers.get("ETag")).not.toBe(beforeEtag);
+    expect(await after.json()).toMatchObject({ createdFrom: null });
+  });
+
+  it("rejects a non-HTTP pullRequestUrl without writing and accepts an absolute HTTPS URL", async () => {
+    const board = await createBoard(db, tenantId, "Task pull request URL", "ops");
+    const task = await createTask(db, tenantId, { title: "Task pull request URL", board_id: board.id });
+    const session = await createTestWebSession(db, tenantId, { subjectId: "pull-request-editor" });
+    const before = await browserRequest(session, `/tasks/${task.id}`);
+    const beforeEtag = before.headers.get("ETag")!;
+
+    const invalid = await browserTaskPatch(session, task.id, { pullRequestUrl: "not-a-url" });
+
+    expect(invalid.status).toBe(422);
+    const unchanged = await browserRequest(session, `/tasks/${task.id}`);
+    expect(unchanged.headers.get("ETag")).toBe(beforeEtag);
+    expect(await unchanged.json()).toMatchObject({ pullRequestUrl: null });
+
+    const pullRequestUrl = "https://github.com/example/repository/pull/42";
+    const updated = await browserTaskPatch(session, task.id, { pullRequestUrl });
+    expect(updated.status, await updated.clone().text()).toBe(200);
+    expect(updated.headers.get("ETag")).not.toBe(beforeEtag);
+    await expect(updated.json()).resolves.toMatchObject({ pullRequestUrl });
+  });
+
+  it.each(["done", "cancelled"] as const)("changes a dependent Task ETag when its dependency becomes %s", async (terminalStatus) => {
+    const board = await createBoard(db, tenantId, `Dependency ${terminalStatus} ETag`, "ops");
+    const dependency =
+      terminalStatus === "done"
+        ? await reviewReadyTask(tenantId, board.id, "Review-ready dependency", "dependency-assignee")
+        : await createTask(db, tenantId, { title: "Cancellable dependency", board_id: board.id });
+    if (terminalStatus === "done") {
+      await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
+        ownerId: tenantId,
+        taskId: dependency.id,
+        agentActorId: "dependency-assignee",
+        pullRequestUrl: null,
+      });
+    }
+    const dependent = await createTask(db, tenantId, {
+      title: "Blocked dependent",
+      board_id: board.id,
+      depends_on: [dependency.id],
+    });
+    const session = await createTestWebSession(db, tenantId, { subjectId: "dependency-reviewer" });
+    const before = await browserRequest(session, `/tasks/${dependent.id}`);
+    expect(await before.clone().json()).toMatchObject({ blocked: true });
+    const beforeEtag = before.headers.get("ETag");
+    const transitioned = await browserTaskPatch(session, dependency.id, { status: terminalStatus });
+
+    expect(transitioned.status, await transitioned.clone().text()).toBe(200);
+    const after = await browserRequest(session, `/tasks/${dependent.id}`);
+    expect(after.headers.get("ETag")).not.toBe(beforeEtag);
+    expect(await after.json()).toMatchObject({ blocked: false });
+  });
+
+  it("returns an RFC 9457 Problem for an invalid Task stream Last-Event-ID", async () => {
+    const board = await createBoard(db, tenantId, "Invalid Task stream cursor", "ops");
+    const task = await createTask(db, tenantId, { title: "Invalid stream cursor", board_id: board.id });
+    const url = `${resource}/tasks/${task.id}/stream`;
+    const authority = await realmrootAgentAuthority(url, "GET", "task:read");
+
+    const response = await api.fetch(
+      new Request(url, {
+        headers: {
+          authorization: `DPoP ${authority.accessToken}`,
+          dpop: authority.proof,
+          "API-Version": "2026-08-29",
+          "Last-Event-ID": "unknown-note",
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toContain("application/problem+json");
+    await expect(response.json()).resolves.toMatchObject({
+      type: `${resource}/problems/request-rejected`,
+      title: "Request rejected",
+      status: 400,
+      detail: "Unknown event ID, reconnect without Last-Event-ID",
+    });
+  });
+
   it("represents Task Events with lowerCamel Task fields and kebab-case status, until, and outcome", async () => {
     const board = await createBoard(db, tenantId, "Task Event representation", "ops");
     const task = await createTask(db, tenantId, { title: "Event representation", board_id: board.id });
     await db.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(task.id).run();
 
-    const response = await request("GET", `/task-events?taskId=${task.id}&until=in-review&waitSeconds=0`, "task:read");
+    const response = await request("GET", `/tasks/${task.id}/events?until=in-review&waitSeconds=0`, "task:read");
     expect(response.status, await response.clone().text()).toBe(200);
     const snapshot = (await response.json()) as { cursor: string };
     expect(snapshot).toMatchObject({
@@ -828,7 +764,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     });
     const continuation = await request(
       "GET",
-      `/task-events?taskId=${task.id}&until=in-review&waitSeconds=0&cursor=${encodeURIComponent(snapshot.cursor)}`,
+      `/tasks/${task.id}/events?until=in-review&waitSeconds=0&cursor=${encodeURIComponent(snapshot.cursor)}`,
       "task:read",
     );
     expect(continuation.status, await continuation.clone().text()).toBe(200);
@@ -838,19 +774,88 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     ["POST", "/boards/missing/labels", "board:write", { name: "private", color: "#112233" }],
     ["PATCH", "/boards/missing", "board:write", { name: "private" }],
     ["DELETE", "/boards/missing", "board:write", undefined],
-    ["PATCH", "/tasks/missing", "task:write", { title: "private" }],
-    ["DELETE", "/tasks/missing", "task:write", undefined],
     ["DELETE", "/repositories/missing", "repository:write", undefined],
     ["GET", "/tasks/missing/session", "task:read", undefined],
     ["GET", "/tasks/missing/stream", "task:read", undefined],
-    ["GET", "/github-app/config", "repository:read", undefined],
-  ] as const)("denies unpublished Agent management operation %s %s", async (method, path, scope, body) => {
+  ] as const)("lets a scoped caller reach the published operation %s %s", async (method, path, scope, body) => {
     const response = await request(method, path, scope, body);
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ error: { code: "FORBIDDEN" } });
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("application/problem+json");
+    await expect(response.json()).resolves.toMatchObject({ status: 404 });
   });
 
-  it("[spec: tasks/assign] allows an authenticated human to create an Assignment for the requested Realmroot Agent", async () => {
+  it("lets a scoped caller with a Task precondition reach DELETE for a missing Task", async () => {
+    const url = `${resource}/tasks/missing`;
+    const authority = await realmrootAgentAuthority(url, "DELETE", "task:write");
+    const response = await api.fetch(
+      new Request(url, {
+        method: "DELETE",
+        headers: {
+          authorization: `DPoP ${authority.accessToken}`,
+          dpop: authority.proof,
+          "API-Version": "2026-08-29",
+          "If-Match": '"1"',
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("application/problem+json");
+    await expect(response.json()).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("lets a scope-valid human Claim caller reach the runtime binding precondition", async () => {
+    const url = `${resource}/tasks/missing-task/claims`;
+    const authority = await realmrootAgentAuthority(url, "POST", "task:claim", "unused-agent", undefined, {
+      principalType: "human",
+      subjectId: "human-claimer",
+    });
+
+    const response = await api.fetch(
+      new Request(url, {
+        method: "POST",
+        headers: {
+          authorization: `DPoP ${authority.accessToken}`,
+          dpop: authority.proof,
+          "API-Version": "2026-08-29",
+          "Idempotency-Key": '"human-claim"',
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      type: `${resource}/problems/runtime-session-required`,
+      status: 409,
+    });
+  });
+
+  it("restores browser Session scopes without Agent workflow authority", async () => {
+    const session = await createTestWebSession(db, tenantId, { subjectId: "human-session-claimer" });
+    const response = await api.fetch(
+      new Request(`${resource}/tasks/missing-task/claims`, {
+        method: "POST",
+        headers: {
+          cookie: session.cookie,
+          "x-csrf-token": session.csrfToken,
+          "API-Version": "2026-08-29",
+          "Idempotency-Key": '"browser-claim"',
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      type: `${resource}/problems/permission-denied`,
+      status: 403,
+      detail: "Missing scope: task:claim",
+    });
+  });
+
+  it("[spec: tasks/assign] conditionally assigns through a standalone Task merge patch", async () => {
     const board = await createBoard(db, tenantId, "Human assignment board", "ops");
     const task = await createTask(db, tenantId, { title: "Human assigned Task", board_id: board.id });
     const session = await createTestWebSession(db, tenantId, { subjectId: "human-assigner" });
@@ -862,32 +867,117 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       OIDC_SERVICE_CLIENT_ID: "agent-kanban",
       OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
     };
-    await realmrootAgentAuthority(`${resource}/task-assignments/${task.id}`, "PUT", "task:assign");
+    await realmrootAgentAuthority(`${resource}/tasks/${task.id}`, "PATCH", "task:write");
+    const wrongMedia = await browserTaskPatch(session, task.id, { assignedTo: "realmroot-agent-target" }, "application/json");
+    expect(wrongMedia.status).toBe(415);
 
-    const response = await api.fetch(
-      new Request(`${resource}/task-assignments/${task.id}`, {
-        method: "PUT",
-        headers: {
-          cookie: session.cookie,
-          "x-csrf-token": session.csrfToken,
-          "content-type": "application/json",
-          "API-Version": "2026-08-29",
-        },
-        body: JSON.stringify({ agentActorId: "realmroot-agent-target" }),
-      }),
-      env,
-    );
+    const response = await browserTaskPatch(session, task.id, { assignedTo: "realmroot-agent-target" });
 
     expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      agentActorId: "realmroot-agent-target",
-      assignedByActorId: "human-assigner",
-    });
+    await expect(response.json()).resolves.toMatchObject({ id: task.id, assignedTo: "realmroot-agent-target" });
+    expect(response.headers.get("ETag")).toMatch(/^".+"$/);
     expect(inboxMessageRequests).toHaveLength(1);
     await expect(db.prepare("SELECT assigned_to, assignee_identity_type FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
       assigned_to: "realmroot-agent-target",
       assignee_identity_type: "realmroot_actor",
     });
+
+    const mixed = await browserTaskPatch(session, task.id, { assignedTo: "another-agent", status: "cancelled" });
+    expect(mixed.status).toBe(422);
+    await expect(mixed.json()).resolves.toMatchObject({ detail: "Assignment and status changes must be separate requests" });
+  });
+
+  it("commits only one concurrent Task patch and tells the loser to reread", async () => {
+    const board = await createBoard(db, tenantId, "Concurrent Task patch", "ops");
+    const task = await createTask(db, tenantId, { title: "Before concurrent patch", board_id: board.id });
+    const session = await createTestWebSession(db, tenantId, { subjectId: "concurrent-task-editor" });
+    const responses = await Promise.all([
+      browserTaskPatch(session, task.id, { title: "Concurrent winner A" }),
+      browserTaskPatch(session, task.id, { title: "Concurrent winner B" }),
+    ]);
+
+    expect(responses.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const loser = responses.find(({ status }) => status === 409)!;
+    await expect(loser.json()).resolves.toMatchObject({
+      type: `${resource}/problems/task-update-conflict`,
+      detail: expect.stringMatching(/reread/i),
+    });
+    const persisted = await db.prepare("SELECT title, version FROM tasks WHERE id = ?").bind(task.id).first<{ title: string; version: number }>();
+    expect(["Concurrent winner A", "Concurrent winner B"]).toContain(persisted!.title);
+    expect(persisted!.version).toBe(2);
+  });
+
+  it("[spec: tasks/submit-review] [spec: tasks/reject-review] [spec: tasks/complete-review] [spec: tasks/cancel] transitions lifecycle through Task status patches", async () => {
+    env = {
+      ...env,
+      OIDC_ISSUER: issuer,
+      INBOX_RESOURCE: inboxResource,
+      INBOX_API_VERSION: "2026-08-31",
+      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
+      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
+    };
+    const board = await createBoard(db, tenantId, "Task status patches", "ops");
+    const task = await reviewReadyTask(tenantId, board.id, "Review through Task PATCH", "actor-toolbox");
+    await db.prepare("UPDATE tasks SET updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").bind(task.id).run();
+    const submitted = await taskPatchToken(task.id, { status: "in-review", pullRequestUrl: "https://github.com/example/repo/pull/1" });
+    expect(submitted.status, await submitted.clone().text()).toBe(200);
+    await expect(submitted.json()).resolves.toMatchObject({
+      id: task.id,
+      status: "in-review",
+      pullRequestUrl: "https://github.com/example/repo/pull/1",
+    });
+    const selfReview = await taskPatchToken(task.id, { status: "done" });
+    expect(selfReview.status).toBe(403);
+    await expect(selfReview.json()).resolves.toMatchObject({ type: `${resource}/problems/task-transition-forbidden` });
+
+    const rejected = await taskPatchToken(
+      task.id,
+      { status: "in-progress", statusReason: "needs changes" },
+      {
+        principalType: "human",
+        subjectId: "human-reviewer",
+      },
+    );
+    expect(rejected.status, await rejected.clone().text()).toBe(200);
+    await expect(rejected.json()).resolves.toMatchObject({ id: task.id, status: "in-progress" });
+    expect(inboxMessageRequests).toHaveLength(1);
+
+    const resubmitted = await taskPatchToken(task.id, { status: "in-review" });
+    expect(resubmitted.status, await resubmitted.clone().text()).toBe(200);
+    const completed = await taskPatchToken(
+      task.id,
+      { status: "done" },
+      {
+        principalType: "human",
+        subjectId: "human-reviewer",
+      },
+    );
+    expect(completed.status, await completed.clone().text()).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({ id: task.id, status: "done" });
+
+    const invalidTask = await createTask(db, tenantId, { title: "Invalid direct completion", board_id: board.id });
+    const invalid = await taskPatchToken(
+      invalidTask.id,
+      { status: "done" },
+      {
+        principalType: "human",
+        subjectId: "human-reviewer",
+      },
+    );
+    expect(invalid.status).toBe(409);
+    await expect(invalid.json()).resolves.toMatchObject({ type: `${resource}/problems/task-transition-conflict` });
+
+    const cancelledTask = await createTask(db, tenantId, { title: "Cancel through Task PATCH", board_id: board.id });
+    const cancelled = await taskPatchToken(
+      cancelledTask.id,
+      { status: "cancelled" },
+      {
+        principalType: "human",
+        subjectId: "human-reviewer",
+      },
+    );
+    expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+    await expect(cancelled.json()).resolves.toMatchObject({ id: cancelledTask.id, status: "cancelled" });
   });
 
   it("[spec: tasks/create] creates only an unassigned Task through the generic collection operation", async () => {
@@ -953,21 +1043,6 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     ).resolves.toEqual(before);
   });
 
-  it.each([
-    ["claim", "task:claim"],
-    ["assign", "task:assign"],
-    ["release", "task:release"],
-    ["review", "task:review"],
-    ["complete", "task:complete"],
-    ["reject", "task:reject"],
-    ["cancel", "task:cancel"],
-  ] as const)("does not expose the removed POST Task %s command to a Realmroot Agent", async (command, scope) => {
-    const response = await request("POST", `/tasks/missing-task/${command}`, scope, {});
-
-    expect(response.status).toBe(403);
-    await expect(db.prepare("SELECT COUNT(*) AS count FROM task_actions").first()).resolves.toEqual({ count: 0 });
-  });
-
   it.each(["assigned_to", "agent_id", "assignee_identity_type"] as const)(
     "rejects Task PATCH field %s without creating a wire or persisted assignment",
     async (field) => {
@@ -975,16 +1050,15 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       const task = await createTask(db, tenantId, { title: `Unassigned ${field}`, board_id: board.id });
       const before = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first();
 
-      const response = await request("PATCH", `/tasks/${task.id}`, "task:write", {
+      const response = await taskPatchToken(task.id, {
         [field]: field === "assignee_identity_type" ? "realmroot_actor" : "actor-not-assignable-by-patch",
       });
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(422);
       await expect(response.json()).resolves.toMatchObject({
-        error: {
-          code: "FORBIDDEN",
-          message: "Operation is not published by the Agent Kanban Resource Server",
-        },
+        type: `${resource}/problems/request-rejected`,
+        status: 422,
+        detail: `Task contains unsupported properties: ${field}`,
       });
       await expect(db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual(before);
       const read = await request("GET", `/tasks/${task.id}`, "task:read");
@@ -994,6 +1068,26 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       expect(representation).not.toHaveProperty("assigneeIdentityType");
     },
   );
+
+  it.each([
+    ["title", null, "Task.title cannot be null"],
+    ["metadata", null, "Task.metadata cannot be null"],
+    ["position", "first", "Task.position must be a finite number"],
+  ] as const)("rejects invalid Task merge patch value %s", async (field, value, detail) => {
+    const board = await createBoard(db, tenantId, `Invalid ${field} patch`, "ops");
+    const task = await createTask(db, tenantId, { title: `Task for invalid ${field}`, board_id: board.id });
+    const before = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first();
+
+    const response = await taskPatchToken(task.id, { [field]: value });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      type: `${resource}/problems/request-rejected`,
+      status: 422,
+      detail,
+    });
+    await expect(db.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual(before);
+  });
 
   it("[spec: resource-server/generic-operations] executes representative verb-first Board, unassigned Task, Note, and Repository operations with exact scopes", async () => {
     const ownBoard = await createBoard(db, tenantId, "Own board", "ops");
@@ -1035,6 +1129,19 @@ describe("Realmroot Agent generic Toolbox operations", () => {
       detail: "Missing scope: repository:write",
     });
 
+    const readOnlySession = await createTestWebSession(db, tenantId, { scopes: ["repository:read"] });
+    expect((await browserRequest(readOnlySession, "/repositories")).status).toBe(200);
+    const deniedSessionWrite = await browserMutation(readOnlySession, "POST", "/repositories", {
+      name: "forbidden-session-repository",
+      url: "https://gitlab.com/example/forbidden-session.git",
+    });
+    expect(deniedSessionWrite.status).toBe(403);
+    await expect(deniedSessionWrite.json()).resolves.toMatchObject({
+      type: `${resource}/problems/permission-denied`,
+      status: 403,
+      detail: "Missing scope: repository:write",
+    });
+
     const foreignTask = await createTask(db, foreignTenantId, { title: "Foreign Task", board_id: foreignBoard.id });
     const hidden = await request("POST", `/tasks/${foreignTask.id}/notes`, "task:write", { detail: "Must not write" });
     expect(hidden.status).toBe(404);
@@ -1043,162 +1150,11 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     ).resolves.toEqual({ count: 0 });
   });
 
-  it("[spec: tasks/submit-review] lets the assigned Agent submit its Task through the HTTP resource", async () => {
-    const board = await createBoard(db, tenantId, "Submit review", "ops");
-    const task = await reviewReadyTask(tenantId, board.id, "Submit through HTTP", "actor-toolbox");
-
-    const response = await request("PUT", `/task-review-submissions/${task.id}`, "task:review", undefined, true);
-
-    expect(response.status, await response.clone().text()).toBe(201);
-    const submission = (await response.json()) as { taskId: string; agentActorId: string; reviewSubmissionVersion: string };
-    expect(submission).toMatchObject({ taskId: task.id, agentActorId: "actor-toolbox", reviewSubmissionVersion: expect.any(String) });
-    expect(response.headers.get("ETag")).toBe(`"${submission.reviewSubmissionVersion}"`);
-    await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({ status: "in_review" });
-  });
-
-  it("accepts an empty Toolbox Task Cancellation body without Content-Type and rejects an untyped non-empty body", async () => {
-    const board = await createBoard(db, tenantId, "Cancellation route", "ops");
-    const task = await createTask(db, tenantId, { title: "Cancel through HTTP", board_id: board.id });
-
-    const response = await request("PUT", `/task-cancellations/${task.id}`, "task:cancel");
-
-    expect(response.status, await response.clone().text()).toBe(201);
-    expect(response.headers.get("Location")).toBe(`${resource}/task-cancellations/${task.id}`);
-    expect(response.headers.get("ETag")).toMatch(/^".+"$/);
-    await expect(response.json()).resolves.toMatchObject({ taskId: task.id, cancelledByActorId: "actor-toolbox" });
-    await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({ status: "cancelled" });
-
-    const invalidTask = await createTask(db, tenantId, { title: "Reject untyped body", board_id: board.id });
-    const url = `${resource}/task-cancellations/${invalidTask.id}`;
-    const authority = await realmrootAgentAuthority(url, "PUT", "task:cancel", "actor-toolbox");
-    const invalidRequest = new Request(url, {
-      method: "PUT",
-      headers: {
-        authorization: `DPoP ${authority.accessToken}`,
-        dpop: authority.proof,
-        "API-Version": "2026-08-29",
-      },
-      body: new TextEncoder().encode("{}"),
-    });
-    expect(invalidRequest.headers.get("Content-Type")).toBeNull();
-    const invalid = await api.fetch(invalidRequest, env);
-    expect(invalid.status).toBe(415);
-    await expect(invalid.json()).resolves.toMatchObject({
-      status: 415,
-      type: `${resource}/problems/unsupported-media-type`,
-    });
-    await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(invalidTask.id).first()).resolves.toEqual({ status: "todo" });
-  });
-
-  it("[spec: tasks/reject-review] [spec: tasks/complete-review] lets a different human decide Review Submissions through HTTP", async () => {
-    const board = await createBoard(db, tenantId, "Human review decisions", "ops");
-    const session = await createTestWebSession(db, tenantId, { subjectId: "human-reviewer" });
-    env = {
-      ...env,
-      OIDC_ISSUER: issuer,
-      INBOX_RESOURCE: inboxResource,
-      INBOX_API_VERSION: "2026-08-31",
-      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
-      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
-    };
-    await realmrootAgentAuthority(`${resource}/task-review-rejections/bootstrap`, "PUT", "task:reject");
-    const decidedTaskIds: string[] = [];
-
-    for (const kind of ["rejections", "completions"] as const) {
-      const task = await reviewReadyTask(tenantId, board.id, `Human ${kind}`, "assigned-agent");
-      decidedTaskIds.push(task.id);
-      const submitted = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-        ownerId: tenantId,
-        taskId: task.id,
-        agentActorId: "assigned-agent",
-        pullRequestUrl: null,
-      });
-      const response = await api.fetch(
-        new Request(`${resource}/task-review-${kind}/${task.id}`, {
-          method: "PUT",
-          headers: {
-            cookie: session.cookie,
-            "x-csrf-token": session.csrfToken,
-            "API-Version": "2026-08-29",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ reviewSubmissionVersion: submitted.version, ...(kind === "rejections" ? { reason: "needs changes" } : {}) }),
-        }),
-        env,
-      );
-
-      expect(response.status, `${kind}: ${await response.clone().text()}`).toBe(201);
-      await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
-        status: kind === "rejections" ? "in_progress" : "done",
-      });
-    }
-
-    expect(machineTokenRequests).toHaveLength(1);
-    expect(inboxMessageRequests).toHaveLength(1);
-    const messages = await Promise.all(
-      inboxMessageRequests.map(
-        async (messageRequest) =>
-          (await messageRequest.clone().json()) as {
-            recipients: string[];
-            content: { text: string };
-          },
-      ),
-    );
-    expect(messages.map(({ recipients }) => recipients)).toEqual([["agent:assigned-agent"]]);
-    expect(messages[0].content.text).toBe(`Task ID: ${decidedTaskIds[0]}\nOwner ID: ${tenantId}`);
-  });
-
-  it("rejects stale reviewSubmissionVersion bodies for rejection and completion", async () => {
-    const board = await createBoard(db, tenantId, "Stale review decisions", "ops");
-    const session = await createTestWebSession(db, tenantId, { subjectId: "stale-reviewer" });
-
-    for (const kind of ["rejections", "completions"] as const) {
-      const task = await reviewReadyTask(tenantId, board.id, `Stale ${kind}`, "assigned-agent");
-      await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-        ownerId: tenantId,
-        taskId: task.id,
-        agentActorId: "assigned-agent",
-        pullRequestUrl: null,
-      });
-
-      const response = await reviewDecisionRequest(session, kind, task.id, {
-        reviewSubmissionVersion: "stale-review-version",
-        ...(kind === "rejections" ? { reason: "stale" } : {}),
-      });
-
-      expect(response.status, kind).toBe(412);
-      await expect(response.json()).resolves.toMatchObject({ type: expect.stringContaining("task-review-precondition-failed") });
-      await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({ status: "in_review" });
-    }
-  });
-
-  it("rejects malformed rejection and completion bodies without changing the Task", async () => {
-    const board = await createBoard(db, tenantId, "Malformed review decisions", "ops");
-    const session = await createTestWebSession(db, tenantId, { subjectId: "malformed-reviewer" });
-
-    for (const kind of ["rejections", "completions"] as const) {
-      const task = await reviewReadyTask(tenantId, board.id, `Malformed ${kind}`, "assigned-agent");
-      await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-        ownerId: tenantId,
-        taskId: task.id,
-        agentActorId: "assigned-agent",
-        pullRequestUrl: null,
-      });
-
-      const response = await reviewDecisionRequest(session, kind, task.id, {});
-
-      expect(response.status, kind).toBe(422);
-      await expect(response.json()).resolves.toMatchObject({ type: expect.stringContaining(`invalid-task-review-${kind.slice(0, -1)}`) });
-      await expect(db.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({ status: "in_review" });
-    }
-  });
-
   it("defaults and echoes API-Version on a published generic route while rejecting a wrong explicit version", async () => {
     const missing = await request("GET", "/boards", "board:read", undefined, false);
     expect(missing.status).toBe(200);
     expect(missing.headers.get("API-Version")).toBe("2026-08-29");
     expect(missing.headers.get("Vary")).toContain("API-Version");
-
     const empty = await request("GET", "/boards", "board:read", undefined, true, "");
     expect(empty.status).toBe(400);
     await expect(empty.json()).resolves.toMatchObject({ detail: "Unsupported API-Version: " });
@@ -1233,73 +1189,7 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     expect(response.headers.get("content-type")).toContain("application/problem+json");
     await expect(response.json()).resolves.toMatchObject({ status, type: `${resource}/problems/${problemType}` });
   });
-
-  it("reads the current Task Review Submission with ETag and hides absent or cross-tenant submissions", async () => {
-    const ownBoard = await createBoard(db, tenantId, "Review board", "ops");
-    const ownTask = await reviewReadyTask(tenantId, ownBoard.id, "Current review", "actor-reviewer");
-    const submitted = await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-      ownerId: tenantId,
-      taskId: ownTask.id,
-      agentActorId: "actor-reviewer",
-      pullRequestUrl: "https://github.com/example/repository/pull/42",
-    });
-
-    const current = await request("GET", `/task-review-submissions/${ownTask.id}`, "task:read", undefined, true);
-    expect(current.status).toBe(200);
-    expect(current.headers.get("ETag")).toBe(`"${submitted.version}"`);
-    const currentBody = (await current.json()) as { reviewSubmissionVersion: string };
-    expect(currentBody).toEqual(submitted.submission);
-    expect(currentBody.reviewSubmissionVersion).toBe(submitted.version);
-    expect(current.headers.get("ETag")).toBe(`"${currentBody.reviewSubmissionVersion}"`);
-
-    const webSession = await createTestWebSession(db, tenantId);
-    const webCurrent = await api.fetch(
-      new Request(`${resource}/task-review-submissions/${ownTask.id}`, {
-        headers: { cookie: webSession.cookie, "API-Version": "2026-08-29" },
-      }),
-      env,
-    );
-    expect(webCurrent.status).toBe(200);
-    expect(webCurrent.headers.get("ETag")).toBe(`"${submitted.version}"`);
-    await expect(webCurrent.json()).resolves.toEqual(submitted.submission);
-
-    const withoutSubmission = await createTask(db, tenantId, { title: "No submission", board_id: ownBoard.id });
-    const absent = await request("GET", `/task-review-submissions/${withoutSubmission.id}`, "task:read", undefined, true);
-    await expectProblem(absent, "task-review-submission-not-found");
-
-    const foreignBoard = await createBoard(db, foreignTenantId, "Foreign review", "ops");
-    const foreignTask = await reviewReadyTask(foreignTenantId, foreignBoard.id, "Foreign current review", "actor-foreign");
-    await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(db), {
-      ownerId: foreignTenantId,
-      taskId: foreignTask.id,
-      agentActorId: "actor-foreign",
-      pullRequestUrl: null,
-    });
-    const hidden = await request("GET", `/task-review-submissions/${foreignTask.id}`, "task:read", undefined, true);
-    await expectProblem(hidden, "task-not-found");
-  });
 });
-
-async function reviewDecisionRequest(
-  session: Awaited<ReturnType<typeof createTestWebSession>>,
-  kind: "rejections" | "completions",
-  taskId: string,
-  body: Record<string, unknown>,
-): Promise<Response> {
-  return api.fetch(
-    new Request(`${resource}/task-review-${kind}/${taskId}`, {
-      method: "PUT",
-      headers: {
-        cookie: session.cookie,
-        "x-csrf-token": session.csrfToken,
-        "API-Version": "2026-08-29",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }),
-    env,
-  );
-}
 
 async function request(
   method: string,
@@ -1333,6 +1223,90 @@ async function request(
 
 async function browserRequest(session: Awaited<ReturnType<typeof createTestWebSession>>, path: string): Promise<Response> {
   return api.fetch(new Request(`${resource}${path}`, { headers: { cookie: session.cookie, "API-Version": "2026-08-29" } }), env);
+}
+
+async function browserMutation(
+  session: Awaited<ReturnType<typeof createTestWebSession>>,
+  method: string,
+  path: string,
+  body: unknown,
+  idempotencyKey?: string,
+): Promise<Response> {
+  return api.fetch(
+    new Request(`${resource}${path}`, {
+      method,
+      headers: {
+        cookie: session.cookie,
+        "x-csrf-token": session.csrfToken,
+        "API-Version": "2026-08-29",
+        "content-type": "application/json",
+        ...(idempotencyKey ? { "Idempotency-Key": JSON.stringify(idempotencyKey) } : {}),
+      },
+      body: JSON.stringify(body),
+    }),
+    env,
+  );
+}
+
+async function browserTaskPatch(
+  session: Awaited<ReturnType<typeof createTestWebSession>>,
+  taskId: string,
+  body: unknown,
+  contentType = "application/merge-patch+json",
+): Promise<Response> {
+  return api.fetch(
+    new Request(`${resource}/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: {
+        cookie: session.cookie,
+        "x-csrf-token": session.csrfToken,
+        "API-Version": "2026-08-29",
+        "content-type": contentType,
+      },
+      body: JSON.stringify(body),
+    }),
+    env,
+  );
+}
+
+async function browserTaskDelete(session: Awaited<ReturnType<typeof createTestWebSession>>, taskId: string, ifMatch: string): Promise<Response> {
+  return api.fetch(
+    new Request(`${resource}/tasks/${taskId}`, {
+      method: "DELETE",
+      headers: {
+        cookie: session.cookie,
+        "x-csrf-token": session.csrfToken,
+        "API-Version": "2026-08-29",
+        "If-Match": ifMatch,
+      },
+    }),
+    env,
+  );
+}
+
+async function taskPatchToken(
+  taskId: string,
+  body: unknown,
+  options: { actorId?: string; principalType?: "human" | "agent"; subjectId?: string } = {},
+): Promise<Response> {
+  const url = `${resource}/tasks/${taskId}`;
+  const authority = await realmrootAgentAuthority(url, "PATCH", "task:write", options.actorId, undefined, {
+    principalType: options.principalType,
+    subjectId: options.subjectId,
+  });
+  return api.fetch(
+    new Request(url, {
+      method: "PATCH",
+      headers: {
+        authorization: `DPoP ${authority.accessToken}`,
+        dpop: authority.proof,
+        "API-Version": "2026-08-29",
+        "Content-Type": "application/merge-patch+json",
+      },
+      body: JSON.stringify(body),
+    }),
+    env,
+  );
 }
 
 async function creationFixture(resourceKind: "boards" | "repositories" | "tasks" | "notes") {
@@ -1414,7 +1388,6 @@ async function realmrootAgentAuthority(
       const request = target instanceof Request ? target : new Request(String(target), init);
       const url = request.url;
       if (url === `${authorityIssuer}/.well-known/openid-configuration`) {
-        oidcDiscoveryRequests += 1;
         return Response.json({
           issuer: authorityIssuer,
           authorization_endpoint: `${authorityIssuer}/oauth2/authorize`,
@@ -1424,12 +1397,11 @@ async function realmrootAgentAuthority(
       }
       if (url === authorityJwksUri) return Response.json({ keys: [issuerPublicJwk] });
       if (url === `${authorityIssuer}/oauth2/token`) {
-        machineTokenRequests.push(request);
         return Response.json({ access_token: "inbox-machine-token" });
       }
       if (url === `${inboxResource}/messages`) {
         inboxMessageRequests.push(request);
-        return new Response(null, { status: inboxResponseStatus });
+        return new Response(null, { status: 201 });
       }
       throw new Error(`Unexpected request: ${url}`);
     }),
@@ -1502,10 +1474,4 @@ async function reviewReadyTask(ownerId: string, boardId: string, title: string, 
     .bind(actorId, task.id)
     .run();
   return task;
-}
-
-async function expectProblem(response: Response, type: string): Promise<void> {
-  expect(response.status).toBe(404);
-  expect(response.headers.get("API-Version")).toBe("2026-08-29");
-  await expect(response.json()).resolves.toMatchObject({ type: `${resource}/problems/${type}`, status: 404 });
 }

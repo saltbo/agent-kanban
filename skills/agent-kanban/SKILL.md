@@ -14,13 +14,17 @@ state, signing keys, or Agent roles.
 1. Read the Task with the generic Toolbox resource operation:
 
    ```bash
-   realmroot toolbox get agent-kanban/tasks/<task-id> --json
+   realmroot toolbox get agent-kanban/tasks/<task-id> --include --json
    ```
+
+   Treat the returned representation as authoritative. Task PATCH operations
+   perform their own optimistic concurrency check; if one returns `409`, reread
+   the Task before deciding whether to retry.
 
 2. Claim it before changing the target repository:
 
    ```bash
-   realmroot toolbox agent-kanban task claim <task-id> --json
+   realmroot toolbox post agent-kanban/tasks/<task-id>/claims --json
    ```
 
    If the claim is rejected, stop without modifying the repository. Only the
@@ -48,14 +52,18 @@ state, signing keys, or Agent roles.
    blocker, then submit the Task for review:
 
    ```bash
-   realmroot toolbox agent-kanban task review <task-id> \
-     '{"pullRequestUrl":"https://github.com/owner/repo/pull/123"}' --json
+   realmroot toolbox get agent-kanban/tasks/<task-id> --include --json
+   realmroot toolbox patch agent-kanban/tasks/<task-id> \
+     --content-type application/merge-patch+json \
+     '{"status":"in-review","pullRequestUrl":"https://github.com/owner/repo/pull/123"}' --json
    ```
 
    Submit an explicit empty representation when the Task has no pull request:
 
    ```bash
-   realmroot toolbox agent-kanban task review <task-id> '{}' --json
+   realmroot toolbox patch agent-kanban/tasks/<task-id> \
+     --content-type application/merge-patch+json \
+     '{"status":"in-review"}' --json
    ```
 
 Before an Agency work Session stops, its claimed Task must be submitted for
@@ -63,34 +71,38 @@ review. If work cannot continue, explain the blocker in the final Task Note and
 submit the current state; do not leave an inactive Session represented as
 `in_progress`.
 
-## Generic versus specialized commands
+## Published commands
 
-Use Toolbox's generic verb-first operations for ordinary resources:
+Use Toolbox's generic verb-first operations for AK resources:
 
 ```bash
 realmroot toolbox get agent-kanban/tasks/<task-id> --json
 realmroot toolbox get agent-kanban/tasks/<task-id>/notes --json
 realmroot toolbox post agent-kanban/tasks/<task-id>/notes \
   --content-type application/json @note.json --json
-```
-
-Use only the published resource-first commands for AK lifecycle workflows:
-
-```bash
-realmroot toolbox agent-kanban task claim <task-id> --json
-realmroot toolbox agent-kanban task review <task-id> '{}' --json
+realmroot toolbox post agent-kanban/tasks/<task-id>/claims --json
+realmroot toolbox patch agent-kanban/tasks/<task-id> \
+  --content-type application/merge-patch+json \
+  '{"status":"in-review"}' --json
 realmroot toolbox agent-kanban task wait <task-id> in-review --wait-seconds 25 --json
 ```
 
-Do not invent aliases such as `task get`, `task create`, or `agent create`.
-Toolbox owns generic resource verbs; AK owns only the specialized commands
-advertised by its live OpenAPI document.
+`task wait` is the only AK-generated resource-first convenience command. Do
+not use the removed `task claim`, `task release`, `task review`, `task reject`,
+`task complete`, or `task cancel` aliases.
+
+If Toolbox still displays those removed aliases after the server contract is
+deployed, refresh its cached operation inventory once:
+
+```bash
+realmroot toolbox sync agent-kanban
+```
 
 If a generated command's request shape is unclear, inspect the contract instead
 of guessing flags:
 
 ```bash
-realmroot toolbox agent-kanban task review <task-id> --generate-body
+realmroot toolbox patch agent-kanban/tasks/<task-id> --generate-body
 ```
 
 Assignment and review rejection arrive through Inbox as business references:
@@ -113,8 +125,10 @@ cancellation are terminal transitions and do not create Agent Inbox work.
   fallback credential.
 - `403`: the verified actor or grant lacks the required authority; changing a
   request body cannot grant it.
-- `409` or `412`: reread the affected resource and decide from its current
-  state; do not replay a stale transition blindly.
-- `429` or `503`: honor `Retry-After`. Lifecycle `PUT` operations are
-  idempotent, so retry the same intended resource state rather than creating a
-  second workflow.
+- `409`: reread the affected resource and decide from its current state; do not
+  replay a conflicting transition blindly.
+- `412`: a conditional delete used a stale resource ETag; reread before deciding
+  whether deletion remains appropriate.
+- `429` or `503`: honor `Retry-After`. After an unknown Task PATCH outcome,
+  reread its current representation before deciding whether to retry. Claim
+  creation is idempotency-key protected.

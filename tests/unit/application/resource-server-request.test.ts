@@ -2,16 +2,15 @@ import { describe, expect, it } from "vitest";
 import { resolveActor } from "../../../server/http/resource-server/request";
 
 describe("resolveActor", () => {
-  it("rejects an unsupported identity without provider branding", () => {
-    const context = contextWith({ identityType: "service" });
+  it.each([
+    ["human", undefined, "human-subject", "user", "human-subject"],
+    ["agent", "agent-actor", "controller-subject", "realmroot:agent", "agent-actor"],
+    ["machine", "machine-actor", "machine-subject", "machine", "machine-actor"],
+    ["service", undefined, "service-subject", "service", "service-subject"],
+  ] as const)("preserves a %s principal as the canonical Task actor", (type, actorId, subjectId, actorType, expectedActorId) => {
+    const context = contextWith({ principal: { type, actorId, subjectId } });
 
-    expect(() => resolveActor(context)).toThrow(expect.objectContaining({ status: 403, message: "User or Agent identity is required" }));
-  });
-
-  it("rejects a supported identity when its actor identifier is missing", () => {
-    const context = contextWith({ identityType: "realmroot:agent" });
-
-    expect(() => resolveActor(context)).toThrow(expect.objectContaining({ status: 403, message: "Actor identity is required" }));
+    expect(resolveActor(context)).toEqual({ actorType, actorId: expectedActorId, sessionId: null });
   });
 });
 

@@ -6,8 +6,8 @@ description: Create, assign, monitor, and review one Agent Kanban v2 Task throug
 # AK Task v2
 
 Operate AK as a Realmroot Resource Server. There are no Agent role classes or
-board maintainer role: Realmroot grants authorize management operations, Task
-Assignment identifies the assigned Agent, and any authorized human or Agent
+board maintainer role: Realmroot grants authorize management operations, the
+Task's `assignedTo` field identifies the assigned Agent, and any authorized human or Agent
 may review a Task assigned to someone else. An Agent cannot reject or complete
 its own assigned Task.
 
@@ -39,18 +39,16 @@ description, dependencies, and acceptance checks.
 
 ## Create and assign
 
-Create an unassigned Task with the generic collection operation, then create
-its singleton Assignment. Do not put identity fields or an assignee into the
-Task representation.
+Create an unassigned Task, then patch its `assignedTo` field.
 
 ```bash
 realmroot toolbox post agent-kanban/tasks \
   --content-type application/json \
   @task.json --json
 
-realmroot toolbox put agent-kanban/task-assignments/<task-id> \
-  --content-type application/json \
-  '{"agentActorId":"<realmroot-agent-actor-id>"}' --json
+realmroot toolbox patch agent-kanban/tasks/<task-id> \
+  --content-type application/merge-patch+json \
+  '{"assignedTo":"<realmroot-agent-actor-id>"}' --json
 ```
 
 Realmroot Toolbox v0.5.0 or newer generates the required idempotency key and
@@ -61,8 +59,8 @@ invocation whose outcome remained unknown.
 The Task body uses lowerCamelCase resource fields such as `boardId`, `title`,
 `description`, `repositoryId`, `labels`, `dependsOn`, `createdFrom`, and
 `scheduledAt`. Assignment records intent only; Agency owns starting and
-hosting the Agent. Retry the same Assignment after an unknown outcome; do not
-create another Task or Assignment.
+hosting the Agent. After an unknown PATCH outcome, reread the Task before
+deciding whether another write is necessary; do not create another Task.
 
 ## Monitor
 
@@ -78,27 +76,39 @@ operations. A cancelled Task is terminal.
 
 ## Review
 
-When the Task reaches `in_review`, verify the submitted work and read the
-current Review Submission resource. Use its unquoted response `ETag` as the
-decision representation's `reviewSubmissionVersion`:
+When the Task reaches `in_review`, verify the submitted work, then reread the
+Task before making the review decision:
 
 ```bash
-realmroot toolbox get agent-kanban/task-review-submissions/<task-id> --json
+realmroot toolbox get agent-kanban/tasks/<task-id> --include --json
 
-realmroot toolbox agent-kanban task reject <task-id> \
-  '{"reviewSubmissionVersion":"<version>","reason":"Describe the required correction"}' --json
+realmroot toolbox patch agent-kanban/tasks/<task-id> \
+  --content-type application/merge-patch+json \
+  '{"status":"in-progress","statusReason":"Describe the required correction"}' --json
 
-realmroot toolbox agent-kanban task complete <task-id> \
-  '{"reviewSubmissionVersion":"<version>"}' --json
+realmroot toolbox patch agent-kanban/tasks/<task-id> \
+  --content-type application/merge-patch+json \
+  '{"status":"done"}' --json
 ```
 
 Reject when acceptance evidence or implementation is insufficient, then wait
-for a new Review Submission and use its new `ETag`. Complete only after the
-requested outcome is proven. If the verified reviewer actor equals the Task's
+for a new `in-review` Task state. Complete only after the requested outcome is
+proven. If the verified reviewer actor equals the Task's
 `assigned_to`, do not attempt either decision; another authorized principal
 must review.
 
-Use generic verb-first Toolbox operations for all ordinary CRUD. Use
-resource-first syntax only for the published lifecycle commands (`task claim`,
-`release`, `review`, `reject`, `complete`, `cancel`, and `wait`). Never invoke
-the removed `ak` CLI.
+Cancel a non-terminal Task through the same conditional Task patch. Delete an
+active Claim only at its nested Claim URI, using the Claim's own ETag:
+
+```bash
+realmroot toolbox patch agent-kanban/tasks/<task-id> \
+  --content-type application/merge-patch+json \
+  '{"status":"cancelled"}' --json
+
+realmroot toolbox delete agent-kanban/tasks/<task-id>/claims/<claim-id> \
+  --header 'If-Match: "<claim-etag>"' --json
+```
+
+Use generic verb-first Toolbox operations for every Task and Claim mutation.
+`task wait` is the only generated resource-first convenience command. Never
+invoke the removed `ak` CLI or the removed lifecycle aliases.

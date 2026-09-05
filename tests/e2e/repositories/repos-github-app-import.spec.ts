@@ -9,25 +9,27 @@ const INSTALL_URL = "https://github.com/apps/agent-kanban/installations/new";
 const GITHUB_APP_CONFIG = {
   configured: true,
   slug: "agent-kanban",
-  install_url: INSTALL_URL,
+  installUrl: INSTALL_URL,
+  installed: true,
+  accounts: ["acme"],
 };
 
 const INSTALLABLE_REPOS = {
   installed: true,
   repositories: [
     {
-      full_name: "acme/web",
+      fullName: "acme/web",
       name: "web",
-      clone_url: "https://github.com/acme/web.git",
+      cloneUrl: "https://github.com/acme/web.git",
       private: false,
-      already_added: false,
+      alreadyAdded: false,
     },
     {
-      full_name: "acme/api",
+      fullName: "acme/api",
       name: "api",
-      clone_url: "https://github.com/acme/api.git",
+      cloneUrl: "https://github.com/acme/api.git",
       private: true,
-      already_added: true,
+      alreadyAdded: true,
     },
   ],
 };
@@ -36,9 +38,12 @@ const CREATED_REPO = {
   id: "repo_new",
   name: "web",
   url: "https://github.com/acme/web",
-  created_at: "2026-06-19T00:00:00Z",
-  full_name: "acme/web",
-  app_status: "covered",
+  ownerId: "owner-acme",
+  fullName: "acme/web",
+  createdAt: "2026-06-19T00:00:00Z",
+  taskCount: 0,
+  appStatus: "covered",
+  links: { self: "/api/repositories/repo_new" },
 };
 
 test.describe("Repositories GitHub App", () => {
@@ -70,10 +75,10 @@ test.describe("Repositories GitHub App", () => {
     await page.goto("/repositories");
     await page.getByText("Repositories").first().waitFor({ state: "visible" });
 
-    // 5. Assert the "Install GitHub App" link is visible and has the correct href
-    const installLink = page.getByRole("link", { name: "Install GitHub App" });
-    await expect(installLink).toBeVisible();
-    await expect(installLink).toHaveAttribute("href", INSTALL_URL);
+    // 5. Assert the connected GitHub App account links to its installation management page
+    const installationLink = page.getByRole("link", { name: "Connected @acme" });
+    await expect(installationLink).toBeVisible();
+    await expect(installationLink).toHaveAttribute("href", INSTALL_URL);
 
     // 6. Click "Add Repository" to open the dialog
     await page.getByRole("button", { name: "Add Repository" }).click();

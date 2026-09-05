@@ -14,12 +14,17 @@ async function request<T>(method: string, path: string, body?: unknown, headers:
   let csrf = getCsrfToken();
   if (!csrf && method !== "GET") csrf = (await getSession())?.session.csrfToken ?? null;
 
+  const requestHeaders = { ...headers };
+  if (requiresIdempotencyKey(method, path)) {
+    const supplied = requestHeaders["Idempotency-Key"];
+    requestHeaders["Idempotency-Key"] = supplied?.startsWith('"') ? supplied : `"${supplied ?? crypto.randomUUID()}"`;
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
       "API-Version": V2_API_VERSION,
-      ...headers,
+      ...requestHeaders,
       ...(csrf ? { "x-csrf-token": csrf } : {}),
     },
     credentials: "include",
@@ -33,55 +38,152 @@ async function request<T>(method: string, path: string, body?: unknown, headers:
   return data as T;
 }
 
-async function currentTaskReviewSubmissionEtag(taskId: string): Promise<string> {
-  const response = await fetch(`${API_BASE}/task-review-submissions/${encodeURIComponent(taskId)}`, {
+function requiresIdempotencyKey(method: string, path: string): boolean {
+  return method === "POST" && (path === "/tasks" || path === "/agents" || path === "/machines" || /^\/tasks\/[^/]+\/(?:notes|claims)$/.test(path));
+}
+
+function pageItems<T>(value: { items: T[] }): T[] {
+  return value.items;
+}
+
+function fromBoard(board: any): any {
+  return {
+    ...board,
+    owner_id: board.ownerId,
+    share_slug: board.shareSlug,
+    tasks: board.tasks?.map(fromTask),
+    created_at: board.createdAt,
+    updated_at: board.updatedAt,
+  };
+}
+
+function fromTaskNote(note: any): any {
+  return {
+    ...note,
+    task_id: note.taskId,
+    actor_type: note.actorType,
+    actor_id: note.actorId,
+    actor_name: note.actorName,
+    created_at: note.createdAt,
+  };
+}
+
+function fromTask(task: any): any {
+  return {
+    ...task,
+    status: task.status?.replaceAll("-", "_"),
+    board_id: task.boardId,
+    repository_id: task.repositoryId,
+    repository_name: task.repositoryName,
+    created_by: task.createdBy,
+    assigned_to: task.assignedTo,
+    assignee_name: task.assigneeName,
+    board_type: task.boardType,
+    pr_url: task.pullRequestUrl,
+    created_from: task.createdFrom,
+    scheduled_at: task.scheduledAt,
+    depends_on: task.dependsOn,
+    duration_minutes: task.durationMinutes,
+    subtask_count: task.subtaskCount,
+    session_binding: task.sessionBinding
+      ? {
+          agent_actor_id: task.sessionBinding.agentActorId,
+          runtime: task.sessionBinding.runtime,
+          runtime_session_id: task.sessionBinding.runtimeSessionId,
+          bound_at: task.sessionBinding.boundAt,
+        }
+      : null,
+    notes: task.notes?.map(fromTaskNote),
+    created_at: task.createdAt,
+    updated_at: task.updatedAt,
+  };
+}
+
+function fromRepository(repository: any): Repository {
+  return {
+    ...repository,
+    owner_id: repository.ownerId,
+    full_name: repository.fullName,
+    created_at: repository.createdAt,
+    task_count: repository.taskCount,
+    app_status: repository.appStatus,
+  };
+}
+
+function taskWrite(input: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...input };
+  for (const [legacy, canonical] of Object.entries({
+    board_id: "boardId",
+    repository_id: "repositoryId",
+    pr_url: "pullRequestUrl",
+    depends_on: "dependsOn",
+    created_from: "createdFrom",
+    scheduled_at: "scheduledAt",
+  })) {
+    if (result[legacy] !== undefined) result[canonical] = result[legacy];
+    delete result[legacy];
+  }
+  return result;
+}
+
+async function currentTaskEtag(taskId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}`, {
     headers: { "API-Version": V2_API_VERSION },
     credentials: "include",
   });
   const data = (await response.json()) as any;
   if (!response.ok) throw apiError(response, data);
   const etag = response.headers.get("etag");
-  if (!etag) throw new Error("Task Review Submission response is missing its ETag");
+  if (!etag) throw new Error("Task response is missing its ETag");
   return etag;
 }
 
-async function replaceTaskReviewDecision(taskId: string, decision: "rejection" | "completion", reason?: string): Promise<any> {
-  const etag = await currentTaskReviewSubmissionEtag(taskId);
-  const reviewSubmissionVersion = etag.replace(/^"|"$/g, "");
-  const body = decision === "rejection" && reason ? { reviewSubmissionVersion, reason } : { reviewSubmissionVersion };
-  return request<any>("PUT", `/task-review-${decision}s/${encodeURIComponent(taskId)}`, body);
+async function patchTask(taskId: string, body: Record<string, unknown>): Promise<any> {
+  return request<any>("PATCH", `/tasks/${encodeURIComponent(taskId)}`, body, {
+    "Content-Type": "application/merge-patch+json",
+  });
 }
 
 export const api = {
   tasks: {
     list: (params?: Record<string, string>) => {
-      const qs = params ? `?${new URLSearchParams(params).toString()}` : "";
-      return request<any[]>("GET", `/tasks${qs}`);
+      const query = new URLSearchParams(params);
+      for (const [legacy, canonical] of Object.entries({ repository_id: "repositoryId", board_id: "boardId", assigned_to: "assignedTo" })) {
+        const value = query.get(legacy);
+        if (value !== null) query.set(canonical, value);
+        query.delete(legacy);
+      }
+      const qs = query.size > 0 ? `?${query.toString()}` : "";
+      return request<{ items: any[] }>("GET", `/tasks${qs}`).then((page) => pageItems(page).map(fromTask));
     },
-    get: (id: string) => request<any>("GET", `/tasks/${id}`),
+    get: (id: string) => request<any>("GET", `/tasks/${id}`).then(fromTask),
     session: (id: string) => request<any>("GET", `/tasks/${id}/session`),
     sessionWs: (id: string) => request<{ url: string }>("GET", `/tasks/${id}/session/ws`),
-    create: (input: Record<string, unknown>) => request<any>("POST", "/tasks", input),
-    update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/tasks/${id}`, body),
-    delete: (id: string) => request<void>("DELETE", `/tasks/${id}`),
-    complete: (id: string) => replaceTaskReviewDecision(id, "completion"),
-    reject: (id: string, reason?: string) => replaceTaskReviewDecision(id, "rejection", reason),
-    addNote: (id: string, detail: string) => request<any>("POST", `/tasks/${id}/notes`, { detail }),
+    create: (input: Record<string, unknown>) => request<any>("POST", "/tasks", taskWrite(input)).then(fromTask),
+    update: (id: string, body: Record<string, unknown>) => patchTask(id, taskWrite(body)).then(fromTask),
+    delete: async (id: string) => {
+      const etag = await currentTaskEtag(id);
+      return request<void>("DELETE", `/tasks/${id}`, undefined, { "If-Match": etag });
+    },
+    complete: (id: string) => patchTask(id, { status: "done" }).then(fromTask),
+    reject: (id: string, reason?: string) => patchTask(id, { status: "in-progress", ...(reason ? { statusReason: reason } : {}) }).then(fromTask),
+    addNote: (id: string, detail: string) => request<any>("POST", `/tasks/${id}/notes`, { detail }).then(fromTaskNote),
     getNotes: (id: string, since?: string) => {
       const qs = since ? `?since=${encodeURIComponent(since)}` : "";
-      return request<any[]>("GET", `/tasks/${id}/notes${qs}`);
+      return request<{ items: any[] }>("GET", `/tasks/${id}/notes${qs}`).then((page) => pageItems(page).map(fromTaskNote));
     },
   },
   boards: {
-    list: () => request<any[]>("GET", "/boards"),
-    get: (id: string) => request<any>("GET", `/boards/${id}`),
-    create: (input: { name: string; type: "dev" | "ops"; description?: string }) => request<any>("POST", "/boards", input),
+    list: () => request<{ items: any[] }>("GET", "/boards").then((page) => pageItems(page).map(fromBoard)),
+    get: (id: string) => request<any>("GET", `/boards/${id}`).then(fromBoard),
+    create: (input: { name: string; type: "dev" | "ops"; description?: string }) => request<any>("POST", "/boards", input).then(fromBoard),
     update: (id: string, body: { name?: string; description?: string; visibility?: "private" | "public"; labels?: any[] }) =>
-      request<any>("PATCH", `/boards/${id}`, body),
-    createLabel: (id: string, body: { name: string; color: string; description?: string }) => request<any>("POST", `/boards/${id}/labels`, body),
+      request<any>("PATCH", `/boards/${id}`, body).then(fromBoard),
+    createLabel: (id: string, body: { name: string; color: string; description?: string }) =>
+      request<any>("POST", `/boards/${id}/labels`, body).then(fromBoard),
     updateLabel: (id: string, name: string, body: { name?: string; color?: string; description?: string }) =>
-      request<any>("PATCH", `/boards/${id}/labels/${encodeURIComponent(name)}`, body),
-    deleteLabel: (id: string, name: string) => request<any>("DELETE", `/boards/${id}/labels/${encodeURIComponent(name)}`),
+      request<any>("PATCH", `/boards/${id}/labels/${encodeURIComponent(name)}`, body).then(fromBoard),
+    deleteLabel: (id: string, name: string) => request<any>("DELETE", `/boards/${id}/labels/${encodeURIComponent(name)}`).then(fromBoard),
     delete: (id: string) => request<void>("DELETE", `/boards/${id}`),
   },
   share: {
@@ -92,8 +194,8 @@ export const api = {
       }) as Promise<any>,
   },
   repositories: {
-    list: () => request<Repository[]>("GET", "/repositories"),
-    create: (input: { name: string; url: string }) => request<Repository>("POST", "/repositories", input),
+    list: () => request<{ items: any[] }>("GET", "/repositories").then((page) => pageItems(page).map(fromRepository)),
+    create: (input: { name: string; url: string }) => request<any>("POST", "/repositories", input).then(fromRepository),
     delete: (id: string) => request<void>("DELETE", `/repositories/${id}`),
   },
   agents: {
@@ -114,7 +216,19 @@ export const api = {
     delete: (id: string) => request<void>("DELETE", `/machines/${encodeURIComponent(id)}`),
   },
   githubApp: {
-    config: () => request<GithubAppConfig>("GET", "/github-app/config"),
-    installableRepos: () => request<{ installed: boolean; repositories: InstallableRepo[] }>("GET", "/github-app/repositories"),
+    config: () => request<any>("GET", "/github-app/config").then((config): GithubAppConfig => ({ ...config, install_url: config.installUrl })),
+    installableRepos: () =>
+      request<{ installed: boolean; repositories: any[] }>("GET", "/github-app/repositories").then(
+        (result): { installed: boolean; repositories: InstallableRepo[] } => ({
+          installed: result.installed,
+          repositories: result.repositories.map((repository) => ({
+            ...repository,
+            full_name: repository.fullName,
+            clone_url: repository.cloneUrl,
+            already_added: repository.alreadyAdded,
+          })),
+        }),
+      ),
+    acceptInstallation: (installationId: number) => request<void>("PUT", `/repository-installations/${installationId}`),
   },
 };

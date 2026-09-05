@@ -14,28 +14,28 @@ afterEach(() => {
 });
 
 describe("Web Task review API", () => {
-  it("reads the current submission ETag before replacing a Task Review Completion", async () => {
+  it.each([
+    ["complete", { status: "done" }, "done"],
+    ["reject", { status: "in-progress", statusReason: "needs changes" }, "in_progress"],
+  ] as const)("sends a %s status merge patch without reading or supplying an ETag", async (action, patch, expectedStatus) => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ id: "submission-one", taskId: "task/one" }, { status: 200, headers: { ETag: '"submission-version"' } }))
-      .mockResolvedValueOnce(Response.json({ id: "completion-one" }, { status: 201 }));
+      .mockResolvedValueOnce(Response.json({ id: "task/one", status: patch.status }, { status: 200, headers: { ETag: '"next-task-version"' } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(api.tasks.complete("task/one")).resolves.toEqual({ id: "completion-one" });
+    const result = action === "complete" ? api.tasks.complete("task/one") : api.tasks.reject("task/one", "needs changes");
+    await expect(result).resolves.toMatchObject({ id: "task/one", status: expectedStatus });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/task-review-submissions/task%2Fone", {
-      headers: { "API-Version": V2_API_VERSION },
-      credentials: "include",
-    });
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/task-review-completions/task%2Fone", {
-      method: "PUT",
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task%2Fone", {
+      method: "PATCH",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/merge-patch+json",
         "API-Version": V2_API_VERSION,
         "x-csrf-token": "csrf-token",
       },
       credentials: "include",
-      body: JSON.stringify({ reviewSubmissionVersion: "submission-version" }),
+      body: JSON.stringify(patch),
     });
   });
 });

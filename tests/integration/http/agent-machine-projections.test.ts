@@ -65,7 +65,7 @@ function browserPost(path: string, body: unknown, idempotencyKey?: string, auth 
         cookie: auth.cookie,
         "x-csrf-token": auth.csrfToken,
         "content-type": "application/json",
-        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        ...(idempotencyKey ? { "Idempotency-Key": JSON.stringify(idempotencyKey) } : {}),
       },
       body: JSON.stringify(body),
     }),
@@ -80,7 +80,7 @@ function browserPostWithoutBody(path: string, idempotencyKey?: string, auth = se
       headers: {
         cookie: auth.cookie,
         "x-csrf-token": auth.csrfToken,
-        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        ...(idempotencyKey ? { "Idempotency-Key": JSON.stringify(idempotencyKey) } : {}),
       },
     }),
     env,

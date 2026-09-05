@@ -28,7 +28,6 @@ declare module "hono" {
     traceparent: string;
     requestError?: Error;
     ownerId: string;
-    identityType: "user" | "machine" | "realmroot:agent" | "service";
     principal: {
       source: "session" | "token";
       type: "human" | "machine" | "agent" | "service";

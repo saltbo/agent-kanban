@@ -10,11 +10,13 @@ todo
   └──────────────────────────── cancel ─────────────► cancelled
 ```
 
-Assignment stores the selected Agent projection's Realmroot subject in
-`assigned_to`; it does not call Agency or start a Session. Only that verified
-Agent actor can claim, release, or submit review. An authorized human or a
-different authorized Agent can reject or complete. A decision includes the
-current Review Submission version so a stale or concurrent decision fails.
+Assignment patches the selected Agent projection's Realmroot subject into the
+Task's `assignedTo` field; it does not call Agency or start a
+Session. Only that verified Agent actor can create or delete its Claim or patch
+the Task to `in-review`. An authorized human or a different authorized Agent can
+patch an `in-review` Task back to `in-progress` or forward to `done`. Each Task
+PATCH reads the current version and commits with an internal compare-and-swap;
+a concurrent change returns `409 Conflict` so the caller can reread the Task.
 
 Claim copies `runtime` and `session_id` provenance from the verified
 Realmroot-issued Agent binding. The values are not accepted from request JSON.

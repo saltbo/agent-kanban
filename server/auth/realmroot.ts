@@ -30,13 +30,10 @@ export const RESOURCE_SCOPES = [
   "task:read",
   "task:write",
   "task:claim",
-  "task:assign",
   "task:release",
-  "task:review",
-  "task:complete",
-  "task:reject",
-  "task:cancel",
 ] as const;
+export type ResourceScope = (typeof RESOURCE_SCOPES)[number];
+export const WEB_SESSION_SCOPES: readonly ResourceScope[] = RESOURCE_SCOPES.filter((scope) => scope !== "task:claim" && scope !== "task:release");
 
 type OidcMetadata = {
   issuer: string;
@@ -55,6 +52,7 @@ type StoredSession = {
   name: string | null;
   image: string | null;
   role: string;
+  scopes_json: string;
   csrf_token: string;
   expires_at: string;
 };
@@ -64,6 +62,7 @@ type TokenResponse = {
   refresh_token?: string;
   expires_in?: number;
   id_token?: string;
+  scope?: string;
 };
 
 export type RealmrootPrincipal = {
@@ -104,7 +103,7 @@ export async function beginRealmrootLogin(c: Context<{ Bindings: Env }>): Promis
   authorizationUrl.searchParams.set("client_id", required(c.env.OIDC_WEB_CLIENT_ID, "OIDC_WEB_CLIENT_ID"));
   authorizationUrl.searchParams.set("redirect_uri", callbackUrl);
   authorizationUrl.searchParams.set("response_type", "code");
-  authorizationUrl.searchParams.set("scope", ["openid", "profile", "email", "offline_access", ...RESOURCE_SCOPES].join(" "));
+  authorizationUrl.searchParams.set("scope", ["openid", "profile", "email", "offline_access", ...WEB_SESSION_SCOPES].join(" "));
   authorizationUrl.searchParams.set("state", state);
   authorizationUrl.searchParams.set("nonce", nonce);
   authorizationUrl.searchParams.set("code_challenge", challenge);
@@ -189,14 +188,27 @@ export async function finishRealmrootLogin(c: Context<{ Bindings: Env }>): Promi
   const sessionToken = randomToken(48);
   const sessionId = crypto.randomUUID();
   const csrfToken = randomToken();
+  const grantedScopes = tokenBody.scope === undefined ? [...WEB_SESSION_SCOPES] : stringList(tokenBody.scope);
   const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM realmroot_web_sessions WHERE tenant_id = ? AND subject_id = ?").bind(tenantId, claims.sub),
     c.env.DB.prepare(
       `INSERT INTO realmroot_web_sessions
-           (id, token_hash, tenant_id, subject_id, email, name, image, role, csrf_token, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(sessionId, await sha256Hex(sessionToken), tenantId, claims.sub, email, name, image, role, csrfToken, expiresAt),
+           (id, token_hash, tenant_id, subject_id, email, name, image, role, scopes_json, csrf_token, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      sessionId,
+      await sha256Hex(sessionToken),
+      tenantId,
+      claims.sub,
+      email,
+      name,
+      image,
+      role,
+      JSON.stringify(grantedScopes),
+      csrfToken,
+      expiresAt,
+    ),
   ]);
   try {
     await storeWebSessionGrant(c.env, sessionId, tokenBody);
@@ -244,13 +256,7 @@ export async function endRealmrootWebSession(c: Context<{ Bindings: Env }>): Pro
 export async function authenticateWebSession(c: Context<{ Bindings: Env }>): Promise<RealmrootPrincipal | null> {
   const stored = await findWebSession(c);
   if (!stored) return null;
-  if (!isSafeMethod(c.req.method)) {
-    const csrf = c.req.header("x-csrf-token");
-    if (!csrf || !(await constantTimeEqual(csrf, stored.csrf_token))) throw new CsrfError();
-  }
 
-  c.set("ownerId", stored.tenant_id);
-  c.set("identityType", "user");
   c.set("user", {
     id: stored.subject_id,
     name: stored.name ?? stored.email ?? stored.subject_id,
@@ -264,8 +270,12 @@ export async function authenticateWebSession(c: Context<{ Bindings: Env }>): Pro
     type: "human",
     subjectId: stored.subject_id,
     tenantId: stored.tenant_id,
-    scopes: [],
+    scopes: storedScopes(stored.scopes_json),
   };
+}
+
+export async function validateCsrfToken(supplied: string | undefined, expected: string): Promise<boolean> {
+  return supplied !== undefined && constantTimeEqual(supplied, expected);
 }
 
 export async function authenticateRealmrootToken(c: Context<{ Bindings: Env }>): Promise<RealmrootPrincipal> {
@@ -393,11 +403,17 @@ async function findWebSession(c: Context<{ Bindings: Env }>): Promise<StoredSess
   const token = readCookie(c.req.header("cookie"), SESSION_COOKIE);
   if (!token) return null;
   return c.env.DB.prepare(
-    `SELECT id, tenant_id, subject_id, email, name, image, role, csrf_token, expires_at
+    `SELECT id, tenant_id, subject_id, email, name, image, role, scopes_json, csrf_token, expires_at
      FROM realmroot_web_sessions WHERE token_hash = ? AND expires_at > ?`,
   )
     .bind(await sha256Hex(token), new Date().toISOString())
     .first<StoredSession>();
+}
+
+function storedScopes(value: string): string[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || parsed.some((scope) => typeof scope !== "string")) throw new AuthError("Invalid browser Session scopes");
+  return parsed;
 }
 
 function sessionRepresentation(stored: StoredSession) {
@@ -607,10 +623,6 @@ function expireCookie(name: string): string {
   return `${name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
 }
 
-function isSafeMethod(method: string): boolean {
-  return method === "GET" || method === "HEAD" || method === "OPTIONS";
-}
-
 function authFailure(message: string): Response {
   const url = new URL("/auth", "https://agent-kanban.dev");
   url.searchParams.set("error", message);
@@ -633,12 +645,5 @@ export class OidcProviderError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "OidcProviderError";
-  }
-}
-
-export class CsrfError extends Error {
-  constructor() {
-    super("Invalid CSRF token");
-    this.name = "CsrfError";
   }
 }
