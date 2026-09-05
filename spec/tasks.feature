@@ -203,3 +203,12 @@ Feature: Task lifecycle
     And retains the token expiration for control-plane renewal
     And supplies the token only through the Git volume secret reference
     And another tenant's Repository cannot cause a token to be minted
+
+  @journey:tasks/user-authorization @entrypoint:toolbox @proof:integration
+  Scenario: Require saved user authorization for Agent-created Tasks
+    Given an Agent acts for a user who has not authorized AK through web login
+    When the Agent creates a Task
+    Then AK rejects the request with user-login-required and asks the user to sign in through the web
+    And no Task is created and no other member authorization is borrowed
+    When the associated user signs in to AK
+    Then the Agent can create a Task bound to that user authorization

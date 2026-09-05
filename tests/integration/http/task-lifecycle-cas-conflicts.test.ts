@@ -1,5 +1,7 @@
 // @vitest-environment node
 
+import { storeWebSessionGrant } from "@server/adapters/realmroot/delegatedAgencyToken";
+import type { Env } from "@server/env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { createTask } from "../../../server/adapters/d1/taskRepo";
@@ -83,6 +85,11 @@ describe("Task lifecycle HTTP compare-and-set conflicts", () => {
       const task = await createTask(db, ownerId, { title: `HTTP ${kind} conflict`, board_id: board.id });
       const reviewer = kind === "review-submission" ? "assigned-agent" : "reviewer";
       const session = await createTestWebSession(db, ownerId, { subjectId: reviewer });
+      await storeWebSessionGrant({ ...createTestEnv(), DB: db } as Env, session.id, {
+        access_token: "source",
+        refresh_token: "refresh",
+        expires_in: 300,
+      });
 
       if (kind === "review-submission") await setTaskState(task.id, "in_progress");
       if (kind === "review-rejection" || kind === "review-completion") {

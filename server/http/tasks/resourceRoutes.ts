@@ -16,6 +16,7 @@ import { d1TaskCancellationRepository } from "@server/adapters/d1/tasks/d1TaskCa
 import { reserveTaskLaunchReplacement } from "@server/adapters/d1/tasks/d1TaskLaunches";
 import { d1TaskReviewDecisionRepository } from "@server/adapters/d1/tasks/d1TaskReviewDecisions";
 import { d1TaskReviewSubmissionRepository } from "@server/adapters/d1/tasks/d1TaskReviewSubmissions";
+import { requireUserGrant } from "@server/adapters/realmroot/delegatedAgencyToken";
 import { createSSEResponse } from "@server/adapters/stream/sse";
 import { authorizeScope } from "@server/auth/middleware";
 import type { Env } from "@server/env";
@@ -69,6 +70,10 @@ async function createTaskResource(c: TaskContext): Promise<Response> {
   const body = await readJsonBody<Record<string, unknown>>(c);
   if (body instanceof Response) return body;
   normalizeTaskCreate(body);
+  const principal = c.get("principal");
+  const user = { tenantId: principal.tenantId, subjectId: principal.subjectId };
+  if (principal.type === "agent") await requireUserGrant(c.env, user);
+  body.metadata = { ...body.metadata, "agent-kanban.dev/authorization-subject": user.subjectId };
   const { actorType, actorId } = resolveActor(c);
   const task = await createTask(
     c.env.DB,
@@ -156,6 +161,8 @@ async function patchTaskAssignment(c: TaskContext, patch: Record<string, unknown
       "assignedTo must be the only property and contain an Agent actor ID",
     );
   }
+  const principal = c.get("principal");
+  await requireUserGrant(c.env, { tenantId: principal.tenantId, subjectId: principal.subjectId });
   try {
     const current = await requireTask(c);
     const launch = current.metadata["agent-kanban.dev/launch"] as { replacement_actor_id?: string } | undefined;
@@ -185,6 +192,7 @@ async function patchTaskAssignment(c: TaskContext, patch: Record<string, unknown
       taskId: taskId(c),
       assigneeActorId: patch.assignedTo,
       assignedByActorId: taskWorkflowActor(c).id,
+      authorizationSubjectId: principal.subjectId,
       expectedTaskVersion,
     });
     await dispatchAssignedTask(c, result.assignment.taskId);

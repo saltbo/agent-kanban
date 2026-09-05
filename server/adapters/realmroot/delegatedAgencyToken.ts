@@ -17,19 +17,45 @@ type StoredGrant = {
 
 export { RealmrootDelegationFailure } from "@server/usecases/agency/failures";
 
+export interface UserGrantIdentity {
+  tenantId: string;
+  subjectId: string;
+}
+
+export async function requireUserGrant(env: Env, user: UserGrantIdentity): Promise<void> {
+  const grant = await env.DB.prepare("SELECT 1 FROM realmroot_user_grants WHERE tenant_id = ? AND subject_id = ?")
+    .bind(user.tenantId, user.subjectId)
+    .first();
+  if (!grant)
+    throw new RealmrootDelegationFailure(
+      "user-login-required",
+      "The associated user must sign in to Agent Kanban in a web browser before creating or assigning Tasks. No saved user authorization is available.",
+    );
+}
+
 export async function storeWebSessionGrant(env: Env, sessionId: string, value: unknown): Promise<void> {
+  const user = await env.DB.prepare("SELECT tenant_id, subject_id FROM realmroot_web_sessions WHERE id = ?")
+    .bind(sessionId)
+    .first<{ tenant_id: string; subject_id: string }>();
+  if (!user) throw new RealmrootDelegationFailure("authority-required", "The browser login Session is missing.");
   const tokens = decodeTokenResponse(value);
   if (!tokens.refresh_token) throw new RealmrootDelegationFailure("invalid-response", "Realmroot did not issue the AK browser grant.");
   const access = await encrypt(env, tokens.access_token);
   const refresh = await encrypt(env, tokens.refresh_token);
   await env.DB.prepare(
-    `INSERT INTO realmroot_web_session_grants
-       (session_id, refresh_token_ciphertext, refresh_token_nonce,
+    `INSERT INTO realmroot_user_grants
+       (tenant_id, subject_id, refresh_token_ciphertext, refresh_token_nonce,
         access_token_ciphertext, access_token_nonce, access_token_expires_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(tenant_id, subject_id) DO UPDATE SET
+       refresh_token_ciphertext = excluded.refresh_token_ciphertext, refresh_token_nonce = excluded.refresh_token_nonce,
+       access_token_ciphertext = excluded.access_token_ciphertext, access_token_nonce = excluded.access_token_nonce,
+       access_token_expires_at = excluded.access_token_expires_at, refresh_lease = NULL, refresh_lease_expires_at = NULL,
+       updated_at = datetime('now')`,
   )
     .bind(
-      sessionId,
+      user.tenant_id,
+      user.subject_id,
       refresh.ciphertext,
       refresh.nonce,
       access.ciphertext,
@@ -41,9 +67,9 @@ export async function storeWebSessionGrant(env: Env, sessionId: string, value: u
 
 export async function delegatedAgencyToken(
   env: Env,
-  input: { sourceAccessToken?: string; webSessionId?: string; scopes: readonly string[] },
+  input: { sourceAccessToken?: string; user?: UserGrantIdentity; scopes: readonly string[] },
 ): Promise<string> {
-  const subjectToken = input.sourceAccessToken ?? (input.webSessionId ? await webSessionAccessToken(env, input.webSessionId) : null);
+  const subjectToken = input.sourceAccessToken ?? (input.user ? await userAccessToken(env, input.user) : null);
   if (!subjectToken) throw new RealmrootDelegationFailure("authority-required", "A current Realmroot authority is required.");
   const endpoint = await tokenEndpoint(env.OIDC_ISSUER);
   try {
@@ -76,58 +102,80 @@ export async function delegatedAgencyToken(
   }
 }
 
-async function webSessionAccessToken(env: Env, sessionId: string): Promise<string | null> {
+async function userAccessToken(env: Env, user: UserGrantIdentity): Promise<string> {
   const grant = await env.DB.prepare(
     `SELECT refresh_token_ciphertext, refresh_token_nonce, access_token_ciphertext,
             access_token_nonce, access_token_expires_at
-     FROM realmroot_web_session_grants WHERE session_id = ?`,
+     FROM realmroot_user_grants WHERE tenant_id = ? AND subject_id = ?`,
   )
-    .bind(sessionId)
+    .bind(user.tenantId, user.subjectId)
     .first<StoredGrant>();
-  if (!grant) return null;
+  if (!grant)
+    throw new RealmrootDelegationFailure(
+      "user-login-required",
+      "The associated user must sign in to Agent Kanban in a web browser to authorize background Task execution.",
+    );
   if (Date.parse(grant.access_token_expires_at) - REFRESH_WINDOW_MS > Date.now()) {
     return decrypt(env, grant.access_token_ciphertext, grant.access_token_nonce);
   }
-  const endpoint = await tokenEndpoint(env.OIDC_ISSUER);
-  const refreshToken = await decrypt(env, grant.refresh_token_ciphertext, grant.refresh_token_nonce);
-  let response: Response;
+  const lease = crypto.randomUUID();
+  const acquired = await env.DB.prepare(`UPDATE realmroot_user_grants SET refresh_lease = ?, refresh_lease_expires_at = ?
+    WHERE tenant_id = ? AND subject_id = ? AND refresh_token_ciphertext = ?
+      AND (refresh_lease IS NULL OR refresh_lease_expires_at <= ?)`)
+    .bind(lease, new Date(Date.now() + 30_000).toISOString(), user.tenantId, user.subjectId, grant.refresh_token_ciphertext, new Date().toISOString())
+    .run();
+  if (acquired.meta.changes !== 1)
+    throw new RealmrootDelegationFailure("unavailable", "The user authorization is being refreshed. Retry after the current refresh completes.");
   try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers: { accept: "application/json", authorization: clientAuthorization(env), "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, resource: akResource(env) }),
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch {
-    throw new RealmrootDelegationFailure("unavailable", "Realmroot token refresh is unavailable.");
-  }
-  const value = response.ok ? await responseValue(response) : null;
-  if (!response.ok) {
-    if (response.status >= 500 || response.status === 429) {
+    const endpoint = await tokenEndpoint(env.OIDC_ISSUER);
+    const refreshToken = await decrypt(env, grant.refresh_token_ciphertext, grant.refresh_token_nonce);
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: { accept: "application/json", authorization: clientAuthorization(env), "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, resource: akResource(env) }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
       throw new RealmrootDelegationFailure("unavailable", "Realmroot token refresh is unavailable.");
     }
-    throw new RealmrootDelegationFailure("reauthenticate", "The Realmroot web grant expired. Sign in again.");
-  }
-  const tokens = decodeTokenResponse(value);
-  const nextRefreshToken = tokens.refresh_token ?? refreshToken;
-  const access = await encrypt(env, tokens.access_token);
-  const refresh = await encrypt(env, nextRefreshToken);
-  await env.DB.prepare(
-    `UPDATE realmroot_web_session_grants SET
+    const value = response.ok ? await responseValue(response) : null;
+    if (!response.ok) {
+      if (response.status >= 500 || response.status === 429) {
+        throw new RealmrootDelegationFailure("unavailable", "Realmroot token refresh is unavailable.");
+      }
+      throw new RealmrootDelegationFailure("reauthenticate", "The Realmroot web grant expired. Sign in again.");
+    }
+    const tokens = decodeTokenResponse(value);
+    const nextRefreshToken = tokens.refresh_token ?? refreshToken;
+    const access = await encrypt(env, tokens.access_token);
+    const refresh = await encrypt(env, nextRefreshToken);
+    await env.DB.prepare(
+      `UPDATE realmroot_user_grants SET
        refresh_token_ciphertext = ?, refresh_token_nonce = ?, access_token_ciphertext = ?,
        access_token_nonce = ?, access_token_expires_at = ?, updated_at = datetime('now')
-     WHERE session_id = ?`,
-  )
-    .bind(
-      refresh.ciphertext,
-      refresh.nonce,
-      access.ciphertext,
-      access.nonce,
-      new Date(Date.now() + Math.max(1, tokens.expires_in ?? 300) * 1000).toISOString(),
-      sessionId,
+     WHERE tenant_id = ? AND subject_id = ? AND refresh_lease = ?`,
     )
-    .run();
-  return tokens.access_token;
+      .bind(
+        refresh.ciphertext,
+        refresh.nonce,
+        access.ciphertext,
+        access.nonce,
+        new Date(Date.now() + Math.max(1, tokens.expires_in ?? 300) * 1000).toISOString(),
+        user.tenantId,
+        user.subjectId,
+        lease,
+      )
+      .run();
+    return tokens.access_token;
+  } finally {
+    await env.DB.prepare(
+      "UPDATE realmroot_user_grants SET refresh_lease = NULL, refresh_lease_expires_at = NULL WHERE tenant_id = ? AND subject_id = ? AND refresh_lease = ?",
+    )
+      .bind(user.tenantId, user.subjectId, lease)
+      .run();
+  }
 }
 
 async function responseValue(response: Response): Promise<unknown> {

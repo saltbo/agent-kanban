@@ -12,6 +12,9 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
   c.set("requestError", error);
   const published = isPublishedV2Operation(c.req.method, c.req.path);
   if (error instanceof RealmrootDelegationFailure) {
+    if (error.kind === "user-login-required") {
+      return v2Problem(c, 409, "user-login-required", "User web login required", error.message);
+    }
     const status = delegationStatus(error.kind);
     return v2Problem(
       c,
