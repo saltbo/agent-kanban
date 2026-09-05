@@ -80,8 +80,46 @@ describe("Agent projection browser queries", () => {
             updatedAt: "2026-09-01T12:00:01.000Z",
           });
         }
-        if (url === "/api/tasks?assigned_to=realmroot%3Aagent%2Fexact-subject") {
-          return json([{ id: "task-1", board_id: "board-1", title: "Exact assignment", status: "todo" }]);
+        if (url === "/api/tasks?assignedTo=realmroot%3Aagent%2Fexact-subject") {
+          return json({
+            items: [
+              {
+                id: "task-1",
+                seq: 1,
+                status: "todo",
+                title: "Exact assignment",
+                description: null,
+                boardId: "board-1",
+                repositoryId: null,
+                repositoryName: null,
+                labels: [],
+                createdBy: null,
+                assignedTo: "realmroot:agent/exact-subject",
+                assigneeName: "Backend",
+                boardType: "ops",
+                pullRequestUrl: null,
+                input: null,
+                metadata: {},
+                createdFrom: null,
+                scheduledAt: null,
+                position: 0,
+                blocked: false,
+                dependsOn: [],
+                durationMinutes: null,
+                subtaskCount: 0,
+                sessionBinding: null,
+                createdAt: "2026-09-01T12:00:00.000Z",
+                updatedAt: "2026-09-01T12:00:01.000Z",
+                links: {
+                  self: "/api/tasks/task-1",
+                  board: "/api/boards/board-1",
+                  repository: null,
+                  notes: "/api/tasks/task-1/notes",
+                  claims: "/api/tasks/task-1/claims",
+                },
+              },
+            ],
+          });
         }
         throw new Error(`Unexpected request: ${url}`);
       }),
@@ -95,7 +133,7 @@ describe("Agent projection browser queries", () => {
     );
 
     await screen.findByText("Exact assignment");
-    expect(requests).toContain("/api/tasks?assigned_to=realmroot%3Aagent%2Fexact-subject");
+    expect(requests).toContain("/api/tasks?assignedTo=realmroot%3Aagent%2Fexact-subject");
     expect(requests.filter((request) => request.startsWith("/api/tasks?"))).toHaveLength(1);
   });
 });

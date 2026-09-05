@@ -54,7 +54,27 @@ describe("D1 current Task action actor writes", () => {
     });
   });
 
-  it.each(["machine", "agent:worker", "agent:leader", "arbitrary:actor"])(
+  it.each(["machine", "service"] as const)("writes and reads canonical %s Task creation and action actors", async (actorType) => {
+    const { db, ownerId, boardId } = await fixture(`canonical-${actorType}`);
+
+    const task = await createTask(db, ownerId, {
+      title: `${actorType} Task`,
+      board_id: boardId,
+      actorType,
+      actorId: `${actorType}-creator`,
+    });
+    const action = await addTaskAction(db, task.id, actorType, `${actorType}-commenter`, "commented", `${actorType} action`);
+
+    expect(action).toMatchObject({ actor_type: actorType, actor_id: `${actorType}-commenter` });
+    expect(await getTaskActions(db, task.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ actor_type: actorType, actor_id: `${actorType}-creator`, action: "created" }),
+        expect.objectContaining({ actor_type: actorType, actor_id: `${actorType}-commenter`, action: "commented" }),
+      ]),
+    );
+  });
+
+  it.each(["agent:worker", "agent:leader", "arbitrary:actor"])(
     "rejects createTask actor type %s before writing a Task or action",
     async (actorType) => {
       const { db, ownerId, boardId } = await fixture(`create-${actorType}`);
@@ -74,14 +94,14 @@ describe("D1 current Task action actor writes", () => {
     },
   );
 
-  it("allows Realmroot Agent actions, rejects legacy writes without side effects, and still reads historical actor types", async () => {
+  it("allows Realmroot Agent actions, rejects non-canonical writes without side effects, and still reads historical actor types", async () => {
     const { db, ownerId, boardId } = await fixture("action-history");
     const task = await createTask(db, ownerId, { title: "Task action history", board_id: boardId });
 
     const current = await addTaskAction(db, task.id, "realmroot:agent", "realmroot-actor", "commented", "Current action");
     expect(current).toMatchObject({ actor_type: "realmroot:agent", actor_id: "realmroot-actor" });
     const countBeforeRejectedWrites = await actionCount(db, task.id);
-    for (const actorType of ["machine", "agent:worker", "agent:leader", "arbitrary:actor"] as const) {
+    for (const actorType of ["agent:worker", "agent:leader", "arbitrary:actor"] as const) {
       await expect(addTaskAction(db, task.id, actorType as never, "legacy-actor", "commented", "Rejected action")).rejects.toThrow(
         `Unsupported v2 Task action actor type: ${actorType}`,
       );
@@ -89,7 +109,7 @@ describe("D1 current Task action actor writes", () => {
     }
 
     const now = new Date().toISOString();
-    for (const actorType of ["machine", "agent:worker", "agent:leader"] as const) {
+    for (const actorType of ["agent:worker", "agent:leader"] as const) {
       await db
         .prepare(
           `INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at)
@@ -100,7 +120,7 @@ describe("D1 current Task action actor writes", () => {
     }
 
     const historical = (await getTaskActions(db, task.id)).filter((action) => action.detail === "Historical action");
-    expect(historical.map((action) => action.actor_type).sort()).toEqual(["agent:leader", "agent:worker", "machine"]);
+    expect(historical.map((action) => action.actor_type).sort()).toEqual(["agent:leader", "agent:worker"]);
   });
 });
 
