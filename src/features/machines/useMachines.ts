@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, type PageResponse } from "@/lib/api";
 
 export interface MachineProjection {
   id: string;
@@ -44,8 +44,13 @@ export interface MachineCreateResult {
   startCommand: string;
 }
 
-export function useMachines() {
-  return useQuery({ queryKey: ["machines"], queryFn: async () => (await api.machines.list()).items as MachineProjection[] });
+export interface MachinePageParams {
+  pageSize?: number;
+  pageToken?: string;
+}
+
+export function useMachines(params: MachinePageParams = {}) {
+  return useQuery({ queryKey: ["machines", params], queryFn: async () => (await api.machines.list(params)) as PageResponse<MachineProjection> });
 }
 
 export function useMachine(machineId: string | undefined) {

@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentDetailPage } from "../../../src/features/agents/AgentDetailPage";
+import { AgentsPage } from "../../../src/features/agents/AgentsPage";
 import { type AgentFilters, useAgents } from "../../../src/features/agents/useAgents";
 import { MachineDetailPage } from "../../../src/features/machines/MachineDetailPage";
 import { MachinesPage } from "../../../src/features/machines/MachinesPage";
@@ -40,13 +41,27 @@ afterEach(() => {
 });
 
 describe("Agent projection browser queries", () => {
+  const agent = {
+    id: "agent-1",
+    name: "First Agent",
+    description: null,
+    username: "first-agent",
+    runtime: "codex",
+    model: null,
+    skills: [],
+    subject: "realmroot:agent/first",
+    schedulable: true,
+    createdAt: "2026-09-01T12:00:00.000Z",
+    updatedAt: "2026-09-01T12:00:01.000Z",
+  };
+
   it("[spec: agents/read-only-browser] forwards search, runtime, and schedulable filters to the Agent collection", async () => {
     const requests: string[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         requests.push(input instanceof Request ? input.url : String(input));
-        return json({ items: [] });
+        return json({ items: [], pagination: { pageSize: 20 } });
       }),
     );
 
@@ -54,6 +69,47 @@ describe("Agent projection browser queries", () => {
 
     await screen.findByText("loaded");
     expect(requests).toContain("/api/agents?search=backend+agent&runtime=codex&schedulable=false");
+  });
+
+  it("[spec: agents/read-only-browser] pages Agents with cursor history and resets cursors when search changes", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        requests.push(url);
+        if (url === "/api/auth/session") return json(session());
+        if (url === "/api/boards") return json([]);
+        if (url.startsWith("/api/agents")) {
+          const params = new URL(url, "https://ak.test").searchParams;
+          if (params.get("pageToken") === "agent-page-2") {
+            return json({ items: [{ ...agent, id: "agent-2", name: "Second Agent" }], pagination: { pageSize: 20 } });
+          }
+          return json({ items: [agent], pagination: { pageSize: 20, nextPageToken: "agent-page-2" } });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    wrapper(<AgentsPage />);
+
+    await screen.findByText("First Agent");
+    expect(requests).toContain("/api/agents?pageSize=20");
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Previous/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+
+    await screen.findByText("Second Agent");
+    expect(requests).toContain("/api/agents?pageSize=20&pageToken=agent-page-2");
+    expect(screen.getByText("Page 2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Previous/ }));
+    await screen.findByText("First Agent");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search Agents" }), { target: { value: "backend" } });
+
+    await waitFor(() => expect(requests).toContain("/api/agents?search=backend&pageSize=20"));
+    expect(requests).not.toContain("/api/agents?search=backend&pageSize=20&pageToken=agent-page-2");
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
   });
 
   it("[spec: agents/read-only-browser] loads Agent detail tasks by the exact projected subject", async () => {
@@ -154,6 +210,147 @@ describe("Machine projection browser mutations", () => {
     updatedAt: "2026-09-01T12:00:01.000Z",
   } as const;
 
+  it("[spec: machines/environment-projection] pages Machines with cursor history", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        requests.push(url);
+        if (url === "/api/auth/session") return json(session());
+        if (url === "/api/boards") return json([]);
+        if (url.startsWith("/api/machines")) {
+          const params = new URL(url, "https://ak.test").searchParams;
+          if (params.get("pageToken") === "machine-page-2") {
+            return json({ items: [{ ...machine, id: "environment-2", name: "Second machine" }], pagination: { pageSize: 20 } });
+          }
+          return json({ items: [machine], pagination: { pageSize: 20, nextPageToken: "machine-page-2" } });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    wrapper(<MachinesPage />);
+
+    await screen.findByText("Waiting for computer");
+    expect(requests).toContain("/api/machines?pageSize=20");
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Previous/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+
+    await screen.findByText("Second machine");
+    expect(requests).toContain("/api/machines?pageSize=20&pageToken=machine-page-2");
+    expect(screen.getByText("Page 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Next/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Previous/ }));
+
+    await screen.findByText("Waiting for computer");
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
+  });
+
+  it("[spec: machines/archive-environment] resets Machine pagination after archiving from a later page", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = input instanceof Request ? input.method : (init?.method ?? "GET");
+        requests.push(`${method} ${url}`);
+        if (url === "/api/auth/session") return json(session());
+        if (url === "/api/boards") return json([]);
+        if (url === "/api/machines/environment-2" && method === "DELETE") return new Response(null, { status: 204 });
+        if (url.startsWith("/api/machines?") && method === "GET") {
+          const params = new URL(url, "https://ak.test").searchParams;
+          if (params.get("pageToken") === "machine-page-2") {
+            return json({ items: [{ ...machine, id: "environment-2", name: "Second machine" }], pagination: { pageSize: 20 } });
+          }
+          return json({ items: [machine], pagination: { pageSize: 20, nextPageToken: "machine-page-2" } });
+        }
+        throw new Error(`Unexpected request: ${method} ${url}`);
+      }),
+    );
+
+    wrapper(<MachinesPage />);
+
+    await screen.findByText("Waiting for computer");
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    await screen.findByText("Second machine");
+    fireEvent.click(screen.getByRole("button", { name: "Delete Second machine" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+
+    await screen.findByText("Waiting for computer");
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
+    expect(requests).toContain("DELETE /api/machines/environment-2");
+  });
+
+  it("[spec: machines/create-runner-setup] refreshes the paged list when detail polling observes an online Machine", async () => {
+    const requests: string[] = [];
+    let created = false;
+    let detailObservedOnline = false;
+    let createdPageOneRequests = 0;
+    const createdOfflineMachine = { ...machine, id: "environment-created", name: "Waiting for created computer" };
+    const createdOnlineMachine = {
+      ...createdOfflineMachine,
+      name: "Created computer",
+      status: "online",
+      runnerCount: 1,
+    } as const;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = input instanceof Request ? input.method : (init?.method ?? "GET");
+        requests.push(`${method} ${url}`);
+        if (url === "/api/auth/session") return json(session());
+        if (url === "/api/boards") return json([]);
+        if (url === "/api/machines/environment-created" && method === "GET") {
+          detailObservedOnline = true;
+          return json({ ...createdOnlineMachine, runners: [], authCommand: "", startCommand: "" });
+        }
+        if (url === "/api/machines" && method === "POST") {
+          created = true;
+          return json(
+            {
+              machine: createdOfflineMachine,
+              authCommand: 'enbor-runner auth login --api-server "https://enbor.example"',
+              startCommand: 'enbor-runner start --api-server "https://enbor.example" --project-id "project-1" --environment-id "environment-created"',
+            },
+            201,
+          );
+        }
+        if (url.startsWith("/api/machines?") && method === "GET") {
+          const params = new URL(url, "https://ak.test").searchParams;
+          if (params.get("pageToken") === "machine-page-2") {
+            return json({ items: [{ ...machine, id: "environment-2", name: "Second machine" }], pagination: { pageSize: 20 } });
+          }
+          if (!created) {
+            return json({ items: [machine], pagination: { pageSize: 20, nextPageToken: "machine-page-2" } });
+          }
+          createdPageOneRequests += 1;
+          const items = createdPageOneRequests > 1 && detailObservedOnline ? [createdOnlineMachine] : [createdOfflineMachine];
+          return json({ items, pagination: { pageSize: 20, nextPageToken: "machine-page-2" } });
+        }
+        throw new Error(`Unexpected request: ${method} ${url}`);
+      }),
+    );
+
+    wrapper(<MachinesPage />);
+
+    await screen.findByText("Waiting for computer");
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    await screen.findByText("Second machine");
+    fireEvent.click(screen.getByRole("button", { name: "Add Machine" }));
+    fireEvent.click(screen.getByRole("button", { name: /Your Computer/ }));
+
+    await screen.findByRole("heading", { name: "Start Enbor Runner" });
+    await waitFor(() => expect(screen.getByText("Created computer")).toBeInTheDocument());
+    expect(screen.getByText("online")).toBeInTheDocument();
+    expect(screen.getByText("1 runner · 0/2 active")).toBeInTheDocument();
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
+    expect(createdPageOneRequests).toBeGreaterThanOrEqual(2);
+  });
+
   it("[spec: machines/archive-environment] keeps create and archive failures visible in their dialogs", async () => {
     vi.stubGlobal(
       "fetch",
@@ -162,7 +359,7 @@ describe("Machine projection browser mutations", () => {
         const method = input instanceof Request ? input.method : (init?.method ?? "GET");
         if (url === "/api/auth/session") return json(session());
         if (url === "/api/boards") return json([]);
-        if (url === "/api/machines" && method === "GET") return json({ items: [machine] });
+        if (url.startsWith("/api/machines?") && method === "GET") return json({ items: [machine], pagination: { pageSize: 20 } });
         if (url === "/api/machines" && method === "POST") return json({ detail: "Enbor Environment creation unavailable" }, 503);
         if (url === "/api/machines/environment-1" && method === "DELETE") return json({ detail: "Enbor Environment archive unavailable" }, 503);
         throw new Error(`Unexpected request: ${method} ${url}`);
@@ -194,7 +391,7 @@ describe("Machine projection browser mutations", () => {
         const method = input instanceof Request ? input.method : (init?.method ?? "GET");
         if (url === "/api/auth/session") return json(session());
         if (url === "/api/boards") return json([]);
-        if (url === "/api/machines" && method === "GET") return json({ items: [] });
+        if (url.startsWith("/api/machines?") && method === "GET") return json({ items: [], pagination: { pageSize: 20 } });
         if (url === "/api/machines" && method === "POST") {
           const headers = new Headers(init?.headers);
           attempts.push({ body: init?.body, key: headers.get("Idempotency-Key") });
@@ -234,7 +431,8 @@ describe("Machine projection browser mutations", () => {
         const method = input instanceof Request ? input.method : (init?.method ?? "GET");
         if (url === "/api/auth/session") return json(session());
         if (url === "/api/boards") return json([]);
-        if (url === "/api/machines" && method === "GET") return json({ items: [] });
+        if (url.startsWith("/api/machines?") && method === "GET") return json({ items: [], pagination: { pageSize: 20 } });
+        if (url === "/api/machines/environment-1" && method === "GET") return json({ ...machine, runners: [], authCommand: "", startCommand: "" });
         if (url === "/api/machines" && method === "POST") {
           return json(
             {

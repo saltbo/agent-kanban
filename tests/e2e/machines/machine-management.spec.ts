@@ -32,6 +32,43 @@ const authCommand = 'enbor-runner auth login --api-server "https://enbor.example
 const startCommand =
   'enbor-runner start --api-server "https://enbor.example.test" --project-id "project-123" --environment-id "environment-build-01" --allow-unsafe-process';
 
+test("[spec: machines/environment-projection] Machine list uses server cursors", async ({ page }) => {
+  const requests: URL[] = [];
+  await page.route(/\/api\/machines(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fallback();
+      return;
+    }
+    const url = new URL(route.request().url());
+    requests.push(url);
+    const pageMachine =
+      url.searchParams.get("pageToken") === "machine-page-2" ? { ...machine, id: "environment-build-02", name: "linux-build" } : machine;
+    await route.fulfill({
+      json: {
+        items: [pageMachine],
+        pagination: url.searchParams.get("pageToken") === "machine-page-2" ? { pageSize: 20 } : { pageSize: 20, nextPageToken: "machine-page-2" },
+      },
+    });
+  });
+  await signInWithRealmrootSession(page, `machine_pagination_${Date.now()}@example.com`);
+
+  await page.goto("/machines");
+
+  const main = page.getByRole("main");
+  await expect(main.getByText("mac-mini-build", { exact: true })).toBeVisible();
+  await expect(main.getByText("Page 1", { exact: true })).toBeVisible();
+  await expect(main.getByRole("button", { name: /Previous/ })).toBeDisabled();
+  await main.getByRole("button", { name: /Next/ }).click();
+  await expect(main.getByText("linux-build", { exact: true })).toBeVisible();
+  await expect(main.getByText("Page 2", { exact: true })).toBeVisible();
+  await expect(main.getByRole("button", { name: /Next/ })).toBeDisabled();
+  await main.getByRole("button", { name: /Previous/ }).click();
+  await expect(main.getByText("mac-mini-build", { exact: true })).toBeVisible();
+
+  expect(requests.map((url) => url.search)).toContain("?pageSize=20");
+  expect(requests.map((url) => url.search)).toContain("?pageSize=20&pageToken=machine-page-2");
+});
+
 test("[spec: machines/create-runner-setup] Add Machine offers a local computer and copies its setup commands", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
@@ -42,7 +79,7 @@ test("[spec: machines/create-runner-setup] Add Machine offers a local computer a
       },
     });
   });
-  await page.route(/\/api\/machines$/, async (route) => {
+  await page.route(/\/api\/machines(?:\?.*)?$/, async (route) => {
     if (route.request().method() === "POST") {
       expect(route.request().postData()).toBeNull();
       await route.fulfill({ status: 201, json: { machine, authCommand, startCommand } });
@@ -50,6 +87,7 @@ test("[spec: machines/create-runner-setup] Add Machine offers a local computer a
     }
     await route.fulfill({ json: { items: [], pagination: { pageSize: 0, nextPageToken: null } } });
   });
+  await page.route(/\/api\/machines\/environment-build-01$/, (route) => route.fulfill({ json: { ...machine, authCommand, startCommand } }));
   await signInWithRealmrootSession(page, `machine_setup_${Date.now()}@example.com`);
   await page.goto("/machines");
 
@@ -111,7 +149,7 @@ test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup co
       },
     });
   });
-  await page.route(/\/api\/machines$/, async (route) => {
+  await page.route(/\/api\/machines(?:\?.*)?$/, async (route) => {
     if (route.request().method() === "POST") {
       expect(route.request().postData()).toBeNull();
       created = true;
@@ -146,7 +184,7 @@ test("[spec: machines/create-runner-setup] Offline Machine detail keeps setup co
 
 test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses its Idempotency-Key", async ({ page }) => {
   const idempotencyKeys: string[] = [];
-  await page.route(/\/api\/machines$/, async (route) => {
+  await page.route(/\/api\/machines(?:\?.*)?$/, async (route) => {
     if (route.request().method() === "POST") {
       idempotencyKeys.push((await route.request().headerValue("idempotency-key")) ?? "");
       if (idempotencyKeys.length === 1) {
@@ -158,6 +196,7 @@ test("[spec: machines/create-runner-setup] Retrying an uncertain create reuses i
     }
     await route.fulfill({ json: { items: [], pagination: { pageSize: 0, nextPageToken: null } } });
   });
+  await page.route(/\/api\/machines\/environment-build-01$/, (route) => route.fulfill({ json: { ...machine, authCommand, startCommand } }));
   await signInWithRealmrootSession(page, `machine_create_error_${Date.now()}@example.com`);
   await page.goto("/machines");
 
@@ -178,8 +217,9 @@ test("[spec: machines/create-runner-setup] Changing Machine data cannot extend t
   await page.clock.install();
   let created = false;
   let listRequests = 0;
+  let detailRequests = 0;
   const offlineMachine = { ...machine, status: "offline" };
-  await page.route(/\/api\/machines$/, async (route) => {
+  await page.route(/\/api\/machines(?:\?.*)?$/, async (route) => {
     if (route.request().method() === "POST") {
       created = true;
       await route.fulfill({ status: 201, json: { machine: offlineMachine, authCommand, startCommand } });
@@ -195,6 +235,15 @@ test("[spec: machines/create-runner-setup] Changing Machine data cannot extend t
       json: { items: created ? [changingOfflineMachine] : [], pagination: { pageSize: created ? 1 : 0, nextPageToken: null } },
     });
   });
+  await page.route(/\/api\/machines\/environment-build-01$/, async (route) => {
+    detailRequests += 1;
+    const changingOfflineMachine = {
+      ...offlineMachine,
+      currentLoad: detailRequests,
+      updatedAt: `2026-09-01T12:01:${String(detailRequests).padStart(2, "0")}.000Z`,
+    };
+    await route.fulfill({ json: { ...changingOfflineMachine, authCommand, startCommand } });
+  });
   await signInWithRealmrootSession(page, `machine_status_wait_${Date.now()}@example.com`);
   await page.goto("/machines");
 
@@ -207,18 +256,20 @@ test("[spec: machines/create-runner-setup] Changing Machine data cannot extend t
   await expect(waiting).toBeVisible();
   await page.clock.fastForward(29_000);
   await expect(waiting).toBeVisible();
-  expect(listRequests).toBeGreaterThan(2);
+  expect(detailRequests).toBeGreaterThan(1);
   await page.clock.fastForward(1_001);
   await expect(waiting).toBeHidden();
   await expect(setupDialog.getByRole("button", { name: "Check again", exact: true })).toBeVisible();
-  const requestsAtTimeout = listRequests;
+  const requestsAtTimeout = detailRequests;
   await page.clock.fastForward(6_000);
-  expect(listRequests).toBe(requestsAtTimeout);
+  expect(detailRequests).toBe(requestsAtTimeout);
 });
 
 test("[spec: machines/archive-machine-ui] Archive requires confirmation naming the Machine and its current load", async ({ page }) => {
   let deleteRequests = 0;
-  await page.route(/\/api\/machines$/, (route) => route.fulfill({ json: { items: [machine], pagination: { pageSize: 1, nextPageToken: null } } }));
+  await page.route(/\/api\/machines(?:\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [machine], pagination: { pageSize: 1, nextPageToken: null } } }),
+  );
   await page.route(/\/api\/machines\/environment-build-01$/, async (route) => {
     if (route.request().method() !== "DELETE") {
       await route.fallback();
@@ -243,7 +294,9 @@ test("[spec: machines/archive-machine-ui] Archive requires confirmation naming t
 });
 
 test("[spec: machines/archive-machine-ui] Archive failure remains actionable in the confirmation dialog", async ({ page }) => {
-  await page.route(/\/api\/machines$/, (route) => route.fulfill({ json: { items: [machine], pagination: { pageSize: 1, nextPageToken: null } } }));
+  await page.route(/\/api\/machines(?:\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [machine], pagination: { pageSize: 1, nextPageToken: null } } }),
+  );
   await page.route(/\/api\/machines\/environment-build-01$/, (route) =>
     route.fulfill({ status: 502, json: { detail: "Enbor Environment could not be archived" } }),
   );

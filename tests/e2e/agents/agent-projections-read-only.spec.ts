@@ -62,9 +62,12 @@ test("[spec: agents/read-only-browser] Agent list and detail expose identity and
   });
   await page.route(/\/api\/agents\/agent-backend$/, (route) => route.fulfill({ json: agent }));
   await page.route(/\/api\/tasks\?.*$/, (route) => {
-    expect(new URL(route.request().url()).searchParams.get("assigned_to")).toBe(agent.subject);
+    expect(new URL(route.request().url()).searchParams.get("assignedTo")).toBe(agent.subject);
     return route.fulfill({
-      json: [{ id: "task-backend", board_id: "board-platform", title: "Harden the API boundary", status: "in_progress" }],
+      json: {
+        items: [{ id: "task-backend", boardId: "board-platform", title: "Harden the API boundary", status: "in-progress" }],
+        pagination: { pageSize: 1 },
+      },
     });
   });
   await signInWithRealmrootSession(page, `agent_projection_${Date.now()}@example.com`);
@@ -149,4 +152,42 @@ test("[spec: agents/read-only-browser] Agent without a bound identity remains vi
   await expect(detail.getByText("Bind an identity before assigning tasks to this Agent.", { exact: true })).toBeVisible();
   await expect(detail.getByRole("button", { name: /create|edit|archive|delete/i })).toHaveCount(0);
   expect(taskRequests).toEqual([]);
+});
+
+test("[spec: agents/read-only-browser] Agent list uses server cursors and resets pagination when filters change", async ({ page }) => {
+  const requests: URL[] = [];
+  await page.route(/\/api\/agents(?:\?.*)?$/, (route) => {
+    const url = new URL(route.request().url());
+    requests.push(url);
+    const agentPage = url.searchParams.get("pageToken") === "agent-page-2" ? { ...agent, id: "agent-page-two", name: "Second Agent" } : agent;
+    return route.fulfill({
+      json: {
+        items: [agentPage],
+        pagination: url.searchParams.get("pageToken") === "agent-page-2" ? { pageSize: 20 } : { pageSize: 20, nextPageToken: "agent-page-2" },
+      },
+    });
+  });
+  await signInWithRealmrootSession(page, `agent_pagination_${Date.now()}@example.com`);
+
+  await page.goto("/agents");
+
+  const main = page.getByRole("main");
+  await expect(main.getByText("Backend Engineer", { exact: true })).toBeVisible();
+  await expect(main.getByText("Page 1", { exact: true })).toBeVisible();
+  await expect(main.getByRole("button", { name: /Previous/ })).toBeDisabled();
+  await main.getByRole("button", { name: /Next/ }).click();
+  await expect(main.getByText("Second Agent", { exact: true })).toBeVisible();
+  await expect(main.getByText("Page 2", { exact: true })).toBeVisible();
+  await expect(main.getByRole("button", { name: /Next/ })).toBeDisabled();
+
+  await main.getByRole("textbox", { name: "Search Agents" }).fill("backend");
+  await expect(main.getByText("Page 1", { exact: true })).toBeVisible();
+  await expect
+    .poll(() =>
+      requests.some(
+        (url) => url.searchParams.get("search") === "backend" && url.searchParams.get("pageSize") === "20" && !url.searchParams.has("pageToken"),
+      ),
+    )
+    .toBe(true);
+  expect(requests.filter((url) => url.searchParams.get("pageToken") === "agent-page-2")).toHaveLength(1);
 });

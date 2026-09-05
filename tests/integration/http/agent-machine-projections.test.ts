@@ -196,6 +196,76 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(detailText).not.toMatch(/agency-project-1|allowedTools|systemPrompt/);
   });
 
+  it("[spec: agents/authoritative-projection] paginates Agent projections with opaque page tokens", async () => {
+    const enborRequests: Array<{ limit: string | null; cursor: string | null }> = [];
+    vi.stubGlobal(
+      "fetch",
+      delegatedAgencyFetch(["agents:read"], async (request) => {
+        const url = new URL(request.url);
+        enborRequests.push({ limit: url.searchParams.get("limit"), cursor: url.searchParams.get("cursor") });
+        if (url.searchParams.get("cursor") === "agent-page-2") {
+          return Response.json({
+            data: [
+              {
+                metadata: metadata("agent-2", "Second"),
+                spec: {
+                  systemPrompt: "Second",
+                  provider: null,
+                  model: null,
+                  skills: [],
+                  allowedTools: [],
+                  identity: null,
+                },
+                status: { phase: "active", schedulable: false },
+              },
+            ],
+            pagination: { nextCursor: null, hasMore: false },
+          });
+        }
+        return Response.json({
+          data: [
+            {
+              metadata: metadata("agent-1", "First"),
+              spec: {
+                systemPrompt: "First",
+                provider: null,
+                model: null,
+                skills: [],
+                allowedTools: [],
+                identity: { subject: "agent-subject-1", username: "first", runtime: "codex" },
+              },
+              status: { phase: "active", schedulable: true },
+            },
+          ],
+          pagination: { nextCursor: "agent-page-2", hasMore: true },
+        });
+      }),
+    );
+
+    const first = await browserGet("/agents?pageSize=1");
+    expect(first.status, await first.clone().text()).toBe(200);
+    const firstBody = (await first.json()) as { items: Array<{ id: string }>; pagination: { pageSize: number; nextPageToken: string } };
+    expect(firstBody.items.map((agent) => agent.id)).toEqual(["agent-1"]);
+    expect(firstBody.pagination).toMatchObject({ pageSize: 1, nextPageToken: expect.any(String) });
+
+    const second = await browserGet(`/agents?pageSize=1&pageToken=${encodeURIComponent(firstBody.pagination.nextPageToken)}`);
+    expect(second.status, await second.clone().text()).toBe(200);
+    const secondBody = (await second.json()) as { items: Array<{ id: string }>; pagination: { pageSize: number; nextPageToken?: string } };
+    expect(secondBody.items.map((agent) => agent.id)).toEqual(["agent-2"]);
+    expect(secondBody.pagination).toEqual({ pageSize: 1 });
+    expect([...firstBody.items, ...secondBody.items].map((agent) => agent.id).sort()).toEqual(["agent-1", "agent-2"]);
+    expect(enborRequests).toEqual([
+      { limit: "1", cursor: null },
+      { limit: "1", cursor: "agent-page-2" },
+    ]);
+
+    const tampered = await browserGet(`/agents?pageSize=1&pageToken=${encodeURIComponent(`${firstBody.pagination.nextPageToken}x`)}`);
+    expect(tampered.status, await tampered.clone().text()).toBe(400);
+    await expect(tampered.json()).resolves.toMatchObject({ status: 400, type: `${resource}/problems/invalid-pagination` });
+    const invalidPageSize = await browserGet("/agents?pageSize=0");
+    expect(invalidPageSize.status, await invalidPageSize.clone().text()).toBe(400);
+  });
+
   it.each([
     {
       resourceName: "Agent",
@@ -372,6 +442,71 @@ describe("Agent and Machine projection HTTP resources", () => {
         }),
       ],
     });
+  });
+
+  it("[spec: machines/environment-projection] paginates Machine projections with opaque page tokens", async () => {
+    const environmentRequests: Array<{ limit: string | null; cursor: string | null }> = [];
+    const runnerEnvironmentIds: Array<string | null> = [];
+    vi.stubGlobal(
+      "fetch",
+      delegatedAgencyFetch(["environments:read", "runners:read"], async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname.endsWith("/api/v1/runners")) {
+          runnerEnvironmentIds.push(url.searchParams.get("environmentId"));
+          return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
+        }
+        if (url.pathname.endsWith("/api/v1/environments")) {
+          environmentRequests.push({ limit: url.searchParams.get("limit"), cursor: url.searchParams.get("cursor") });
+          if (url.searchParams.get("cursor") === "environment-page-2") {
+            return Response.json({
+              data: [
+                {
+                  metadata: metadata("environment-2", "internal-two"),
+                  spec: { type: "self_hosted", scope: "project" },
+                  status: { phase: "active" },
+                },
+              ],
+              pagination: { nextCursor: null, hasMore: false },
+            });
+          }
+          return Response.json({
+            data: [
+              {
+                metadata: metadata("environment-1", "internal-one"),
+                spec: { type: "self_hosted", scope: "project" },
+                status: { phase: "active" },
+              },
+            ],
+            pagination: { nextCursor: "environment-page-2", hasMore: true },
+          });
+        }
+        throw new Error(`Unexpected Enbor request: ${request.url}`);
+      }),
+    );
+
+    const first = await browserGet("/machines?pageSize=1");
+    expect(first.status, await first.clone().text()).toBe(200);
+    const firstBody = (await first.json()) as { items: Array<{ id: string }>; pagination: { pageSize: number; nextPageToken: string } };
+    expect(firstBody.items.map((machine) => machine.id)).toEqual(["environment-1"]);
+    expect(firstBody.pagination).toMatchObject({ pageSize: 1, nextPageToken: expect.any(String) });
+
+    const second = await browserGet(`/machines?pageSize=1&pageToken=${encodeURIComponent(firstBody.pagination.nextPageToken)}`);
+    expect(second.status, await second.clone().text()).toBe(200);
+    const secondBody = (await second.json()) as { items: Array<{ id: string }>; pagination: { pageSize: number; nextPageToken?: string } };
+    expect(secondBody.items.map((machine) => machine.id)).toEqual(["environment-2"]);
+    expect(secondBody.pagination).toEqual({ pageSize: 1 });
+    expect([...firstBody.items, ...secondBody.items].map((machine) => machine.id).sort()).toEqual(["environment-1", "environment-2"]);
+    expect(environmentRequests).toEqual([
+      { limit: "1", cursor: null },
+      { limit: "1", cursor: "environment-page-2" },
+    ]);
+    expect(runnerEnvironmentIds).toEqual(["environment-1", "environment-2"]);
+
+    const tampered = await browserGet(`/machines?pageSize=1&pageToken=${encodeURIComponent(`${firstBody.pagination.nextPageToken}x`)}`);
+    expect(tampered.status, await tampered.clone().text()).toBe(400);
+    await expect(tampered.json()).resolves.toMatchObject({ status: 400, type: `${resource}/problems/invalid-pagination` });
+    const invalidPageSize = await browserGet("/machines?pageSize=101");
+    expect(invalidPageSize.status, await invalidPageSize.clone().text()).toBe(400);
   });
 
   it("[spec: machines/create-runner-setup] returns setup commands for an offline Machine without Runners", async () => {
