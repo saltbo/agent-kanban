@@ -19,7 +19,7 @@ beforeAll(async () => {
 afterAll(async () => resources.mf.dispose());
 afterEach(() => vi.unstubAllGlobals());
 
-async function fixture() {
+async function fixture(repositoryResponse?: Response) {
   const ownerId = crypto.randomUUID();
   await seedUser(resources.db, ownerId, `${ownerId}@test.local`);
   const repository = await createRepository(resources.db, ownerId, { name: "Source", url: "https://github.com/example/source" });
@@ -48,6 +48,8 @@ async function fixture() {
     }
     expect(url).toBe("https://api.github.com/repos/example/source");
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer bootstrap-fixture-token");
+    expect(init?.redirect).toBe("manual");
+    if (repositoryResponse) return repositoryResponse;
     return Response.json({ id: 123, owner: { id: 42 }, full_name: "example/source", default_branch: "main" });
   });
   vi.stubGlobal("fetch", fetch);
@@ -56,6 +58,13 @@ async function fixture() {
 }
 
 describe("GitHub repository bootstrap", () => {
+  it("rejects a repository redirect without forwarding the credential", async () => {
+    const { env, ownerId, repository, fetch } = await fixture(
+      new Response(null, { status: 301, headers: { location: "https://example.org/redirect" } }),
+    );
+    await expect(repositoryBootstrap(env, ownerId, repository.id)).rejects.toThrow("HTTP 301");
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
   it("rejects changed repository inputs before minting a token", async () => {
     const { env, ownerId, repository, fetch } = await fixture();
     await expect(repositoryBootstrap(env, ownerId, repository.id, "https://github.com/example/original")).rejects.toThrow("Repository changed");

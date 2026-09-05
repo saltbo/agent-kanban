@@ -38,7 +38,9 @@ export async function repositoryBootstrap(env: Env, ownerId: string, repositoryI
   const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(account)}/${encodeURIComponent(name)}`, {
     headers: { authorization: `Bearer ${credential.token}`, "user-agent": "agent-kanban/2.0", accept: "application/vnd.github+json" },
     signal: AbortSignal.timeout(10_000),
-    redirect: "error",
+    // Workers supports manual redirects; the status check below rejects them
+    // without forwarding the repository credential to another URL.
+    redirect: "manual",
   });
   if (!response.ok) throw new Error(`GitHub repository bootstrap metadata failed (HTTP ${response.status})`);
   const remote = (await response.json()) as { id?: unknown; full_name?: unknown; default_branch?: unknown; owner?: { id?: unknown } };
