@@ -105,19 +105,20 @@ of guessing flags:
 realmroot toolbox patch agent-kanban/tasks/<task-id> --generate-body
 ```
 
-Assignment and review rejection arrive through Inbox as business references:
+Assignment starts an Enbor Session directly. Its initial prompt supplies the
+Task ID and exact AK Context ID. Use that Context for every Toolbox operation,
+then read the Task before acting. Claim the Task using your own attached Agent
+identity; never write or guess a Session ID. AK's Session annotation records the
+creation receipt, while Claim records the verified execution identity.
 
-```text
-Task ID: <task-id>
-Owner ID: <owner-id>
-```
+Review rejection sends feedback to the same Session. Reread the Task and Notes,
+continue under the existing Claim, and submit a new review when finished.
+Completion and cancellation close the associated Session. Inbox messages are
+not the startup or continuation mechanism.
 
-The message contains no execution instructions. The Owner ID identifies the AK
-tenant. For native Realmroot resources, translate a personal Owner ID encoded
-as `user:<subject-id>` to the Context ID `<subject-id>`; use an organization
-Owner ID unchanged. Use that Context for Toolbox operations, then reread the
-Task before acting because the Task resource is authoritative. Completion and
-cancellation are terminal transitions and do not create Agent Inbox work.
+For historical business references with a personal Owner ID encoded as
+`user:<subject-id>`, the Context ID is `<subject-id>`; use an organization Owner
+ID unchanged. Delayed scheduling is not implemented.
 
 ## Failure handling
 

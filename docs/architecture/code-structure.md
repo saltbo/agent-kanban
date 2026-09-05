@@ -11,7 +11,7 @@ worker -> HTTP composition -> use cases -> domain
 
 - `server/domain/` owns deterministic product rules and value semantics.
 - `server/usecases/` coordinates operations through explicit ports.
-- `server/adapters/` implements D1, Agency, Inbox, GitHub, and streaming edges.
+- `server/adapters/` implements D1, Agency, GitHub, and streaming edges.
 - `server/auth/` owns standard OIDC browser authentication and the additional
   Realmroot Agent Resource-token profile.
 - `server/http/` owns validation, representations, middleware, routes, and the
