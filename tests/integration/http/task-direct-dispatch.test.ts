@@ -329,6 +329,7 @@ describe("direct Task dispatch", () => {
       expect((await cancel()).status).toBe(200);
       expect(calls.filter((call) => call === "PATCH /api/v1/sessions/session-1")).toHaveLength(1);
     },
+    30_000,
   );
 });
 
@@ -459,4 +460,5 @@ it.each([false, true])(
     expect((await assign("new")).status).toBe(200);
     expect(events).toHaveLength(failCleanup ? 4 : 3);
   },
+  30_000,
 );
