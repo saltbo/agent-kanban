@@ -33,6 +33,7 @@ function decision(kind: "rejection" | "completion", actor = input.actor): Stored
 
 function repository(kind: "rejection" | "completion", actor = input.actor): TaskReviewDecisionRepository {
   const target: TaskReviewDecisionTarget = {
+    version: 1,
     taskId: input.taskId,
     status: "in_review",
     assignedTo: "assigned-agent",
@@ -59,6 +60,17 @@ describe("Task Review Decisions", () => {
       rejection: { reason: "needs changes", rejectedByActorId: input.actor.id },
     });
     expect(repo.finalize).toHaveBeenCalledOnce();
+    expect(repo.markEffectDelivered).toHaveBeenCalledOnce();
+  });
+
+  it("[spec: tasks/reject-review] acknowledges continuation only after delivery and preserves failures", async () => {
+    const repo = repository("rejection");
+    const failure = new Error("Session unavailable");
+    const deliver = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+    await expect(replaceTaskReviewRejection(repo, { ...input, reason: "needs changes" }, deliver)).rejects.toBe(failure);
+    expect(repo.markEffectDelivered).not.toHaveBeenCalled();
+    await replaceTaskReviewRejection(repo, { ...input, reason: "needs changes" }, deliver);
+    expect(deliver).toHaveBeenLastCalledWith(expect.objectContaining({ actionId: "decision-a", effectState: "pending" }));
     expect(repo.markEffectDelivered).toHaveBeenCalledOnce();
   });
 

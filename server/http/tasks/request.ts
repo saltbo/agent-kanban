@@ -6,7 +6,6 @@ import {
   assertResourceWriteFields,
 } from "@server/http/resource-server/request";
 import type { CreateTaskInput } from "@shared";
-import { parseScheduledAt } from "@shared";
 import { HTTPException } from "hono/http-exception";
 
 const TASK_CREATE_FIELDS = new Set([
@@ -104,14 +103,24 @@ function normalizeTaskValues(body: Record<string, unknown>): void {
   if (body.metadata !== undefined && body.metadata !== null && (typeof body.metadata !== "object" || Array.isArray(body.metadata))) {
     throw new HTTPException(400, { message: "metadata must be a JSON object or null" });
   }
+  if (body.metadata && typeof body.metadata === "object") {
+    const metadata = body.metadata as Record<string, unknown>;
+    if (Object.keys(metadata).some((key) => key.startsWith("agent-kanban.dev/"))) {
+      throw new HTTPException(422, { message: "Agent Kanban Task execution metadata is read-only" });
+    }
+    if (Object.hasOwn(metadata, "annotations")) {
+      const annotations = metadata.annotations;
+      if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) {
+        throw new HTTPException(422, { message: "Task metadata.annotations must be an object" });
+      }
+      if (Object.keys(annotations).some((key) => key.startsWith("agent-kanban.dev/"))) {
+        throw new HTTPException(422, { message: "Agent Kanban Task execution annotations are read-only" });
+      }
+    }
+  }
   if (body.scheduled_at !== undefined && body.scheduled_at !== null) {
-    if (typeof body.scheduled_at !== "string") {
-      throw new HTTPException(400, { message: "scheduled_at must be ISO 8601 with timezone (e.g. 2026-03-28T09:00:00Z)" });
-    }
-    const normalized = parseScheduledAt(body.scheduled_at);
-    if (!normalized) {
-      throw new HTTPException(400, { message: "scheduled_at must be ISO 8601 with timezone (e.g. 2026-03-28T09:00:00Z)" });
-    }
-    body.scheduled_at = normalized;
+    throw new HTTPException(422, {
+      message: "Delayed task scheduling is not implemented. Omit scheduledAt to create an unscheduled Task; use null to clear an existing schedule.",
+    });
   }
 }

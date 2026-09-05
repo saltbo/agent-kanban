@@ -1,4 +1,12 @@
-import { type CreateTriggerRequest, createEnborClient, EnborApiError, type EnborClient, type Trigger } from "@realmroot/enbor-sdk";
+import {
+  type CreateSessionRequest,
+  type CreateTriggerRequest,
+  createEnborClient,
+  EnborApiError,
+  type EnborClient,
+  type Session,
+  type Trigger,
+} from "@realmroot/enbor-sdk";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -32,6 +40,21 @@ async function createIdempotentTrigger(client: EnborClient, body: CreateTriggerR
     body,
     headers: { "Content-Type": "application/json", "idempotency-key": idempotencyKey },
   })) as { data?: Trigger; error?: unknown; response?: Response };
+  if (result.response?.ok && result.error === undefined && result.data) return result.data;
+  const responseBody = result.error ?? result.data;
+  throw new EnborApiError(
+    result.response?.status,
+    typeof responseBody === "string" ? responseBody : JSON.stringify(responseBody ?? {}),
+    responseBody,
+  );
+}
+
+export async function createAgencySession(client: EnborClient, body: CreateSessionRequest, idempotencyKey: string): Promise<Session> {
+  const result = (await client.raw.post({
+    url: "/api/v1/sessions",
+    body,
+    headers: { "Content-Type": "application/json", "idempotency-key": idempotencyKey },
+  })) as { data?: Session; error?: unknown; response?: Response };
   if (result.response?.ok && result.error === undefined && result.data) return result.data;
   const responseBody = result.error ?? result.data;
   throw new EnborApiError(

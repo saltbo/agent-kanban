@@ -95,6 +95,26 @@ export async function recordInstallationFromSetup(db: D1, env: Env, ownerId: str
   return details;
 }
 
+export async function mintRepositoryReadToken(
+  env: Env,
+  installationId: number,
+  repositoryName: string,
+): Promise<{ token: string; expiresAt: string }> {
+  const jwt = await githubAppJwt(env);
+  const response = await fetch(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${jwt}`, "user-agent": USER_AGENT, accept: "application/vnd.github+json", "content-type": "application/json" },
+    body: JSON.stringify({ repositories: [repositoryName], permissions: { contents: "read" } }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`GitHub repository bootstrap authorization failed (HTTP ${response.status})`);
+  const data = (await response.json()) as { token?: unknown; expires_at?: unknown };
+  if (typeof data.token !== "string" || !data.token || typeof data.expires_at !== "string" || !(Date.parse(data.expires_at) > Date.now())) {
+    throw new Error("GitHub returned invalid repository bootstrap credentials");
+  }
+  return { token: data.token, expiresAt: data.expires_at };
+}
+
 async function mintInstallationWideToken(env: Env, installationId: number): Promise<string> {
   const jwt = await githubAppJwt(env);
   const res = await fetch(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {

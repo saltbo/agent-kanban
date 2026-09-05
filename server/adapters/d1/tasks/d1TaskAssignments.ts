@@ -61,11 +61,21 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
               assignee_identity_type = 'realmroot_actor',
               updated_at = ?,
               version = version + 1,
-              transition_token = ?
+              transition_token = ?,
+              metadata = json_set(metadata, '$."agent-kanban.dev/launch"', json_object(
+                'id', ?, 'task_id', id, 'owner_id', ?, 'assignee_actor_id', ?,
+                'repository_id', repository_id,
+                'repository_url', (SELECT url FROM repositories WHERE id = tasks.repository_id AND owner_id = ?),
+                'state', 'pending', 'attempts', 0, 'lease_token', '', 'lease_expires_at', '',
+                'project_id', NULL, 'session_id', NULL, 'secret_ref', NULL, 'secret_expires_at', NULL,
+                'request_json', NULL, 'bootstrap_json', NULL, 'last_error', NULL),
+                '$.annotations."agent-kanban.dev/session-id"', NULL)
             WHERE id = ?
               AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
               AND status = 'todo'
-              AND assigned_to IS NULL
+              AND active_claim_id IS NULL
+              AND (json_extract(metadata, '$."agent-kanban.dev/launch".state') IS NULL
+                OR json_extract(metadata, '$."agent-kanban.dev/launch".state') IN ('pending', 'settled'))
               AND transition_token IS NULL
               ${input.expectedTaskVersion !== undefined ? "AND version = ?" : ""}
           `)
@@ -74,6 +84,10 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
               input.assigneeActorId,
               assignedAt,
               actionId,
+              actionId,
+              input.ownerId,
+              input.assigneeActorId,
+              input.ownerId,
               input.taskId,
               input.ownerId,
               ...(input.expectedTaskVersion === undefined ? [] : [input.expectedTaskVersion]),

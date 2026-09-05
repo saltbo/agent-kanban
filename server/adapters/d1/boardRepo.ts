@@ -283,6 +283,15 @@ export async function countPublicBoardDoneTasks(db: D1, slug: string): Promise<n
 }
 
 export async function deleteBoard(db: D1, boardId: string, ownerId: string): Promise<boolean> {
-  const result = await db.prepare("DELETE FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).run();
-  return result.meta.changes > 0;
+  const result = await db
+    .prepare(`DELETE FROM boards WHERE id = ? AND owner_id = ?
+    AND NOT EXISTS (SELECT 1 FROM tasks WHERE board_id = boards.id
+      AND json_extract(metadata, '$."agent-kanban.dev/launch".state') NOT IN ('pending', 'settled'))`)
+    .bind(boardId, ownerId)
+    .run();
+  if (result.meta.changes > 0) return true;
+  if (await db.prepare("SELECT id FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first()) {
+    throw new ApplicationError("conflict", "Task Session cleanup must complete before deleting the Board");
+  }
+  return false;
 }

@@ -29,8 +29,7 @@ Feature: Agent projections
     Given an authorized caller supplies complete Agent configuration
     When the caller creates an Agent through AK
     Then AK creates a same-tenant Realmroot Identity and bound Enbor Agent with the Agent Kanban work skill
-    And AK creates an active Inbox Trigger that uses automatic Environment placement
-    And the Trigger prompt only identifies that an Agent Kanban notification is available
+    And AK does not create an Inbox Trigger because Task assignment directly creates a Session
     And replays the compound operation without duplicate resources when its Idempotency-Key is retried
     And stores no local Agent entity
 

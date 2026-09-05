@@ -20,7 +20,7 @@
       "type": "archive",
       "description": "Create, assign, monitor, and review one Agent Kanban v2 Task through Realmroot Toolbox. Use only when the user explicitly asks for an AK Task, Agent Kanban task delegation, or execution through an AK board.",
       "url": "/.well-known/agent-skills/ak-task.tar.gz",
-      "digest": "sha256:de0f8887573eeaaddb8c56dd0f0ee970f7aed10f743dd010e03b90c1d732a630"
+      "digest": "sha256:cfebf5fde13ef8545036c900acc73b0ea2583069d47d75d9eae7ea143b32e431"
     }
   ]
 }

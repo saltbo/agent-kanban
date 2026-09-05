@@ -4,7 +4,6 @@ import { isPublishedV2Operation, v2Problem } from "@server/http/middleware/v2Con
 import { AgencyProjectInitializationBusy } from "@server/usecases/agency/ensureAgencyProject";
 import { RealmrootDelegationFailure } from "@server/usecases/agency/failures";
 import { ApplicationError } from "@server/usecases/applicationError";
-import { TaskLifecycleNotificationFailure } from "@server/usecases/tasks/taskLifecycleNotifications";
 import type { ErrorHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 
@@ -35,10 +34,6 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
       status === 503 ? "Enbor unavailable" : "Enbor request failed",
       status === 503 ? "Enbor is unavailable" : "Enbor rejected the request",
     );
-  }
-  if (error instanceof TaskLifecycleNotificationFailure) {
-    c.header("Retry-After", "5");
-    return v2Problem(c, 503, "task-notification-unavailable", "Task notification unavailable", error.message);
   }
   if (error instanceof ApplicationError) {
     const status = applicationStatus(error.kind);

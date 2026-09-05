@@ -6,6 +6,7 @@ import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { createTask } from "../../../server/adapters/d1/taskRepo";
 import { d1TaskAssignmentRepository } from "../../../server/adapters/d1/tasks/d1TaskAssignments";
 import { d1TaskClaimRepository } from "../../../server/adapters/d1/tasks/d1TaskClaims";
+import { d1TaskLaunchRepository } from "../../../server/adapters/d1/tasks/d1TaskLaunches";
 import { replaceTaskAssignment } from "../../../server/usecases/tasks/replaceTaskAssignment";
 import { replaceTaskClaim } from "../../../server/usecases/tasks/replaceTaskClaim";
 import { seedUser, setupMiniflare } from "../../helpers/db";
@@ -17,7 +18,7 @@ afterEach(async () => {
 });
 
 describe("D1 Task Assignment", () => {
-  it("records a Realmroot actor assignment without dispatching runtime work", async () => {
+  it("[spec: tasks/durable-launch-intent] commits one launch intent with the assignment without creating a Claim", async () => {
     const { mf, db } = await setupMiniflare();
     resources.push(mf);
     const ownerId = `tenant-assignment-${randomUUID()}`;
@@ -33,6 +34,27 @@ describe("D1 Task Assignment", () => {
     });
 
     expect(result).toMatchObject({ assignment: { agentActorId: "actor-target", assignedByActorId: "actor-manager" } });
+    await Promise.all(
+      Array.from({ length: 3 }, () =>
+        replaceTaskAssignment(d1TaskAssignmentRepository(db), {
+          ownerId,
+          taskId: task.id,
+          assigneeActorId: "actor-target",
+          assignedByActorId: "actor-manager",
+        }),
+      ),
+    );
+    await expect(
+      db
+        .prepare(`SELECT json_extract(metadata, '$."agent-kanban.dev/launch".id') AS id,
+      json_extract(metadata, '$."agent-kanban.dev/launch".assignee_actor_id') AS assignee_actor_id,
+      json_extract(metadata, '$."agent-kanban.dev/launch".state') AS state,
+      json_extract(metadata, '$.annotations."agent-kanban.dev/session-id"') AS session_id FROM tasks WHERE id = ?`)
+        .bind(task.id)
+        .all(),
+    ).resolves.toMatchObject({
+      results: [{ id: result.version, assignee_actor_id: "actor-target", state: "pending", session_id: null }],
+    });
     await expect(db.prepare("SELECT status, assigned_to, assignee_identity_type FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
       status: "todo",
       assigned_to: "actor-target",
@@ -44,6 +66,35 @@ describe("D1 Task Assignment", () => {
     await expect(db.prepare("SELECT COUNT(*) AS count FROM task_session_bindings WHERE task_id = ?").bind(task.id).first()).resolves.toEqual({
       count: 0,
     });
+  });
+
+  it("[spec: tasks/durable-launch-intent] rolls back assignment when launch insertion fails", async () => {
+    const { mf, db } = await setupMiniflare();
+    resources.push(mf);
+    const ownerId = `tenant-atomic-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    const board = await createBoard(db, ownerId, "Atomic launch", "ops");
+    const task = await createTask(db, ownerId, { title: "Atomic assignment", board_id: board.id });
+    await db
+      .prepare(`CREATE TRIGGER fail_launch BEFORE UPDATE OF metadata ON tasks
+    WHEN json_extract(NEW.metadata, '$."agent-kanban.dev/launch".id') IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'injected launch failure'); END`)
+      .run();
+    await expect(
+      replaceTaskAssignment(d1TaskAssignmentRepository(db), {
+        ownerId,
+        taskId: task.id,
+        assigneeActorId: "actor-target",
+        assignedByActorId: "actor-manager",
+      }),
+    ).rejects.toThrow("injected launch failure");
+    await expect(db.prepare("SELECT assigned_to, transition_token FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
+      assigned_to: null,
+      transition_token: null,
+    });
+    await expect(
+      db.prepare("SELECT COUNT(*) AS count FROM task_actions WHERE task_id = ? AND action = 'assigned'").bind(task.id).first(),
+    ).resolves.toEqual({ count: 0 });
   });
 
   it("stores each claimed Task's independent Agency Session provenance", async () => {
@@ -64,6 +115,11 @@ describe("D1 Task Assignment", () => {
         assigneeActorId: "actor-target",
         assignedByActorId: "actor-manager",
       });
+      const launches = d1TaskLaunchRepository(db);
+      const now = new Date();
+      const [launch] = await launches.acquireRunnable(now);
+      await launches.saveRequest(launch, { projectId: "project-1", request: { spec: { agentId: "enbor-agent" } } }, now);
+      await launches.recordSession(launch, `resume-${index + 1}`, now);
       await expect(
         replaceTaskClaim(d1TaskClaimRepository(db), {
           ownerId,

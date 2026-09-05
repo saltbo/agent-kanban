@@ -100,8 +100,9 @@ interface ReplaceDecisionInput {
 export async function replaceTaskReviewRejection(
   repository: TaskReviewDecisionRepository,
   input: ReplaceDecisionInput,
+  deliverEffect?: (decision: StoredTaskReviewDecision) => Promise<void>,
 ): Promise<{ rejection: TaskReviewRejection; version: string; created: boolean; assigneeActorId: string }> {
-  const result = await replaceDecision(repository, input, "rejection");
+  const result = await replaceDecision(repository, input, "rejection", deliverEffect);
   return {
     rejection: {
       id: input.taskId,
@@ -142,6 +143,7 @@ async function replaceDecision(
   repository: TaskReviewDecisionRepository,
   input: ReplaceDecisionInput,
   kind: TaskReviewDecisionKind,
+  deliverEffect?: (decision: StoredTaskReviewDecision) => Promise<void>,
 ): Promise<{ decision: StoredTaskReviewDecision; created: boolean; assigneeActorId: string }> {
   let target = await repository.findTarget(input.ownerId, input.taskId, input.reviewSubmissionVersion);
   validateTarget(target, input, kind);
@@ -186,6 +188,7 @@ async function replaceDecision(
   }
   if (decision.effectState === "delivered") return { decision, created: false, assigneeActorId: target.assignedTo! };
 
+  await deliverEffect?.(decision);
   const delivered = await repository.markEffectDelivered({
     ownerId: input.ownerId,
     taskId: input.taskId,

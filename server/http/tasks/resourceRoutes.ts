@@ -1,5 +1,6 @@
 import { connectSessionSocket, EnborApiError, type EnborClient, type Session } from "@realmroot/enbor-sdk";
 import { createAgencyClient } from "@server/adapters/agency/client";
+import { deliverTaskReviewContinuation } from "@server/adapters/agency/taskReviewContinuation";
 import {
   addTaskAction,
   createTask,
@@ -12,15 +13,15 @@ import {
 } from "@server/adapters/d1/taskRepo";
 import { d1TaskAssignmentRepository } from "@server/adapters/d1/tasks/d1TaskAssignments";
 import { d1TaskCancellationRepository } from "@server/adapters/d1/tasks/d1TaskCancellations";
+import { reserveTaskLaunchReplacement } from "@server/adapters/d1/tasks/d1TaskLaunches";
 import { d1TaskReviewDecisionRepository } from "@server/adapters/d1/tasks/d1TaskReviewDecisions";
 import { d1TaskReviewSubmissionRepository } from "@server/adapters/d1/tasks/d1TaskReviewSubmissions";
-import { inboxTaskLifecycleNotifier } from "@server/adapters/realmroot/inboxTaskLifecycleNotifier";
 import { createSSEResponse } from "@server/adapters/stream/sse";
 import { authorizeScope } from "@server/auth/middleware";
 import type { Env } from "@server/env";
 import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
 import { v2Problem } from "@server/http/middleware/v2Contract";
-import { agencyAuthorization } from "@server/http/resource-server/agencyDependencies";
+import { agencyAuthorization, agencyDependencies } from "@server/http/resource-server/agencyDependencies";
 import { mergePatch } from "@server/http/resource-server/mergePatch";
 import { pageResponse, readPageWindow } from "@server/http/resource-server/pagination";
 import { taskNoteResource, taskResource } from "@server/http/resource-server/representation";
@@ -42,10 +43,10 @@ import {
   replaceTaskReviewSubmission,
   TaskReviewSubmissionFailure,
 } from "@server/usecases/tasks/replaceTaskReviewSubmission";
-import { notifyTaskLifecycle } from "@server/usecases/tasks/taskLifecycleNotifications";
 import { TASK_STATUSES, type Task } from "@shared";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { dispatchAssignedTask, dispatchTaskDependents, settleAssignedTask } from "./dispatchAssignedTask";
 import { mediaType, readStrongVersionPrecondition, requestActorId, taskWorkflowActor } from "./workflowSupport";
 
 export function registerTaskResourceRoutes(api: Hono<{ Bindings: Env }>): void {
@@ -156,6 +157,29 @@ async function patchTaskAssignment(c: TaskContext, patch: Record<string, unknown
     );
   }
   try {
+    const current = await requireTask(c);
+    const launch = current.metadata["agent-kanban.dev/launch"] as { replacement_actor_id?: string } | undefined;
+    if (launch?.replacement_actor_id && launch.replacement_actor_id !== patch.assignedTo) {
+      return taskUpdateConflict(c, "A different reassignment is already awaiting Session cleanup");
+    }
+    if (launch && current.assigned_to !== patch.assignedTo) {
+      if (
+        !(await reserveTaskLaunchReplacement(c.env.DB, {
+          ownerId: c.get("ownerId"),
+          taskId: taskId(c),
+          assigneeActorId: patch.assignedTo,
+          expectedVersion: expectedTaskVersion,
+        }))
+      )
+        return taskUpdateConflict(c, "Task changed before its previous Session could be retired");
+      await settleAssignedTask(c, taskId(c));
+      const settled = await requireTask(c);
+      const receipt = settled.metadata["agent-kanban.dev/launch"] as { state?: string; replacement_actor_id?: string };
+      if (receipt?.state !== "settled" || receipt.replacement_actor_id !== patch.assignedTo) {
+        return taskUpdateConflict(c, "Previous Session cleanup is still in progress; retry the same assignment");
+      }
+      expectedTaskVersion = settled.version;
+    }
     const result = await replaceTaskAssignment(d1TaskAssignmentRepository(c.env.DB), {
       ownerId: c.get("ownerId"),
       taskId: taskId(c),
@@ -163,13 +187,7 @@ async function patchTaskAssignment(c: TaskContext, patch: Record<string, unknown
       assignedByActorId: taskWorkflowActor(c).id,
       expectedTaskVersion,
     });
-    await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
-      taskId: result.assignment.taskId,
-      assigneeActorId: result.assignment.agentActorId,
-      ownerId: c.get("ownerId"),
-      event: "assigned",
-      version: result.version,
-    });
+    await dispatchAssignedTask(c, result.assignment.taskId);
     return updatedTaskResponse(c);
   } catch (error) {
     if (!(error instanceof TaskAssignmentFailure)) throw error;
@@ -224,21 +242,31 @@ async function patchTaskStatus(c: TaskContext, patch: Record<string, unknown>, e
         taskId: taskId(c),
       });
       if (status === "in-progress") {
-        const result = await replaceTaskReviewRejection(d1TaskReviewDecisionRepository(c.env.DB), {
-          ownerId: c.get("ownerId"),
-          taskId: taskId(c),
-          reviewSubmissionVersion: submission.version,
-          actor: taskWorkflowActor(c),
-          reason: (patch.statusReason as string | undefined) || null,
-          expectedTaskVersion,
-        });
-        await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
-          taskId: result.rejection.taskId,
-          assigneeActorId: result.assigneeActorId,
-          ownerId: c.get("ownerId"),
-          event: "review_rejected",
-          version: result.version,
-        });
+        await replaceTaskReviewRejection(
+          d1TaskReviewDecisionRepository(c.env.DB),
+          {
+            ownerId: c.get("ownerId"),
+            taskId: taskId(c),
+            reviewSubmissionVersion: submission.version,
+            actor: taskWorkflowActor(c),
+            reason: (patch.statusReason as string | undefined) || null,
+            expectedTaskVersion,
+          },
+          async (decision) => {
+            const task = await requireTask(c);
+            const session = requireTaskSession(task);
+            const { client, projectId } = await agencyDependencies(c, ["sessions:read", "sessions:write"]);
+            const launch = task.metadata["agent-kanban.dev/launch"] as { project_id?: string } | undefined;
+            if (launch?.project_id && launch.project_id !== projectId) throw new AgencySessionInvalidResponse("Task Session Project changed");
+            await deliverTaskReviewContinuation(c.env.DB, client, {
+              ownerId: c.get("ownerId"),
+              taskId: task.id,
+              sessionId: session.runtime_session_id,
+              decisionId: decision.actionId!,
+              content: `Agent Kanban Task ${task.id} review was rejected. Continue this Task in this Session using your existing Claim. Read the current Task and notes before working, address the feedback, then submit for review again.\nReview decision: ${decision.actionId}\nFeedback: ${decision.reason ?? "No additional feedback was provided."}`,
+            });
+          },
+        );
       } else {
         await replaceTaskReviewCompletion(d1TaskReviewDecisionRepository(c.env.DB), {
           ownerId: c.get("ownerId"),
@@ -248,6 +276,10 @@ async function patchTaskStatus(c: TaskContext, patch: Record<string, unknown>, e
           expectedTaskVersion,
         });
       }
+    }
+    if (status === "cancelled" || status === "done") {
+      await settleAssignedTask(c, taskId(c));
+      await dispatchTaskDependents(c, taskId(c));
     }
     return updatedTaskResponse(c);
   } catch (error) {
@@ -408,7 +440,7 @@ async function getTaskSessionWebSocket(c: TaskContext): Promise<Response> {
   }
 }
 
-async function resolveAgencySession(c: TaskContext, binding: NonNullable<Task["session_binding"]>) {
+async function resolveAgencySession(c: TaskContext, binding: { runtime_session_id: string }) {
   const client = await taskSessionClient(c, ["sessions:read"]);
   return readAgencySession(client.client, binding.runtime_session_id, client.projectId);
 }
@@ -529,6 +561,10 @@ async function requireTask(c: TaskContext): Promise<Task> {
 }
 
 function requireTaskSession(task: Task) {
+  const annotations = task.metadata.annotations as Record<string, unknown> | undefined;
+  const sessionId = annotations?.["agent-kanban.dev/session-id"];
+  if (typeof sessionId === "string" && sessionId) return { runtime_session_id: sessionId };
+  if (task.metadata["agent-kanban.dev/launch"]) throw new HTTPException(404, { message: "Task Session creation is not yet confirmed" });
   if (!task.session_binding) throw new HTTPException(404, { message: "Task is not bound to a runtime Session" });
   return task.session_binding;
 }

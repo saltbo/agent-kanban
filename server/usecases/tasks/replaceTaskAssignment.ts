@@ -53,11 +53,11 @@ export async function replaceTaskAssignment(
   if (target.assignedTo === input.assigneeActorId && target.assigneeIdentityType === "realmroot_actor" && target.activeAssignment) {
     return assignmentResult(input.taskId, input.assigneeActorId, target.activeAssignment, false);
   }
-  if (target.status !== "todo" || target.assignedTo !== null) {
+  if (target.status !== "todo") {
     throw new TaskAssignmentFailure("TASK_ASSIGNMENT_CONFLICT", "Task is not available for assignment");
   }
 
-  const committed = await repository.create(input);
+  const committed = await repository.create({ ...input, expectedTaskVersion: target.version });
   if (!committed) {
     const winner = await repository.findTarget(input.ownerId, input.taskId);
     if (winner) assertTaskVersion(winner.version, input.expectedTaskVersion);
