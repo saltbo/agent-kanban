@@ -69,7 +69,8 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
                 'state', 'pending', 'attempts', 0, 'lease_token', '', 'lease_expires_at', '',
                 'project_id', NULL, 'session_id', NULL, 'secret_ref', NULL, 'secret_expires_at', NULL,
                 'request_json', NULL, 'bootstrap_json', NULL, 'last_error', NULL),
-                '$.annotations."agent-kanban.dev/session-id"', NULL)
+                '$.annotations."agent-kanban.dev/session-id"', NULL,
+                '$."agent-kanban.dev/authorization-subject"', COALESCE(?, json_extract(metadata, '$."agent-kanban.dev/authorization-subject"')))
             WHERE id = ?
               AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
               AND status = 'todo'
@@ -88,6 +89,7 @@ export function d1TaskAssignmentRepository(db: D1): TaskAssignmentRepository {
               input.ownerId,
               input.assigneeActorId,
               input.ownerId,
+              input.authorizationSubjectId ?? null,
               input.taskId,
               input.ownerId,
               ...(input.expectedTaskVersion === undefined ? [] : [input.expectedTaskVersion]),

@@ -23,8 +23,10 @@ Feature: Repository connections
     And repository coverage remains isolated by tenant
 
   @journey:repositories/pull-request-update @entrypoint:webhook @proof:integration
-  Scenario: Apply supported pull request updates without runtime dispatch
+  Scenario: Complete pull request Tasks and dispatch dependents with user authorization
     Given a connected Repository has an associated Task
     When GitHub sends a correctly signed pull request event
     Then AK applies the supported Task update
-    And does not invoke a removed Maintainer or Session dispatch path
+    And AK settles the exact Task Session and starts eligible dependent Tasks using their saved user authorization
+    And repeated delivery does not create duplicate Sessions
+    And browser logout does not discard the user authorization for assigned work

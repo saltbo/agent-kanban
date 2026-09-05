@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { createHash, randomUUID } from "node:crypto";
+import { storeWebSessionGrant } from "@server/adapters/realmroot/delegatedAgencyToken";
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
@@ -33,6 +34,8 @@ beforeEach(async () => {
   sessionMessageRequests = [];
   await seedUser(db, tenantId, "toolbox-generic@example.test");
   await seedUser(db, foreignTenantId, "toolbox-foreign@example.test");
+  const browser = await createTestWebSession(db, tenantId, { subjectId: "controller-toolbox" });
+  await storeWebSessionGrant(env, browser.id, { access_token: "user-ak-token", refresh_token: "user-refresh", expires_in: 300 });
 });
 
 afterEach(async () => {
@@ -42,6 +45,25 @@ afterEach(async () => {
 });
 
 describe("Realmroot Agent generic Toolbox operations", () => {
+  it("[spec: tasks/user-authorization] requires the Agent controller to log in before Task creation", async () => {
+    const board = await createBoard(db, tenantId, "User authorization", "ops");
+    await db.prepare("DELETE FROM realmroot_user_grants WHERE tenant_id = ?").bind(tenantId).run();
+    // Another member's grant must not authorize this Agent's controller.
+    const other = await createTestWebSession(db, tenantId, { subjectId: "another-user" });
+    await storeWebSessionGrant(env, other.id, { access_token: "other-token", refresh_token: "other-refresh", expires_in: 300 });
+    const denied = await request("POST", "/tasks", "task:write", { title: "Requires login", boardId: board.id });
+    expect(denied.status).toBe(409);
+    await expect(denied.json()).resolves.toMatchObject({
+      type: expect.stringMatching(/user-login-required$/),
+      detail: expect.stringContaining("sign in to Agent Kanban in a web browser"),
+    });
+    await expect(db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE board_id = ?").bind(board.id).first()).resolves.toEqual({ count: 0 });
+    const browser = await createTestWebSession(db, tenantId, { subjectId: "controller-toolbox" });
+    await storeWebSessionGrant(env, browser.id, { access_token: "user-token", refresh_token: "user-refresh", expires_in: 300 });
+    const created = await request("POST", "/tasks", "task:write", { title: "Authorized", boardId: board.id });
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({ metadata: { "agent-kanban.dev/authorization-subject": "controller-toolbox" } });
+  });
   it("[spec: tasks/scheduling-not-supported] rejects scheduled creation and updates without writing a Task or schedule", async () => {
     const board = await createBoard(db, tenantId, "Scheduling unsupported", "ops");
     for (const scheduledAt of ["2030-01-01T00:00:00Z", "2000-01-01T00:00:00Z"]) {

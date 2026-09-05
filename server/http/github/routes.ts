@@ -9,6 +9,7 @@ import {
 } from "@server/adapters/github/githubWebhook";
 import { authorizeScope } from "@server/auth/middleware";
 import type { Env } from "@server/env";
+import { finishWebhookTask } from "@server/http/tasks/dispatchAssignedTask";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
@@ -23,7 +24,13 @@ export function registerGithubWebhookRoutes(api: Hono<{ Bindings: Env }>): void 
     }
     const event = c.req.header("x-github-event");
     const payload = JSON.parse(body);
-    if (event === "pull_request") return c.json({ ok: true, ...(await handleGithubPullRequestEvent(c.env.DB, c.env, payload)) });
+    if (event === "pull_request")
+      return c.json({
+        ok: true,
+        ...(await handleGithubPullRequestEvent(c.env.DB, c.env, payload, (ownerId, taskId) =>
+          finishWebhookTask(c.env, ownerId, taskId, c.get("traceparent")),
+        )),
+      });
     if (event === "installation") return c.json({ ok: true, ...(await handleGithubInstallationEvent(c.env.DB, payload)) });
     if (event === "installation_repositories") {
       return c.json({ ok: true, ...(await handleGithubInstallationRepositoriesEvent(c.env.DB, payload)) });

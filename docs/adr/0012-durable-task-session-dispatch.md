@@ -50,6 +50,16 @@ Reuse AK's existing token-exchange integration for Enbor calls, with the require
 Session and Vault scope mappings. Retire Inbox's M2M notification path with the
 old startup path. Do not reuse M2M as a substitute for delegated Enbor authority.
 
+GitHub completion callbacks reuse a persistent user authorization from AK web
+login. Migration 0057 replaces the browser-Session-keyed grant table with one
+encrypted grant per tenant/user; browser logout no longer deletes the background
+authorization. Agent Task creation without its controller's grant returns a
+clear `user-login-required` error directing that user to web login. Assignment
+records the authorizing user in the Task's reserved metadata. The webhook uses
+each Task's recorded user to refresh and exchange tokens through the existing
+Web Application, then performs Session settlement and dependency dispatch.
+This adds neither an Application nor M2M authority nor a Task authorization table.
+
 Repository preparation uses the connected GitHub App's temporary token,
 restricted to one verified repository and read-only contents. Pass it through
 an Enbor Vault credential and Git volume secretRef. Task metadata contains

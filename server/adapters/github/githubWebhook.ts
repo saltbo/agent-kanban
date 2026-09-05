@@ -46,6 +46,7 @@ export async function handleGithubPullRequestEvent(
   db: D1,
   _env: Env,
   payload: { action?: string; pull_request?: { html_url?: string; merged?: boolean } },
+  finishTask: (ownerId: string, taskId: string) => Promise<void>,
 ): Promise<{ handled: boolean; tasks: string[] }> {
   if (payload.action !== "closed") return { handled: false, tasks: [] };
   const prUrl = payload.pull_request?.html_url;
@@ -57,15 +58,20 @@ export async function handleGithubPullRequestEvent(
       SELECT t.id, t.status, b.owner_id FROM tasks t
       JOIN boards b ON t.board_id = b.id
       WHERE t.pr_url = ?
-        AND t.status IN ('in_review', 'in_progress')
+        AND t.status IN ('in_review', 'in_progress', ?)
     `)
-    .bind(prUrl)
+    .bind(prUrl, merged ? "done" : "cancelled")
     .all<{ id: string; status: string; owner_id: string }>();
 
   const transitioned: string[] = [];
   for (const row of rows.results) {
     const fresh = await getTask(db, row.id, row.owner_id);
     if (!fresh) continue;
+    if (fresh.status === (merged ? "done" : "cancelled")) {
+      await finishTask(row.owner_id, row.id);
+      transitioned.push(row.id);
+      continue;
+    }
     if (merged) {
       if (row.status !== "in_review") {
         // PR merged while the task is still in_progress: the agent has not
@@ -97,6 +103,7 @@ export async function handleGithubPullRequestEvent(
         actor: { type: "system", id: "github" },
       });
     }
+    await finishTask(row.owner_id, row.id);
     transitioned.push(row.id);
   }
   return { handled: true, tasks: transitioned };

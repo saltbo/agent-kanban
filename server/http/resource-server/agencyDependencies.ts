@@ -25,13 +25,26 @@ export async function agencyAuthorization(c: Context<{ Bindings: Env }>, scopes:
   const storedProjectId = await binding.findProjectId(principal.tenantId);
   const token = await delegatedAgencyToken(c.env, {
     sourceAccessToken: principal.sourceAccessToken,
-    webSessionId: c.get("session")?.id,
+    user: { tenantId: principal.tenantId, subjectId: principal.subjectId },
     scopes: storedProjectId ? scopes : [...scopes, "projects:read", "projects:write"],
   });
   const projectId =
     storedProjectId ??
     (await ensureAgencyProject(binding, createAgencyClient(origin, { token, traceparent: c.get("traceparent") }), principal.tenantId));
   return { projectId, token, origin };
+}
+
+export async function userAgencyDependencies(
+  env: Env,
+  user: { tenantId: string; subjectId: string },
+  scopes: readonly string[],
+  traceparent?: string,
+) {
+  const origin = requiredAgencyOrigin(env);
+  const projectId = await new D1AgencyProjectBindingAdapter(env.DB).findProjectId(user.tenantId);
+  if (!projectId) throw new EnborApiError(undefined, "The Task tenant has no Enbor Project binding", null);
+  const token = await delegatedAgencyToken(env, { user, scopes });
+  return { projectId, client: createAgencyClient(origin, { token, projectId, traceparent }) };
 }
 
 export function requiredAgencyOrigin(env: Env): string {

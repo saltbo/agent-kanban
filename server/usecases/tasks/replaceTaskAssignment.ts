@@ -19,6 +19,7 @@ export interface TaskAssignmentRepository {
     taskId: string;
     assigneeActorId: string;
     assignedByActorId: string;
+    authorizationSubjectId?: string;
     expectedTaskVersion?: number;
   }): Promise<TaskAssignmentCommit | null>;
 }
@@ -45,7 +46,14 @@ export class TaskAssignmentFailure extends Error {
 
 export async function replaceTaskAssignment(
   repository: TaskAssignmentRepository,
-  input: { ownerId: string; taskId: string; assigneeActorId: string; assignedByActorId: string; expectedTaskVersion?: number },
+  input: {
+    ownerId: string;
+    taskId: string;
+    assigneeActorId: string;
+    assignedByActorId: string;
+    authorizationSubjectId?: string;
+    expectedTaskVersion?: number;
+  },
 ): Promise<{ assignment: TaskAssignment; version: string; created: boolean }> {
   const target = await repository.findTarget(input.ownerId, input.taskId);
   if (!target) throw new TaskAssignmentFailure("TASK_NOT_FOUND", "Task not found");

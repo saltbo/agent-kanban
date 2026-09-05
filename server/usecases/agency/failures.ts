@@ -1,4 +1,10 @@
-export type RealmrootDelegationFailureKind = "authority-required" | "denied" | "reauthenticate" | "invalid-response" | "unavailable";
+export type RealmrootDelegationFailureKind =
+  | "user-login-required"
+  | "authority-required"
+  | "denied"
+  | "reauthenticate"
+  | "invalid-response"
+  | "unavailable";
 
 export class RealmrootDelegationFailure extends Error {
   constructor(

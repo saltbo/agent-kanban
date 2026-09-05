@@ -246,6 +246,8 @@ function baseDocument(env: Env) {
         },
         post: {
           ...operation("createTask", "task:write", "Task created", "201"),
+          description:
+            "Agent callers require a saved authorization for their controller user from AK web login. Otherwise returns 409 user-login-required without creating a Task; ask the associated user to sign in to AK in a web browser.",
           parameters: [version, idempotencyKey],
           requestBody: {
             required: true,

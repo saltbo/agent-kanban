@@ -10,7 +10,12 @@ The browser discovers the configured OIDC issuer and starts authorization code
 flow with PKCE, `state`, and `nonce`. The callback validates the ID token issuer,
 audience, signature, lifetime, and nonce before storing an opaque AK session in
 an HttpOnly cookie. Access and refresh grants used for downstream Agency access
-remain server-side. Unsafe browser mutations require the session CSRF token;
+remain encrypted server-side in `realmroot_user_grants`, keyed by tenant and
+user subject. This replaces `realmroot_web_session_grants`; there is no second
+copy of the grant per Task. Reauthentication updates that user's existing grant.
+Browser logout removes the login Session, while the user authorization remains
+available for already assigned background work. Invalid refresh authorization
+requires the user to sign in again. Unsafe browser mutations require the session CSRF token;
 logout removes the local session before using the provider's discovered logout
 endpoint. Realmroot is the current OIDC provider, not the owner of this protocol
 flow.
@@ -40,3 +45,24 @@ Each tenant's Agency Project binding is created lazily as described in
 authorized independently with server-held or exchanged Agency grants.
 
 See [ADR 0002](../adr/0002-oidc-and-agent-authentication.md).
+
+## Task background authorization
+
+An Agent creating a Task must have a saved AK web-login grant for its controller
+in the same tenant. Without it, creation returns `409 user-login-required`, asks
+the associated user to sign in to AK in a browser, and writes no Task. Another
+member's grant cannot satisfy this requirement. Assignment also checks the grant
+and atomically records the authorizing user at
+`metadata["agent-kanban.dev/authorization-subject"]`. This reserved value is a
+user ID, never a token, and clients cannot change it through metadata writes.
+
+A signed GitHub PR close/merge event performs the normal Task transition, settles
+its exact Session, and dispatches eligible dependent Tasks. Each Task uses its
+own recorded user's grant and the tenant's existing Project binding. AK refreshes
+its user access token when needed and exchanges it for narrowly scoped Enbor
+access using the same Web Application. No client-credentials token or M2M identity
+is used. A refresh lease in the same grant row prevents concurrent requests from
+rotating one refresh token twice; a busy refresh is an explicit temporary error.
+Repeated webhook delivery can finish terminal Task effects without duplicating
+Session creation. Errors propagate to the webhook caller; failed effects are
+not reported as completed.

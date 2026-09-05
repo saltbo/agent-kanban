@@ -83,6 +83,7 @@ export async function applyMigrations(db: D1Database) {
     "0054_realmroot_web_session_scopes.sql",
     "0055_task_service_actor_types.sql",
     "0056_task_version.sql",
+    "0057_realmroot_user_grants.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
