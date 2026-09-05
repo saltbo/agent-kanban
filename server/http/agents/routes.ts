@@ -45,7 +45,7 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
     const permissionToken = await delegatedResourceToken(c.env, {
       user: { tenantId: principal.tenantId, subjectId: principal.subjectId },
       resource: platformResource,
-      scopes: ["permissions:read", "permissions:write"],
+      scopes: ["agents:write"],
     });
     const { client } = await agencyDependencies(c, ["identities:write", "agents:write"]);
     const agent = await createAgencyAgent(client, {
