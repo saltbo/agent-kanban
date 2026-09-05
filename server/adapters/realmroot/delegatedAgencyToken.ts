@@ -69,6 +69,13 @@ export async function delegatedAgencyToken(
   env: Env,
   input: { sourceAccessToken?: string; user?: UserGrantIdentity; scopes: readonly string[] },
 ): Promise<string> {
+  return delegatedResourceToken(env, { ...input, resource: agencyResource(env) });
+}
+
+export async function delegatedResourceToken(
+  env: Env,
+  input: { sourceAccessToken?: string; user?: UserGrantIdentity; scopes: readonly string[]; resource: string },
+): Promise<string> {
   const subjectToken = input.sourceAccessToken ?? (input.user ? await userAccessToken(env, input.user) : null);
   if (!subjectToken) throw new RealmrootDelegationFailure("authority-required", "A current Realmroot authority is required.");
   const endpoint = await tokenEndpoint(env.OIDC_ISSUER);
@@ -85,7 +92,7 @@ export async function delegatedAgencyToken(
         subject_token: subjectToken,
         subject_token_type: ACCESS_TOKEN_TYPE,
         requested_token_type: ACCESS_TOKEN_TYPE,
-        audience: agencyResource(env),
+        audience: input.resource,
         scope: [...new Set(input.scopes)].join(" "),
       }),
       signal: AbortSignal.timeout(10_000),

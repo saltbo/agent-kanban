@@ -1,3 +1,5 @@
+import { RESOURCE_SCOPES } from "../../../server/auth/realmroot";
+import { DEFAULT_GITHUB_SCOPES } from "../../../server/usecases/agents/defaultPermissions";
 // @vitest-environment node
 
 import { createHash, randomUUID } from "node:crypto";
@@ -34,6 +36,7 @@ beforeEach(async () => {
     DB: fixture.db,
     AK_PUBLIC_ORIGIN: new URL(resource).origin,
     AGENCY_ORIGIN: "https://enbor.projection.test",
+    GITHUB_RESOURCE: "https://adapters.test/github",
     AK_SESSION_ENCRYPTION_KEY: btoa("01234567890123456789012345678901"),
   } as Env;
   await fixture.db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(ownerId, projectId).run();
@@ -121,9 +124,35 @@ function delegatedAgencyFetch(scopes: string[], upstream: (request: Request) => 
       const body = new URLSearchParams(await request.text());
       expect(body.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
       expect(body.get("subject_token")).toBe("ak-browser-access-token");
+      if (body.get("audience") === "https://id.realmroot.dev/api") {
+        expect(body.get("scope")).toBe("permissions:read permissions:write");
+        return Response.json({ access_token: "platform-user-token" });
+      }
       expect(body.get("audience")).toBe("https://enbor.projection.test/api");
       expect(body.get("scope")?.split(" ")).toEqual(scopes);
       return Response.json({ access_token: "enbor-access-token" });
+    }
+    if (request.url.startsWith("https://id.realmroot.dev/api/agents/")) {
+      expect(request.headers.get("authorization")).toBe("Bearer platform-user-token");
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/permission-contexts")) {
+        const ak = url.searchParams.get("resource") === resource;
+        return Response.json({
+          resourceServerId: ak ? "ak-resource" : "github-resource",
+          items: [
+            {
+              id: ak ? ownerId : null,
+              name: ak ? "AK" : "GitHub",
+              authorizationDetail: { type: "context", id: ak ? ownerId : "github" },
+              authorizedScopes: [],
+              requestableScopes: ak ? RESOURCE_SCOPES : DEFAULT_GITHUB_SCOPES,
+            },
+          ],
+          pagination: { totalPages: 1 },
+        });
+      }
+      const body = (await request.json()) as { scope: string };
+      return Response.json({ agentId: "realmroot-concurrent", scope: body.scope, mode: "persistent", status: "active" });
     }
     return upstream(request);
   });
@@ -611,7 +640,7 @@ describe("Agent and Machine projection HTTP resources", () => {
               model: null,
               skills: ["saltbo/agent-kanban@agent-kanban"],
               allowedTools: [],
-              identity: { subject: "agent-concurrent-subject", username: "concurrent-agent", runtime: "codex" },
+              identity: { agentId: "realmroot-concurrent", subject: "agent-concurrent-subject", username: "concurrent-agent", runtime: "codex" },
             },
             status: { phase: "active", schedulable: true },
           });

@@ -8,6 +8,7 @@ export interface Env {
   OIDC_WEB_CLIENT_SECRET: string;
   AK_SESSION_ENCRYPTION_KEY: string;
   AGENCY_ORIGIN: string;
+  GITHUB_RESOURCE: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;
   // base64 of the App's PKCS#8 PEM private key

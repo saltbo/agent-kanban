@@ -32,6 +32,8 @@ Feature: Agent projections
     And AK does not create an Inbox Trigger because Task assignment directly creates a Session
     And replays the compound operation without duplicate resources when its Idempotency-Key is retried
     And stores no local Agent entity
+    And grants the new identity its default AK and GitHub permissions before returning success
+    And a permission failure identifies the created Agent and a retry resumes without duplicates
 
   @journey:agents/assignment-subject @entrypoint:toolbox @proof:unit
   Scenario: Assign a Task by projected Agent subject
@@ -65,3 +67,12 @@ Feature: Agent projections
     Then it shows the current profile name and picture
     And repeated appearances of the same subject reuse the cached profile
     And an unavailable profile falls back to the existing Agent name or subject
+
+  @journey:agents/default-permissions @entrypoint:toolbox @proof:unit
+  Scenario: New Agents receive permissions before their first task
+    Given the creating user has connected GitHub and authorized the required scopes
+    When AK provisions a new Agent
+    Then AK grants persistent AK permissions in the current tenant Context
+    And AK grants the development, Issue, and CI permissions in the connected GitHub Contexts
+    And missing scopes fail explicitly instead of returning partial permission success
+    And existing Agents are not updated
