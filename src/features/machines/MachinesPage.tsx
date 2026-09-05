@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Cloud, Cpu, Monitor, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -17,6 +18,7 @@ import {
 } from "@/features/machines/useMachines";
 
 export function MachinesPage() {
+  const queryClient = useQueryClient();
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [pageIndex, setPageIndex] = useState(0);
   const [pageTokens, setPageTokens] = useState<(string | undefined)[]>([undefined]);
@@ -37,6 +39,9 @@ export function MachinesPage() {
   useEffect(() => {
     if (!tracking) return;
     if (trackedMachine?.status === "online") {
+      void queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey[0] === "machines" && typeof query.queryKey[1] === "object",
+      });
       setTracking(null);
       setTrackingTimedOut(null);
       return;
@@ -56,7 +61,7 @@ export function MachinesPage() {
       window.clearInterval(interval);
       window.clearTimeout(timeout);
     };
-  }, [refetchTrackedMachine, trackedMachine?.status, tracking]);
+  }, [queryClient, refetchTrackedMachine, trackedMachine?.status, tracking]);
 
   async function addMachine() {
     createAttempt.current ??= { key: crypto.randomUUID() };
