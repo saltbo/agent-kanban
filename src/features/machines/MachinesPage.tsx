@@ -1,15 +1,29 @@
 import { Cloud, Cpu, Monitor, Plus, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { DEFAULT_PAGE_SIZE, ResourcePagination } from "@/components/resource-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Header } from "@/features/boards/components/Header";
 import { MachineRunnerSetup } from "@/features/machines/MachineRunnerSetup";
-import { type MachineCreateResult, type MachineProjection, useCreateMachine, useDeleteMachine, useMachines } from "@/features/machines/useMachines";
+import {
+  type MachineCreateResult,
+  type MachineProjection,
+  useCreateMachine,
+  useDeleteMachine,
+  useMachine,
+  useMachines,
+} from "@/features/machines/useMachines";
 
 export function MachinesPage() {
-  const { data = [], isLoading, error, refetch } = useMachines();
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageTokens, setPageTokens] = useState<(string | undefined)[]>([undefined]);
+  const pageParams = useMemo(() => ({ pageSize, pageToken: pageTokens[pageIndex] }), [pageIndex, pageSize, pageTokens]);
+  const { data, isFetching, isLoading, error, refetch } = useMachines(pageParams);
+  const machines = data?.items ?? [];
+  const nextPageToken = data?.pagination.nextPageToken ?? undefined;
   const create = useCreateMachine();
   const remove = useDeleteMachine();
   const [adding, setAdding] = useState(false);
@@ -17,11 +31,12 @@ export function MachinesPage() {
   const [deleting, setDeleting] = useState<MachineProjection | null>(null);
   const [tracking, setTracking] = useState<{ machineId: string; deadline: number } | null>(null);
   const [trackingTimedOut, setTrackingTimedOut] = useState<string | null>(null);
+  const { data: trackedMachine, refetch: refetchTrackedMachine } = useMachine(tracking?.machineId);
   const createAttempt = useRef<{ key: string } | null>(null);
 
   useEffect(() => {
     if (!tracking) return;
-    if (data.some((machine) => machine.id === tracking.machineId && machine.status === "online")) {
+    if (trackedMachine?.status === "online") {
       setTracking(null);
       setTrackingTimedOut(null);
       return;
@@ -32,7 +47,7 @@ export function MachinesPage() {
       setTracking(null);
       return;
     }
-    const interval = window.setInterval(() => void refetch(), 2_000);
+    const interval = window.setInterval(() => void refetchTrackedMachine(), 2_000);
     const timeout = window.setTimeout(() => {
       setTrackingTimedOut(tracking.machineId);
       setTracking(null);
@@ -41,7 +56,7 @@ export function MachinesPage() {
       window.clearInterval(interval);
       window.clearTimeout(timeout);
     };
-  }, [data, refetch, tracking]);
+  }, [refetchTrackedMachine, trackedMachine?.status, tracking]);
 
   async function addMachine() {
     createAttempt.current ??= { key: crypto.randomUUID() };
@@ -50,6 +65,7 @@ export function MachinesPage() {
       createAttempt.current = null;
       setAdding(false);
       setSetup(result);
+      resetPage();
       setTrackingTimedOut(null);
       setTracking({ machineId: result.machine.id, deadline: Date.now() + 30_000 });
     } catch {
@@ -70,9 +86,15 @@ export function MachinesPage() {
     try {
       await remove.mutateAsync(deleting.id);
       setDeleting(null);
+      resetPage();
     } catch {
       // The mutation exposes the actionable API error in the dialog.
     }
+  }
+
+  function resetPage() {
+    setPageIndex(0);
+    setPageTokens([undefined]);
   }
 
   return (
@@ -96,14 +118,55 @@ export function MachinesPage() {
           </Button>
         </div>
         {error ? (
-          <p className="text-sm text-error">{error.message}</p>
+          <div className="space-y-3">
+            <p className="text-sm text-error">{error.message}</p>
+            <ResourcePagination
+              pageNumber={pageIndex + 1}
+              pageSize={pageSize}
+              hasNextPage={Boolean(nextPageToken)}
+              isFetching={isFetching}
+              onPreviousPage={() => setPageIndex((value) => Math.max(0, value - 1))}
+              onNextPage={() => {
+                if (!nextPageToken) return;
+                setPageTokens((tokens) => [...tokens.slice(0, pageIndex + 1), nextPageToken]);
+                setPageIndex((value) => value + 1);
+              }}
+              onPageSizeChange={(value) => {
+                setPageSize(value);
+                setPageIndex(0);
+                setPageTokens([undefined]);
+              }}
+              onRetry={() => void refetch()}
+            />
+          </div>
         ) : isLoading ? (
           <div className="h-32 animate-pulse rounded-lg border border-border bg-surface-secondary" />
-        ) : data.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border py-16 text-center text-sm text-content-tertiary">No Machines registered.</div>
+        ) : machines.length === 0 ? (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-dashed border-border py-16 text-center text-sm text-content-tertiary">
+              No Machines registered.
+            </div>
+            <ResourcePagination
+              pageNumber={pageIndex + 1}
+              pageSize={pageSize}
+              hasNextPage={Boolean(nextPageToken)}
+              isFetching={isFetching}
+              onPreviousPage={() => setPageIndex((value) => Math.max(0, value - 1))}
+              onNextPage={() => {
+                if (!nextPageToken) return;
+                setPageTokens((tokens) => [...tokens.slice(0, pageIndex + 1), nextPageToken]);
+                setPageIndex((value) => value + 1);
+              }}
+              onPageSizeChange={(value) => {
+                setPageSize(value);
+                setPageIndex(0);
+                setPageTokens([undefined]);
+              }}
+            />
+          </div>
         ) : (
           <div className="space-y-3">
-            {data.map((machine) => (
+            {machines.map((machine) => (
               <div key={machine.id} className="flex items-center gap-4 rounded-lg border border-border bg-surface-secondary px-5 py-4">
                 <div className="grid size-9 place-items-center rounded-md border border-border bg-surface-primary text-accent">
                   <Cpu className="size-4" />
@@ -122,6 +185,23 @@ export function MachinesPage() {
                 </Button>
               </div>
             ))}
+            <ResourcePagination
+              pageNumber={pageIndex + 1}
+              pageSize={pageSize}
+              hasNextPage={Boolean(nextPageToken)}
+              isFetching={isFetching}
+              onPreviousPage={() => setPageIndex((value) => Math.max(0, value - 1))}
+              onNextPage={() => {
+                if (!nextPageToken) return;
+                setPageTokens((tokens) => [...tokens.slice(0, pageIndex + 1), nextPageToken]);
+                setPageIndex((value) => value + 1);
+              }}
+              onPageSizeChange={(value) => {
+                setPageSize(value);
+                setPageIndex(0);
+                setPageTokens([undefined]);
+              }}
+            />
           </div>
         )}
       </main>

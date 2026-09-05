@@ -1,6 +1,6 @@
 import type { Task } from "@shared";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, type PageResponse } from "@/lib/api";
 
 export interface AgentProjection {
   id: string;
@@ -20,12 +20,14 @@ export interface AgentFilters {
   search?: string;
   runtime?: string;
   schedulable?: boolean;
+  pageSize?: number;
+  pageToken?: string;
 }
 
 export function useAgents(filters: AgentFilters = {}) {
   return useQuery({
     queryKey: ["agents", filters],
-    queryFn: async () => (await api.agents.list(filters)).items as AgentProjection[],
+    queryFn: async () => (await api.agents.list(filters)) as PageResponse<AgentProjection>,
   });
 }
 

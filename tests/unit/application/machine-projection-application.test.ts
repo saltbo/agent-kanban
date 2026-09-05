@@ -24,7 +24,7 @@ describe("Machine SDK orchestration", () => {
     const runnersList = vi
       .fn()
       .mockResolvedValueOnce({
-        data: [selfHostedRunnerA, managedRunner],
+        data: [selfHostedRunnerA],
         pagination: { nextCursor: "runner-next" },
       })
       .mockResolvedValueOnce({ data: [selfHostedRunnerB], pagination: { nextCursor: null } });
@@ -39,9 +39,10 @@ describe("Machine SDK orchestration", () => {
     });
     expect(environmentsList).toHaveBeenCalledWith({ limit: 20, cursor: "environment-cursor" });
     expect(runnersList.mock.calls).toEqual([
-      [{ limit: 100, cursor: undefined, environmentId: undefined }],
-      [{ limit: 100, cursor: "runner-next", environmentId: undefined }],
+      [{ limit: 100, cursor: undefined, environmentId: selfHosted.metadata.uid }],
+      [{ limit: 100, cursor: "runner-next", environmentId: selfHosted.metadata.uid }],
     ]);
+    expect(managedRunner.environmentId).toBe(managed.metadata.uid);
   });
 
   it("[spec: machines/create-runner-setup] creates a self-hosted SDK Environment and returns Runner setup", async () => {

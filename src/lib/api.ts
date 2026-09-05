@@ -3,6 +3,14 @@ import { getCsrfToken, getSession } from "./auth-client";
 
 const API_BASE = "/api";
 
+export interface PageResponse<T> {
+  items: T[];
+  pagination: {
+    pageSize: number;
+    nextPageToken?: string | null;
+  };
+}
+
 function apiError(response: Response, data: any): Error {
   const error = new Error(data.error?.message || data.detail || `HTTP ${response.status}`);
   (error as any).code = data.error?.code || data.type || "UNKNOWN";
@@ -47,7 +55,7 @@ async function allPageItems<T>(path: string, params?: URLSearchParams): Promise<
   const items: T[] = [];
   while (true) {
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    const page = await request<{ items: T[]; pagination: { nextPageToken?: string } }>("GET", `${path}${suffix}`);
+    const page = await request<PageResponse<T>>("GET", `${path}${suffix}`);
     items.push(...page.items);
     if (!page.pagination.nextPageToken) return items;
     query.set("pageToken", page.pagination.nextPageToken);
@@ -206,18 +214,26 @@ export const api = {
     delete: (id: string) => request<void>("DELETE", `/repositories/${id}`),
   },
   agents: {
-    list: (params?: { search?: string; runtime?: string; schedulable?: boolean }) => {
+    list: (params?: { search?: string; runtime?: string; schedulable?: boolean; pageSize?: number; pageToken?: string }) => {
       const query = new URLSearchParams();
       if (params?.search) query.set("search", params.search);
       if (params?.runtime) query.set("runtime", params.runtime);
       if (params?.schedulable !== undefined) query.set("schedulable", String(params.schedulable));
+      if (params?.pageSize !== undefined) query.set("pageSize", String(params.pageSize));
+      if (params?.pageToken) query.set("pageToken", params.pageToken);
       const suffix = query.size > 0 ? `?${query.toString()}` : "";
-      return request<{ items: any[] }>("GET", `/agents${suffix}`);
+      return request<PageResponse<any>>("GET", `/agents${suffix}`);
     },
     get: (id: string) => request<any>("GET", `/agents/${encodeURIComponent(id)}`),
   },
   machines: {
-    list: () => request<{ items: any[] }>("GET", "/machines"),
+    list: (params?: { pageSize?: number; pageToken?: string }) => {
+      const query = new URLSearchParams();
+      if (params?.pageSize !== undefined) query.set("pageSize", String(params.pageSize));
+      if (params?.pageToken) query.set("pageToken", params.pageToken);
+      const suffix = query.size > 0 ? `?${query.toString()}` : "";
+      return request<PageResponse<any>>("GET", `/machines${suffix}`);
+    },
     get: (id: string) => request<any>("GET", `/machines/${encodeURIComponent(id)}`),
     create: (idempotencyKey: string) => request<any>("POST", "/machines", undefined, { "Idempotency-Key": idempotencyKey }),
     delete: (id: string) => request<void>("DELETE", `/machines/${encodeURIComponent(id)}`),

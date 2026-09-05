@@ -71,4 +71,38 @@ describe("Browser collection pagination", () => {
 
     await expect(api.boards.list()).rejects.toMatchObject({ message: "Collection unavailable", status: 503 });
   });
+
+  it("[spec: agents/read-only-browser] requests one Agent page with filters and opaque cursor", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        seen.push(String(input));
+        return Response.json({ items: [{ id: "agent-2" }], pagination: { pageSize: 1, nextPageToken: "later" } });
+      }),
+    );
+
+    const page = await api.agents.list({ search: "backend", runtime: "codex", schedulable: true, pageSize: 1, pageToken: "next+/=" });
+
+    expect(page.items).toEqual([{ id: "agent-2" }]);
+    expect(page.pagination.nextPageToken).toBe("later");
+    expect(seen).toEqual(["/api/agents?search=backend&runtime=codex&schedulable=true&pageSize=1&pageToken=next%2B%2F%3D"]);
+  });
+
+  it("[spec: machines/environment-projection] requests one Machine page with an opaque cursor", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        seen.push(String(input));
+        return Response.json({ items: [{ id: "machine-2" }], pagination: { pageSize: 1 } });
+      }),
+    );
+
+    const page = await api.machines.list({ pageSize: 1, pageToken: "next+/=" });
+
+    expect(page.items).toEqual([{ id: "machine-2" }]);
+    expect(page.pagination.nextPageToken).toBeUndefined();
+    expect(seen).toEqual(["/api/machines?pageSize=1&pageToken=next%2B%2F%3D"]);
+  });
 });

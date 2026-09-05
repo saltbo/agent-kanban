@@ -11,11 +11,10 @@ export async function listMachinesPage(
   page: { limit: number; cursor: string | null },
 ): Promise<{ items: MachineProjection[]; nextCursor: string | null }> {
   const environments = await client.environments.list({ limit: page.limit, cursor: page.cursor ?? undefined });
-  const runners = await listAllRunners(client);
+  const selfHostedEnvironments = environments.data.filter((environment) => environment.spec.type === "self_hosted");
+  const runnersByEnvironment = await Promise.all(selfHostedEnvironments.map((environment) => listAllRunners(client, environment.metadata.uid)));
   return {
-    items: environments.data
-      .filter((environment) => environment.spec.type === "self_hosted")
-      .map((environment) => ({ environment, runners: runners.filter((runner) => runner.environmentId === environment.metadata.uid) })),
+    items: selfHostedEnvironments.map((environment, index) => ({ environment, runners: runnersByEnvironment[index] ?? [] })),
     nextCursor: environments.pagination.nextCursor,
   };
 }
