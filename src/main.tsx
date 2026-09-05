@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { applyTheme, getTheme } from "@/lib/theme";
 import { App } from "./App";
 import "./globals.css";
 
@@ -17,11 +18,7 @@ const queryClient = new QueryClient({
 
 const root = document.getElementById("root")!;
 
-// Apply theme from localStorage or system preference
-const stored = localStorage.getItem("theme");
-if (stored === "dark" || (!stored && matchMedia("(prefers-color-scheme: dark)").matches)) {
-  document.documentElement.classList.add("dark");
-}
+applyTheme(getTheme());
 
 createRoot(root).render(
   <StrictMode>

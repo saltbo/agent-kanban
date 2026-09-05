@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { LocalAgentProfiles } from "@/features/agent-identity/LocalAgentProfiles";
 import { AgentAvatarOverlay } from "@/features/boards/components/FloatingAvatar";
 import { KanbanColumn } from "@/features/boards/components/KanbanColumn";
 import type { AgentAvatar } from "@/features/boards/hooks/useAgentPresence";
@@ -27,6 +28,10 @@ const A = [
   { id: "demo-forge", name: "Forge" },
   { id: "demo-sentinel", name: "Sentinel" },
 ];
+
+const DEMO_PROFILES = Object.fromEntries(
+  A.map((agent) => [agent.id, { subject: agent.id, name: agent.name, username: null, picture: "", runtime: null }]),
+);
 
 const TID = ["dt1", "dt2", "dt3", "dt4", "dt5", "dt6", "dt7"];
 
@@ -273,42 +278,44 @@ function useDemoSequence() {
 export function DemoBoard({ onContinue, onSkip }: { onContinue: () => void; onSkip?: () => void }) {
   const { columns, avatars, done, replay } = useDemoSequence();
   return (
-    <div className="relative">
-      <div className="hidden md:grid grid-cols-5 min-h-[50vh]">
-        {columns.map((c) => (
-          <KanbanColumn key={c.status} column={c} labels={DEMO_LABELS} onTaskClick={() => {}} />
-        ))}
-      </div>
-      <div className="md:hidden min-h-[40vh] grid grid-cols-2">
-        {columns
-          .filter((c) => c.status === "todo" || c.status === "in_progress")
-          .map((c) => (
+    <LocalAgentProfiles.Provider value={DEMO_PROFILES}>
+      <div className="relative">
+        <div className="hidden md:grid grid-cols-5 min-h-[50vh]">
+          {columns.map((c) => (
             <KanbanColumn key={c.status} column={c} labels={DEMO_LABELS} onTaskClick={() => {}} />
           ))}
-      </div>
-      <AgentAvatarOverlay avatars={avatars} />
-      {!done && onSkip && (
-        <div className="text-center mt-4">
-          <Button variant="ghost" size="sm" onClick={onSkip} className="text-xs text-content-tertiary">
-            Skip demo
-          </Button>
         </div>
-      )}
-      {done && (
-        <div className="absolute inset-0 flex items-center justify-center bg-surface-primary/80 backdrop-blur-sm">
-          <div className="text-center space-y-4">
-            <p className="text-lg font-semibold text-content-primary">Your agents are waiting.</p>
-            <div className="flex flex-col items-center gap-3 w-48">
-              <Button onClick={onContinue} className="w-full">
-                Set up your board
-              </Button>
-              <Button variant="outline" onClick={replay} className="w-full">
-                Replay
-              </Button>
+        <div className="md:hidden min-h-[40vh] grid grid-cols-2">
+          {columns
+            .filter((c) => c.status === "todo" || c.status === "in_progress")
+            .map((c) => (
+              <KanbanColumn key={c.status} column={c} labels={DEMO_LABELS} onTaskClick={() => {}} />
+            ))}
+        </div>
+        <AgentAvatarOverlay avatars={avatars} />
+        {!done && onSkip && (
+          <div className="text-center mt-4">
+            <Button variant="ghost" size="sm" onClick={onSkip} className="text-xs text-content-tertiary">
+              Skip demo
+            </Button>
+          </div>
+        )}
+        {done && (
+          <div className="absolute inset-0 flex items-center justify-center bg-surface-primary/80 backdrop-blur-sm">
+            <div className="text-center space-y-4">
+              <p className="text-lg font-semibold text-content-primary">Your agents are waiting.</p>
+              <div className="flex flex-col items-center gap-3 w-48">
+                <Button onClick={onContinue} className="w-full">
+                  Set up your board
+                </Button>
+                <Button variant="outline" onClick={replay} className="w-full">
+                  Replay
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </LocalAgentProfiles.Provider>
   );
 }

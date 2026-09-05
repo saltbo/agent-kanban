@@ -11,6 +11,7 @@ import { BoardSettingsPage } from "@/features/boards/BoardSettingsPage";
 import { NewBoardPage } from "@/features/boards/NewBoardPage";
 import { SharePage } from "@/features/boards/SharePage";
 import { LandingPage } from "@/features/landing/LandingPage";
+import { NotFoundPage } from "@/features/landing/NotFoundPage";
 import { MachineDetailPage } from "@/features/machines/MachineDetailPage";
 import { MachinesPage } from "@/features/machines/MachinesPage";
 import { RepositoriesPage } from "@/features/repositories/RepositoriesPage";
@@ -36,6 +37,7 @@ export function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route path="*" element={<NotFoundPage />} />
         <Route path="/auth" element={<AuthPage />} />
         <Route path="/landing" element={<LandingPage />} />
         <Route path="/share/:slug" element={<SharePage />} />

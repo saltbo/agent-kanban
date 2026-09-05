@@ -102,9 +102,9 @@ export function resourceIdempotencyFor<T extends { id: string }>(
   };
 }
 
-export async function readJsonBody<T>(c: ApiContext): Promise<T | Response> {
-  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    return v2Problem(c, 415, "unsupported-media-type", "Unsupported media type", "Content-Type must be application/json");
+export async function readJsonBody<T>(c: ApiContext, mediaTypes = ["application/json"]): Promise<T | Response> {
+  if (!mediaTypes.includes(c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "")) {
+    return v2Problem(c, 415, "unsupported-media-type", "Unsupported media type", `Content-Type must be ${mediaTypes.join(" or ")}`);
   }
   try {
     return await c.req.json<T>();

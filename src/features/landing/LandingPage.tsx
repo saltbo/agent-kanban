@@ -135,7 +135,10 @@ function Footer() {
           >
             GitHub
           </a>
-          <a href="#" className="text-sm text-content-tertiary hover:text-content-primary transition-colors">
+          <a
+            href="https://github.com/saltbo/agent-kanban#readme"
+            className="text-sm text-content-tertiary hover:text-content-primary transition-colors"
+          >
             Documentation
           </a>
         </nav>

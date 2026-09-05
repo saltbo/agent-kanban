@@ -78,7 +78,9 @@ export function ChatPanel({ taskId, agentId, taskDone, runtimeSessionId }: ChatP
 
   return (
     <div className="flex-1 flex items-center justify-center px-6">
-      <p className="text-sm text-content-tertiary text-center">Chat history is not available for this task.</p>
+      <p className="text-sm text-content-tertiary text-center">
+        No execution session is linked to this task. Task notes and review are still available in task details.
+      </p>
     </div>
   );
 }

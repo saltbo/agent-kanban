@@ -11,6 +11,7 @@ import {
 import { createBoardSSEResponse } from "@server/adapters/stream/boardSSE";
 import { authorizeScope } from "@server/auth/middleware";
 import type { Env } from "@server/env";
+import { assertBoardLabel, assertBoardUpdate } from "@server/http/boards/request";
 import { pageResponse, readPageWindow } from "@server/http/resource-server/pagination";
 import { boardResource } from "@server/http/resource-server/representation";
 import {
@@ -20,7 +21,7 @@ import {
   readJsonBody,
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
-import { type BoardLabel, isBoardType } from "@shared";
+import { isBoardType } from "@shared";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
@@ -54,7 +55,9 @@ export function registerBoardRoutes(api: Hono<{ Bindings: Env }>): void {
   });
 
   api.patch("/api/boards/:id", authorizeScope("board:write"), async (c) => {
-    const body = await c.req.json<{ name?: string; description?: string; visibility?: "private" | "public"; labels?: BoardLabel[] }>();
+    const body = await readJsonBody<unknown>(c, ["application/json", "application/merge-patch+json"]);
+    if (body instanceof Response) return body;
+    assertBoardUpdate(body);
     const board = await updateBoard(c.env.DB, c.req.param("id")!, c.get("ownerId"), body);
     if (!board) throw new HTTPException(404, { message: "Board not found" });
     return c.json(boardResource(board, c.req.url));
@@ -68,7 +71,9 @@ export function registerBoardRoutes(api: Hono<{ Bindings: Env }>): void {
   });
 
   api.post("/api/boards/:id/labels", authorizeScope("board:write"), async (c) => {
-    const body = await c.req.json<{ name: string; color: string; description?: string }>();
+    const body = await readJsonBody<unknown>(c);
+    if (body instanceof Response) return body;
+    assertBoardLabel(body);
     const board = await createBoardLabel(c.env.DB, c.req.param("id")!, c.get("ownerId"), {
       name: body.name,
       color: body.color,
@@ -79,7 +84,9 @@ export function registerBoardRoutes(api: Hono<{ Bindings: Env }>): void {
   });
 
   api.patch("/api/boards/:id/labels/:name", authorizeScope("board:write"), async (c) => {
-    const body = await c.req.json<{ name?: string; color?: string; description?: string }>();
+    const body = await readJsonBody<unknown>(c, ["application/json", "application/merge-patch+json"]);
+    if (body instanceof Response) return body;
+    assertBoardLabel(body, true);
     const board = await updateBoardLabel(c.env.DB, c.req.param("id")!, c.get("ownerId"), c.req.param("name")!, body);
     if (!board) throw new HTTPException(404, { message: "Board not found" });
     return c.json(boardResource(board, c.req.url));

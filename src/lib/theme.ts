@@ -1,7 +1,7 @@
 export type Theme = "light" | "dark" | "system";
 
 export function getTheme(): Theme {
-  return (localStorage.getItem("theme") as Theme) || "system";
+  return (localStorage.getItem("theme") as Theme) || "dark";
 }
 
 export function setTheme(theme: Theme) {

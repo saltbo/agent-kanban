@@ -47,7 +47,14 @@ export async function createRepository(db: D1, ownerId: string, input: CreateRep
   const insertion = db
     .prepare("INSERT INTO repositories (id, owner_id, name, url, created_at) VALUES (?, ?, ?, ?, ?)")
     .bind(id, ownerId, input.name, url, now);
-  await insertion.run();
+  try {
+    await insertion.run();
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("UNIQUE constraint failed: repositories.owner_id, repositories.url")) {
+      throw new ApplicationError("conflict", "Repository URL is already connected");
+    }
+    throw error;
+  }
 
   return repository;
 }
@@ -57,7 +64,7 @@ export async function findOrCreateRepository(db: D1, ownerId: string, input: Cre
   try {
     return await createRepository(db, ownerId, input);
   } catch (err) {
-    const isUniqueViolation = err instanceof Error && err.message.includes("UNIQUE constraint failed");
+    const isUniqueViolation = err instanceof ApplicationError && err.kind === "conflict";
     if (!isUniqueViolation) throw err;
   }
   const existing = await db.prepare("SELECT * FROM repositories WHERE owner_id = ? AND url = ?").bind(ownerId, url).first<Repository>();
