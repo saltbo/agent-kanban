@@ -53,41 +53,9 @@ describe("Agent SDK orchestration", () => {
       },
       expect.stringMatching(/^ak-[a-f0-9]{64}$/),
     );
-    expect(createTrigger).toHaveBeenCalledWith(
-      {
-        metadata: { name: "Backend task inbox" },
-        spec: {
-          source: { type: "inbox" },
-          template: {
-            metadata: {
-              labels: { "agent-kanban.dev/managed-by": "agent-kanban" },
-              annotations: { "agent-kanban.dev/agent-id": "agent-1" },
-            },
-            spec: {
-              agentId: "agent-1",
-              environmentId: null,
-              runtime: "codex",
-              promptTemplate: "An Agent Kanban notification is available.",
-            },
-          },
-        },
-      },
-      expect.stringMatching(/^ak-[a-f0-9]{64}$/),
-    );
+    expect(createTrigger).not.toHaveBeenCalled();
     expect(createIdentity.mock.calls[0]![1]).not.toBe(createAgent.mock.calls[0]![1]);
-    expect(createTrigger.mock.calls[0]![1]).not.toBe(createIdentity.mock.calls[0]![1]);
-    expect(createTrigger.mock.calls[0]![1]).not.toBe(createAgent.mock.calls[0]![1]);
     expect(deleteIdentity).not.toHaveBeenCalled();
-  });
-
-  it("[spec: agents/create-bound-agent] fails when Enbor does not activate the Inbox Trigger", async () => {
-    const { client, createTrigger } = harness();
-    createTrigger.mockResolvedValue({ status: { subscription: { phase: "error" } } });
-
-    await expect(createAgencyAgent(client, input)).rejects.toMatchObject({
-      status: 502,
-      responseText: "Enbor did not activate the Agent Inbox Trigger",
-    });
   });
 
   it("[spec: agents/create-bound-agent] deletes the created Identity when SDK Agent creation is permanently rejected", async () => {

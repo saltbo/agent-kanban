@@ -1,8 +1,11 @@
+import { taskLaunchResources } from "@server/adapters/agency/taskLaunchResources";
 import { d1TaskClaimRepository } from "@server/adapters/d1/tasks/d1TaskClaims";
+import { d1TaskLaunchRepository } from "@server/adapters/d1/tasks/d1TaskLaunches";
 import { authorizeScope } from "@server/auth/middleware";
 import type { Env } from "@server/env";
 import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
 import { v2Problem } from "@server/http/middleware/v2Contract";
+import { agencyDependencies } from "@server/http/resource-server/agencyDependencies";
 import { completeExternalCreation, rejectRequestBody, resourceIdempotencyFor } from "@server/http/resource-server/request";
 import {
   agentRuntimeSessionRequired,
@@ -11,6 +14,7 @@ import {
   taskNotFound,
   verifiedAgentRuntimeSession,
 } from "@server/http/tasks/workflowSupport";
+import { recoverTaskClaimSession } from "@server/usecases/tasks/recoverTaskClaimSession";
 import { replaceTaskClaim, TaskClaimFailure } from "@server/usecases/tasks/replaceTaskClaim";
 import type { Hono } from "hono";
 
@@ -46,6 +50,16 @@ async function commitClaim(c: TaskContext, repository = d1TaskClaimRepository(c.
   const execution = verifiedAgentRuntimeSession(c);
   if (!execution) return agentRuntimeSessionRequired(c);
   try {
+    await recoverTaskClaimSession(
+      d1TaskLaunchRepository(c.env.DB),
+      taskLaunchResources(async (ownerId, projectId) => {
+        if (ownerId !== c.get("ownerId")) throw new Error("Task recovery tenant mismatch");
+        const agency = await agencyDependencies(c, ["sessions:write"]);
+        if (agency.projectId !== projectId) throw new Error("Task recovery Project mismatch");
+        return agency.client;
+      }).create,
+      { ownerId: c.get("ownerId"), taskId: c.req.param("taskId")!, agentActorId },
+    );
     return await replaceTaskClaim(repository, {
       ownerId: c.get("ownerId"),
       taskId: c.req.param("taskId")!,

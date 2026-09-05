@@ -58,7 +58,9 @@ invocation whose outcome remained unknown.
 
 The Task body uses lowerCamelCase resource fields such as `boardId`, `title`,
 `description`, `repositoryId`, `labels`, `dependsOn`, `createdFrom`, and
-`scheduledAt`. Assignment records intent only; Agency owns starting and
+`scheduledAt`. Delayed scheduling is not implemented: omit `scheduledAt` when
+creating Tasks. Non-null schedule writes return 422; an existing schedule can
+be cleared with null. Assignment records intent only; Agency owns starting and
 hosting the Agent. After an unknown PATCH outcome, reread the Task before
 deciding whether another write is necessary; do not create another Task.
 

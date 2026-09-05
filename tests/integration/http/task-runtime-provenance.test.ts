@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { createTask } from "../../../server/adapters/d1/taskRepo";
 import { d1TaskAssignmentRepository } from "../../../server/adapters/d1/tasks/d1TaskAssignments";
+import { d1TaskLaunchRepository } from "../../../server/adapters/d1/tasks/d1TaskLaunches";
 import { storeWebSessionGrant } from "../../../server/adapters/realmroot/delegatedAgencyToken";
 import type { Env } from "../../../server/env";
 import { api } from "../../../server/http/app";
@@ -37,6 +38,56 @@ afterEach(async () => {
 });
 
 describe("verified Task runtime provenance", () => {
+  it("[spec: tasks/early-claim] exchanges the Claim caller's token and replays the persisted Session request before Claim", async () => {
+    const board = await createBoard(db, tenantId, "Early Claim", "ops");
+    const task = await createTask(db, tenantId, { title: "Early Claim Task", board_id: board.id });
+    const assignment = await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
+      ownerId: tenantId,
+      taskId: task.id,
+      assigneeActorId: actorId,
+      assignedByActorId: "assigner-a",
+    });
+    await db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
+    const launches = d1TaskLaunchRepository(db);
+    const now = new Date();
+    const [lease] = await launches.acquireRunnable(now);
+    const request = { spec: { agentId: "enbor-agent" }, prompt: "Original persisted prompt" };
+    await launches.saveRequest(lease, { projectId: "agency-project", request }, now);
+    const issuerFetch = fetch;
+    let exchanges = 0;
+    let creations = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (target: RequestInfo | URL, init?: RequestInit) => {
+        const outgoing = new Request(target, init);
+        if (outgoing.url === `${issuer}/oauth2/token`) {
+          exchanges++;
+          const form = new URLSearchParams(await outgoing.text());
+          expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
+          expect(form.get("scope")).toBe("sessions:write");
+          expect(form.get("audience")).toBe("https://enbor.test/api");
+          expect(form.get("subject_token")).toBeTruthy();
+          expect(outgoing.headers.get("authorization")).toBe(`Basic ${btoa("ak-web-test:ak-web-secret")}`);
+          return Response.json({ access_token: "delegated-session-token", expires_in: 300 });
+        }
+        if (outgoing.url === "https://enbor.test/api/v1/sessions") {
+          creations++;
+          expect(outgoing.headers.get("authorization")).toBe("Bearer delegated-session-token");
+          expect(outgoing.headers.get("idempotency-key")).toBe(assignment.version);
+          expect(outgoing.headers.get("x-enbor-project-id")).toBe("agency-project");
+          expect(await outgoing.json()).toEqual(request);
+          return Response.json({ metadata: { uid: "early-session", projectId: "agency-project" } }, { status: 201 });
+        }
+        return issuerFetch(target, init);
+      }),
+    );
+    const response = await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", { runtime: "codex", session_id: "early-session" });
+    expect(response.status, await response.clone().text()).toBe(201);
+    expect([exchanges, creations]).toEqual([1, 1]);
+    expect((await launches.findRequested(tenantId, assignment.version))?.sessionId).toBe("early-session");
+    expect(await launches.recordSession(lease, "early-session", now)).toBe(false);
+  });
+
   it("creates the Task Claim through its collection while authenticated member routes remain unavailable", async () => {
     const board = await createBoard(db, tenantId, "Claim subresource", "ops");
     const task = await createTask(db, tenantId, { title: "Claim subresource Task", board_id: board.id });
@@ -47,6 +98,7 @@ describe("verified Task runtime provenance", () => {
       assignedByActorId: "assigner-a",
     });
     const binding = { runtime: "codex", session_id: "claim-subresource-session" };
+    await recordLaunchSession(binding.session_id);
 
     const created = await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", binding, {
       idempotencyKey: "claim-subresource-create",
@@ -88,6 +140,7 @@ describe("verified Task runtime provenance", () => {
     });
     const path = `/tasks/${task.id}/claims`;
     const binding = { runtime: "codex", session_id: "resume-bodyless" };
+    await recordLaunchSession(binding.session_id);
 
     const rejected = await agentRequest("POST", path, "task:claim", binding, { rawBody: "{}" });
     expect(rejected.status).toBe(400);
@@ -127,6 +180,7 @@ describe("verified Task runtime provenance", () => {
     });
 
     const binding = { runtime: "codex", session_id: "resume-token-a" };
+    await recordLaunchSession(binding.session_id);
     const created = await agentRequest("POST", path, "task:claim", binding);
     expect(created.status, await created.clone().text()).toBe(201);
     const etag = created.headers.get("etag");
@@ -154,6 +208,7 @@ describe("verified Task runtime provenance", () => {
       assigneeActorId: actorId,
       assignedByActorId: "assigner-a",
     });
+    await recordLaunchSession("resume-token-a");
     expect((await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", { runtime: "codex", session_id: "resume-token-a" })).status).toBe(
       201,
     );
@@ -179,105 +234,110 @@ describe("verified Task runtime provenance", () => {
     }
   });
 
-  it("[spec: session-observation/exact-session] resolves the canonical stored Session and maps boundary failures", async () => {
-    const board = await createBoard(db, tenantId, "Exact Session observation", "ops");
-    const task = await createTask(db, tenantId, { title: "Observe exact Agency Session", board_id: board.id });
-    await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
-      ownerId: tenantId,
-      taskId: task.id,
-      assigneeActorId: actorId,
-      assignedByActorId: "assigner-a",
-    });
-    const canonicalSessionId = "agency-session-canonical";
-    expect(
-      (
-        await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", {
-          runtime: "codex",
-          session_id: canonicalSessionId,
-        })
-      ).status,
-    ).toBe(201);
-    await db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
-    const session = await createTestWebSession(db, tenantId);
-    env = {
-      ...env,
-      AGENCY_ORIGIN: "https://agency.test",
-      OIDC_SERVICE_CLIENT_ID: "ak-service",
-      OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
-    };
-    await storeWebSessionGrant(env, session.id, {
-      access_token: "browser-ak-token",
-      refresh_token: "browser-refresh-token",
-      expires_in: 300,
-    });
-    const issuerFetch = fetch;
-    const agencyRequests: Request[] = [];
-    let outcome: "exact" | "missing" | "mismatch" | "upstream" | "malformed" = "exact";
-    const agencySession = (projectId = "agency-project") => ({
-      metadata: {
-        uid: canonicalSessionId,
-        projectId,
-        name: "Observed Session",
-        createdAt: "2026-08-31T00:00:00.000Z",
-        updatedAt: "2026-08-31T00:01:00.000Z",
-        archivedAt: null,
-      },
-      spec: { runtime: "codex" },
-      status: { phase: "idle" },
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const request = input instanceof Request ? input : new Request(input, init);
-        const url = new URL(request.url);
-        if (url.href === `${issuer}/oauth2/token`) return Response.json({ access_token: "agency-session-token" });
-        if (url.origin !== "https://agency.test") return issuerFetch(input, init);
-        agencyRequests.push(request);
-        if (outcome === "missing") return new Response(null, { status: 404 });
-        if (outcome === "upstream") return new Response("unavailable", { status: 502 });
-        if (outcome === "malformed") return new Response("{malformed", { status: 200 });
-        return Response.json(agencySession(outcome === "mismatch" ? "other-project" : undefined));
-      }),
-    );
-    const observe = () =>
-      api.fetch(
-        new Request(`${resource}/tasks/${task.id}/session`, {
-          headers: { cookie: session.cookie, "API-Version": "2026-08-29" },
+  it.each([false, true])(
+    "[spec: session-observation/exact-session] resolves the canonical stored Session and maps boundary failures (claimed: %s)",
+    async (claimed) => {
+      const board = await createBoard(db, tenantId, "Exact Session observation", "ops");
+      const task = await createTask(db, tenantId, { title: "Observe exact Agency Session", board_id: board.id });
+      await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
+        ownerId: tenantId,
+        taskId: task.id,
+        assigneeActorId: actorId,
+        assignedByActorId: "assigner-a",
+      });
+      const canonicalSessionId = "agency-session-canonical";
+      await recordLaunchSession(canonicalSessionId);
+      if (claimed)
+        expect(
+          (
+            await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", {
+              runtime: "codex",
+              session_id: canonicalSessionId,
+            })
+          ).status,
+        ).toBe(201);
+      await db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(tenantId, "agency-project").run();
+      const session = await createTestWebSession(db, tenantId);
+      env = {
+        ...env,
+        AGENCY_ORIGIN: "https://agency.test",
+        OIDC_SERVICE_CLIENT_ID: "ak-service",
+        OIDC_SERVICE_CLIENT_SECRET: "ak-service-secret",
+      };
+      await storeWebSessionGrant(env, session.id, {
+        access_token: "browser-ak-token",
+        refresh_token: "browser-refresh-token",
+        expires_in: 300,
+      });
+      const issuerFetch = fetch;
+      const agencyRequests: Request[] = [];
+      let outcome: "exact" | "missing" | "mismatch" | "upstream" | "malformed" = "exact";
+      const agencySession = (projectId = "agency-project") => ({
+        metadata: {
+          uid: canonicalSessionId,
+          projectId,
+          name: "Observed Session",
+          createdAt: "2026-08-31T00:00:00.000Z",
+          updatedAt: "2026-08-31T00:01:00.000Z",
+          archivedAt: null,
+        },
+        spec: { runtime: "codex" },
+        status: { phase: "idle" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = input instanceof Request ? input : new Request(input, init);
+          const url = new URL(request.url);
+          if (url.href === `${issuer}/oauth2/token`) return Response.json({ access_token: "agency-session-token" });
+          if (url.origin !== "https://agency.test") return issuerFetch(input, init);
+          agencyRequests.push(request);
+          if (outcome === "missing") return new Response(null, { status: 404 });
+          if (outcome === "upstream") return new Response("unavailable", { status: 502 });
+          if (outcome === "malformed") return new Response("{malformed", { status: 200 });
+          return Response.json(agencySession(outcome === "mismatch" ? "other-project" : undefined));
         }),
-        env,
       );
+      const observe = () =>
+        api.fetch(
+          new Request(`${resource}/tasks/${task.id}/session`, {
+            headers: { cookie: session.cookie, "API-Version": "2026-08-29" },
+          }),
+          env,
+        );
 
-    const exact = await observe();
-    expect(exact.status, await exact.clone().text()).toBe(200);
-    await expect(exact.json()).resolves.toMatchObject({
-      metadata: { uid: canonicalSessionId, projectId: "agency-project" },
-      spec: { runtime: "codex" },
-    });
-    const lookup = agencyRequests.at(-1)!;
-    expect(new URL(lookup.url).href).toBe(`https://agency.test/api/v1/sessions/${canonicalSessionId}`);
-    expect([...new URL(lookup.url).searchParams]).toEqual([]);
-    expect(lookup.headers.get("Authorization")).toBe("Bearer agency-session-token");
-    expect(lookup.headers.get("X-Enbor-Project-ID")).toBe("agency-project");
+      const exact = await observe();
+      expect(exact.status, await exact.clone().text()).toBe(200);
+      await expect(exact.json()).resolves.toMatchObject({
+        metadata: { uid: canonicalSessionId, projectId: "agency-project" },
+        spec: { runtime: "codex" },
+      });
+      const lookup = agencyRequests.at(-1)!;
+      expect(new URL(lookup.url).href).toBe(`https://agency.test/api/v1/sessions/${canonicalSessionId}`);
+      expect([...new URL(lookup.url).searchParams]).toEqual([]);
+      expect(lookup.headers.get("Authorization")).toBe("Bearer agency-session-token");
+      expect(lookup.headers.get("X-Enbor-Project-ID")).toBe("agency-project");
 
-    outcome = "mismatch";
-    const mismatch = await observe();
-    expect(mismatch.status).toBe(502);
-    await expect(mismatch.json()).resolves.toMatchObject({
-      type: `${resource}/problems/agency-session-invalid-response`,
-      status: 502,
-    });
-    for (const [nextOutcome, status, problemType] of [
-      ["missing", 404, "agency-session-not-found"],
-      ["upstream", 503, "agency-session-unavailable"],
-      ["malformed", 502, "agency-session-invalid-response"],
-    ] as const) {
-      outcome = nextOutcome;
-      const response = await observe();
-      expect(response.status, nextOutcome).toBe(status);
-      expect(response.headers.get("content-type"), nextOutcome).toContain("application/problem+json");
-      await expect(response.json()).resolves.toMatchObject({ type: `${resource}/problems/${problemType}`, status });
-    }
-  });
+      outcome = "mismatch";
+      const mismatch = await observe();
+      expect(mismatch.status).toBe(502);
+      await expect(mismatch.json()).resolves.toMatchObject({
+        type: `${resource}/problems/agency-session-invalid-response`,
+        status: 502,
+      });
+      for (const [nextOutcome, status, problemType] of [
+        ["missing", 404, "agency-session-not-found"],
+        ["upstream", 503, "agency-session-unavailable"],
+        ["malformed", 502, "agency-session-invalid-response"],
+      ] as const) {
+        outcome = nextOutcome;
+        const response = await observe();
+        expect(response.status, nextOutcome).toBe(status);
+        expect(response.headers.get("content-type"), nextOutcome).toContain("application/problem+json");
+        await expect(response.json()).resolves.toMatchObject({ type: `${resource}/problems/${problemType}`, status });
+      }
+    },
+  );
 
   it("[spec: session-observation/exact-session] relays only read-only backfill frames to the exact Agency Session socket", async () => {
     const board = await createBoard(db, tenantId, "Read-only Session relay", "ops");
@@ -289,6 +349,7 @@ describe("verified Task runtime provenance", () => {
       assignedByActorId: "assigner-a",
     });
     const runtimeSessionId = "agency-runtime-session-socket";
+    await recordLaunchSession(runtimeSessionId);
     expect((await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", { runtime: "codex", session_id: runtimeSessionId })).status).toBe(
       201,
     );
@@ -435,4 +496,12 @@ async function agentAuthority(htu: string, method: string, scope: string, bindin
     .setIssuedAt()
     .sign(dpopKeys.privateKey);
   return { accessToken, proof };
+}
+
+async function recordLaunchSession(sessionId: string) {
+  const launches = d1TaskLaunchRepository(db);
+  const now = new Date();
+  const [launch] = await launches.acquireRunnable(now);
+  await launches.saveRequest(launch, { projectId: "agency-project", request: { spec: { agentId: "enbor-agent" } } }, now);
+  await launches.recordSession(launch, sessionId, now);
 }

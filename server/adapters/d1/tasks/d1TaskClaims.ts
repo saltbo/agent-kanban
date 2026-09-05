@@ -21,6 +21,7 @@ export async function commitTaskClaim(
   const ownerGuard = input.ownerId ? "AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)" : "";
   const updateBindings: unknown[] = [claimedAt, actionId, input.taskId, input.actorId];
   if (input.ownerId) updateBindings.push(input.ownerId);
+  updateBindings.push(input.runtimeSessionId);
 
   const canonicalClaim: TaskClaim = {
     id: actionId,
@@ -43,6 +44,17 @@ export async function commitTaskClaim(
           AND assignee_identity_type = 'realmroot_actor'
           AND transition_token IS NULL
           ${ownerGuard}
+          AND active_claim_id IS NULL
+          AND scheduled_at IS NULL
+          AND json_extract(metadata, '$."agent-kanban.dev/launch".replacement_actor_id') IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM task_dependencies td JOIN tasks dep ON dep.id = td.depends_on
+            WHERE td.task_id = tasks.id AND dep.status NOT IN ('done', 'cancelled')
+          )
+          AND (json_extract(metadata, '$."agent-kanban.dev/launch".id') IS NULL OR (
+            json_extract(metadata, '$."agent-kanban.dev/launch".state') = 'started'
+            AND json_extract(metadata, '$.annotations."agent-kanban.dev/session-id"') = ?
+          ))
       `)
       .bind(...updateBindings),
     db

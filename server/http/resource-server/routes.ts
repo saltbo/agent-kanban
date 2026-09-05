@@ -438,7 +438,11 @@ function baseDocument(env: Env) {
             createdFrom: { type: "string" },
             input: { type: ["object", "null"], additionalProperties: true },
             metadata: { type: ["object", "null"], additionalProperties: true },
-            scheduledAt: { type: "string", format: "date-time" },
+            scheduledAt: {
+              type: "string",
+              format: "date-time",
+              description: "Reserved. Delayed scheduling is not implemented; setting this field returns 422. Omit it when creating a Task.",
+            },
           },
         },
         Task: {
@@ -491,7 +495,12 @@ function baseDocument(env: Env) {
             input: { type: ["object", "null"], additionalProperties: true },
             metadata: { type: "object", additionalProperties: true },
             createdFrom: { type: ["string", "null"] },
-            scheduledAt: { type: ["string", "null"], format: "date-time" },
+            scheduledAt: {
+              type: ["string", "null"],
+              format: "date-time",
+              description:
+                "Reserved. Delayed scheduling is not implemented; non-null writes return 422. Existing values remain readable and may be cleared with null.",
+            },
             position: { type: "number" },
             blocked: { type: "boolean" },
             dependsOn: { type: "array", items: { type: "string" } },
@@ -1158,7 +1167,12 @@ function apiDocument(env: Env) {
         input: { type: ["object", "null"], additionalProperties: true },
         metadata: { type: "object", additionalProperties: true },
         position: { type: "number" },
-        scheduledAt: { type: ["string", "null"], format: "date-time" },
+        scheduledAt: {
+          type: ["string", "null"],
+          format: "date-time",
+          description:
+            "Reserved. Delayed scheduling is not implemented; non-null writes return 422. Existing values remain readable and may be cleared with null.",
+        },
         dependsOn: { type: "array", items: { type: "string" } },
       },
     },

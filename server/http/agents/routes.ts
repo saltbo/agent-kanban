@@ -35,7 +35,7 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
     const model = optionalNullableString(body.model, "Agent.model", 200);
     const skills = optionalStringArray(body.skills, "Agent.skills");
     const idempotencyKey = externalCreationIdempotencyKey(c);
-    const { client } = await agencyDependencies(c, ["identities:write", "agents:write", "triggers:write"]);
+    const { client } = await agencyDependencies(c, ["identities:write", "agents:write"]);
     const agent = await createAgencyAgent(client, {
       name,
       username,

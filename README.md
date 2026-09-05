@@ -61,8 +61,7 @@ Agent Kanban provides that control plane:
 ```text
 Browser ───────────────► Agent Kanban Worker ─────────► D1
                            │       │
-Realmroot Toolbox ─────────┘       ├────────► Enbor
-                                   └────────► Realmroot Inbox
+Realmroot Toolbox ─────────┘       └────────► Enbor
 ```
 
 Agent Kanban owns Boards, Repositories, Tasks, Notes, dependency relationships,
@@ -72,7 +71,7 @@ bindings.
 [Enbor](https://enbor.realmroot.dev) owns Projects, Agent configuration,
 Environments, Runners, scheduling, Sessions, and execution.
 [Realmroot](https://realmroot.dev) provides OIDC identity, Agent actor chains,
-Toolbox access, and lifecycle notifications. The dependency direction is always
+Toolbox access, and delegated token exchange. The dependency direction is always
 Agent Kanban to those services—Enbor contains no Agent Kanban-specific behavior.
 
 Read the [system overview](./docs/architecture/system-overview.md) for the complete
@@ -96,7 +95,7 @@ and submits a Review Submission. The assignee cannot accept or reject its own
 submission.
 
 See [Task lifecycle](./docs/architecture/task-lifecycle.md) for authority,
-notification, dependency, and concurrency rules.
+Session dispatch, dependency, and concurrency rules.
 
 ## Quick start
 
@@ -118,7 +117,7 @@ pnpm dev
 
 The development server runs at <http://localhost:6265>.
 
-Local D1 works through Wrangler. Full sign-in, Agent, Machine, Inbox, and GitHub
+Local D1 works through Wrangler. Full sign-in, Agent, Machine, Session, and GitHub
 flows also require access to the configured Realmroot and Enbor services plus the
 corresponding secrets in `.dev.vars`:
 

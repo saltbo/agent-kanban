@@ -9,8 +9,7 @@ hosts self-hosted execution.
 ```text
 Browser ───────────────► Agent Kanban Worker ─────────► D1
                            │       │
-Realmroot Toolbox ─────────┘       ├────────► Agency
-                                   └────────► Realmroot Inbox
+Realmroot Toolbox ─────────┘       └────────► Agency
 
 Enbor Runner ─────────► Agency
 ```
@@ -18,10 +17,11 @@ Enbor Runner ─────────► Agency
 AK owns Boards, Repositories, Tasks, Notes, lifecycle state, review policy,
 public board views, and Task-to-Session observation bindings. Agency owns
 Projects, Identities, Agents, Environments, Runners, scheduling state, and
-Sessions. Inbox transports lifecycle notifications to assigned Agents.
+Sessions. AK creates Task Sessions through delegated token exchange and sends
+review continuation to their exact existing Session.
 
 The dependency direction is always AK to Agency, the configured OIDC provider,
-Realmroot's Agent/Toolbox extensions, and Inbox. See
+Realmroot's Agent/Toolbox extensions. See
 [ADR 0005](../adr/0005-agency-runtime-boundary.md).
 
 ## Runtime shape

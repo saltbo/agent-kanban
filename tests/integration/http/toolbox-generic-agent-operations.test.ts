@@ -24,11 +24,13 @@ let mf: Awaited<ReturnType<typeof setupMiniflare>>["mf"];
 let db: D1Database;
 let env: Env;
 let inboxMessageRequests: Request[];
+let sessionMessageRequests: Request[];
 
 beforeEach(async () => {
   ({ mf, db } = await setupMiniflare());
   env = { ...createTestEnv(), DB: db, AK_PUBLIC_ORIGIN: new URL(resource).origin } as Env;
   inboxMessageRequests = [];
+  sessionMessageRequests = [];
   await seedUser(db, tenantId, "toolbox-generic@example.test");
   await seedUser(db, foreignTenantId, "toolbox-foreign@example.test");
 });
@@ -40,6 +42,47 @@ afterEach(async () => {
 });
 
 describe("Realmroot Agent generic Toolbox operations", () => {
+  it("[spec: tasks/scheduling-not-supported] rejects scheduled creation and updates without writing a Task or schedule", async () => {
+    const board = await createBoard(db, tenantId, "Scheduling unsupported", "ops");
+    for (const scheduledAt of ["2030-01-01T00:00:00Z", "2000-01-01T00:00:00Z"]) {
+      const rejected = await request("POST", "/tasks", "task:write", { title: "Unsupported schedule", boardId: board.id, scheduledAt });
+      expect(rejected.status).toBe(422);
+      await expect(rejected.json()).resolves.toMatchObject({ detail: expect.stringContaining("Delayed task scheduling is not implemented") });
+    }
+    await expect(db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE board_id = ?").bind(board.id).first()).resolves.toEqual({ count: 0 });
+    const created = await request("POST", "/tasks", "task:write", { title: "Unscheduled Task", boardId: board.id });
+    expect(created.status).toBe(201);
+    const task = (await created.json()) as { id: string };
+    const patchSchedule = async (scheduledAt: string | null) => {
+      const url = `${resource}/tasks/${task.id}`;
+      const authority = await realmrootAgentAuthority(url, "PATCH", "task:write", "actor-toolbox");
+      return api.fetch(
+        new Request(url, {
+          method: "PATCH",
+          headers: {
+            authorization: `DPoP ${authority.accessToken}`,
+            dpop: authority.proof,
+            "API-Version": "2026-08-29",
+            "content-type": "application/merge-patch+json",
+          },
+          body: JSON.stringify({ scheduledAt }),
+        }),
+        env,
+      );
+    };
+    const rejected = await patchSchedule("2030-01-01T00:00:00Z");
+    expect(rejected.status).toBe(422);
+    await expect(rejected.json()).resolves.toMatchObject({ detail: expect.stringContaining("Delayed task scheduling is not implemented") });
+    await expect(db.prepare("SELECT scheduled_at, version FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
+      scheduled_at: null,
+      version: 1,
+    });
+    await db.prepare("UPDATE tasks SET scheduled_at = '2030-01-01T00:00:00Z' WHERE id = ?").bind(task.id).run();
+    const cleared = await patchSchedule(null);
+    expect(cleared.status).toBe(200);
+    await expect(cleared.json()).resolves.toMatchObject({ scheduledAt: null });
+  });
+
   it.each([
     ["PUT", "/task-assignments/task-id"],
     ["PUT", "/task-claims/task-id"],
@@ -855,36 +898,17 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     });
   });
 
-  it("[spec: tasks/assign] conditionally assigns through a standalone Task merge patch", async () => {
+  it("[spec: tasks/assign] rejects assignment patches with the wrong media type or mixed transitions", async () => {
     const board = await createBoard(db, tenantId, "Human assignment board", "ops");
     const task = await createTask(db, tenantId, { title: "Human assigned Task", board_id: board.id });
     const session = await createTestWebSession(db, tenantId, { subjectId: "human-assigner" });
-    env = {
-      ...env,
-      OIDC_ISSUER: issuer,
-      INBOX_RESOURCE: inboxResource,
-      INBOX_API_VERSION: "2026-08-31",
-      OIDC_SERVICE_CLIENT_ID: "agent-kanban",
-      OIDC_SERVICE_CLIENT_SECRET: "inbox-client-secret",
-    };
-    await realmrootAgentAuthority(`${resource}/tasks/${task.id}`, "PATCH", "task:write");
     const wrongMedia = await browserTaskPatch(session, task.id, { assignedTo: "realmroot-agent-target" }, "application/json");
     expect(wrongMedia.status).toBe(415);
-
-    const response = await browserTaskPatch(session, task.id, { assignedTo: "realmroot-agent-target" });
-
-    expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ id: task.id, assignedTo: "realmroot-agent-target" });
-    expect(response.headers.get("ETag")).toMatch(/^".+"$/);
-    expect(inboxMessageRequests).toHaveLength(1);
-    await expect(db.prepare("SELECT assigned_to, assignee_identity_type FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
-      assigned_to: "realmroot-agent-target",
-      assignee_identity_type: "realmroot_actor",
-    });
-
     const mixed = await browserTaskPatch(session, task.id, { assignedTo: "another-agent", status: "cancelled" });
     expect(mixed.status).toBe(422);
     await expect(mixed.json()).resolves.toMatchObject({ detail: "Assignment and status changes must be separate requests" });
+    await expect(db.prepare("SELECT assigned_to FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({ assigned_to: null });
+    expect(inboxMessageRequests).toHaveLength(0);
   });
 
   it("[spec: tasks/structured-fields] recursively merges Task JSON fields without losing untouched data", async () => {
@@ -938,6 +962,11 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     };
     const board = await createBoard(db, tenantId, "Task status patches", "ops");
     const task = await reviewReadyTask(tenantId, board.id, "Review through Task PATCH", "actor-toolbox");
+    await db.prepare("INSERT INTO agency_owner_integrations (tenant_id, agency_project_id) VALUES (?, ?)").bind(tenantId, "review-project").run();
+    await db
+      .prepare(`UPDATE tasks SET metadata = json_set(metadata, '$.annotations."agent-kanban.dev/session-id"', 'review-session') WHERE id = ?`)
+      .bind(task.id)
+      .run();
     await db.prepare("UPDATE tasks SET updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").bind(task.id).run();
     const submitted = await taskPatchToken(task.id, { status: "in-review", pullRequestUrl: "https://github.com/example/repo/pull/1" });
     expect(submitted.status, await submitted.clone().text()).toBe(200);
@@ -960,7 +989,8 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     );
     expect(rejected.status, await rejected.clone().text()).toBe(200);
     await expect(rejected.json()).resolves.toMatchObject({ id: task.id, status: "in-progress" });
-    expect(inboxMessageRequests).toHaveLength(1);
+    expect(inboxMessageRequests).toHaveLength(0);
+    expect(sessionMessageRequests).toHaveLength(1);
 
     const resubmitted = await taskPatchToken(task.id, { status: "in-review" });
     expect(resubmitted.status, await resubmitted.clone().text()).toBe(200);
@@ -1418,6 +1448,12 @@ async function realmrootAgentAuthority(
       if (url === authorityJwksUri) return Response.json({ keys: [issuerPublicJwk] });
       if (url === `${authorityIssuer}/oauth2/token`) {
         return Response.json({ access_token: "inbox-machine-token" });
+      }
+      if (url === `${env.AGENCY_ORIGIN}/api/v1/sessions/review-session/messages`) {
+        sessionMessageRequests.push(request);
+        expect(request.headers.get("x-enbor-project-id")).toBe("review-project");
+        expect(await request.clone().json()).toMatchObject({ type: "prompt", content: expect.stringContaining("needs changes") });
+        return Response.json({ metadata: { uid: "review-message" } }, { status: 201 });
       }
       if (url === `${inboxResource}/messages`) {
         inboxMessageRequests.push(request);

@@ -519,6 +519,8 @@ export async function deleteTask(db: D1, taskId: string, ownerId: string, expect
           WHERE id = ?
             AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
             AND status IN ('todo', 'cancelled')
+            AND (json_extract(metadata, '$."agent-kanban.dev/launch".state') IS NULL
+              OR json_extract(metadata, '$."agent-kanban.dev/launch".state') IN ('pending', 'settled'))
             AND version = ?
             AND transition_token IS NULL
         `)
@@ -562,16 +564,22 @@ export async function deleteTask(db: D1, taskId: string, ownerId: string, expect
       WHERE id = ?
         AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
         AND status IN ('todo', 'cancelled')
+            AND (json_extract(metadata, '$."agent-kanban.dev/launch".state') IS NULL
+              OR json_extract(metadata, '$."agent-kanban.dev/launch".state') IN ('pending', 'settled'))
     `)
     .bind(taskId, ownerId)
     .run();
   if (result.meta.changes > 0) return true;
 
   const current = await db
-    .prepare("SELECT status FROM tasks WHERE id = ? AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)")
+    .prepare(`SELECT status, json_extract(metadata, '$."agent-kanban.dev/launch".state') AS launch_state
+      FROM tasks WHERE id = ? AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)`)
     .bind(taskId, ownerId)
-    .first<{ status: string }>();
+    .first<{ status: string; launch_state: string | null }>();
   if (!current) return false;
+  if (current.launch_state && !["pending", "settled"].includes(current.launch_state)) {
+    throw new ApplicationError("conflict", "Task Session cleanup must complete before deleting the Task");
+  }
   throw new ApplicationError("conflict", `Cannot delete task in ${current.status} status`);
 }
 
