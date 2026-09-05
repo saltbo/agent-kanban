@@ -74,7 +74,9 @@ async function executeTaskLaunch(c: TaskContext, taskId: string, settle: boolean
         });
       },
     });
-    if (settle)
+    const current = await getTask(c.env.DB, taskId, ownerId);
+    const replacement = (current?.metadata["agent-kanban.dev/launch"] as { replacement_actor_id?: string } | undefined)?.replacement_actor_id;
+    if (settle || replacement || current?.status === "cancelled" || current?.status === "done")
       await settleTaskLaunches(store, {
         ...resources,
         async reconcileBootstrap(lease) {

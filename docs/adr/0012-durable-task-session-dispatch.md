@@ -1,6 +1,6 @@
 # 0012: Direct Task Session dispatch
 
-Status: Proposed — production wiring is incomplete.
+Status: Proposed — awaiting production cutover and acceptance.
 
 ## Scope and ownership
 
@@ -62,8 +62,8 @@ parts of ADR 0009 while retaining the signed Claim boundary of ADR 0008.
 Accepted records remain unchanged until delivery is complete.
 
 The Enbor idempotency prerequisite is deployed. AK's direct request wiring,
-repository credential lifecycle, review continuation,
-old-trigger retirement, and production acceptance remain incomplete. Do not
-activate this partial implementation. Full acceptance is a real Task assignment,
+repository credential lifecycle, review continuation, and dependency release
+have local acceptance evidence. Old-trigger retirement and production acceptance
+remain outstanding. Full acceptance is a real Task assignment,
 execution, Claim, review, completion, and cleanup, with exact Session evidence.
 See [delivery evidence](../operations/issue-269-verification.md).

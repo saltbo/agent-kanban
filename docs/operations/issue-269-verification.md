@@ -229,3 +229,21 @@ The launch prompt now includes the exact AK Context id. Personal tenant keys
 `user:<controller>` map to `<controller>`; organization keys remain unchanged.
 Focused tests cover both forms, avoiding discovery or a guessed default Context
 inside the executing Agent.
+
+## Cutover inventory and late-creation cleanup
+
+PR #271 contains commit dc64042. Its Cloudflare build succeeded; this is a build,
+not a deployment. The latest active AK deployment inspected remained version
+ce746003-9c3a-4d85-88bb-3a8ca918867f, deployed 2026-09-05T15:15:35Z.
+
+The acceptance Project returned 15 active Inbox Triggers: 14 have the exact
+`agent-kanban.dev/managed-by=agent-kanban` template label and matching Agent-id
+annotation; the remaining legacy `AK v2 E2E Worker Inbox` has an explicit AK-only
+prompt but no ownership label. No Trigger has been mutated yet. Their current
+representations are retained in /tmp/ak269-existing-triggers.json for cutover.
+
+An added HTTP case cancels the Task inside the outstanding Enbor Session-create
+request. The original assignment now observes terminal/replacement state after
+recording the returned Session and settles it immediately. All five direct HTTP
+cases passed, including exact closing of this late Session. This closes the gap
+where a cancellation request saw no receipt and the receipt arrived afterward.

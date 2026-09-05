@@ -21,9 +21,13 @@ afterEach(async () => {
 });
 
 describe("direct Task dispatch", () => {
-  it.each([false, true])(
-    "[spec: tasks/assign] [spec: tasks/repository-bootstrap] [spec: tasks/settle-launch] [spec: tasks/reject-review] directly launches once without Inbox (repository: %s)",
-    async (withRepository) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])(
+    "[spec: tasks/assign] [spec: tasks/repository-bootstrap] [spec: tasks/settle-launch] [spec: tasks/reject-review] directly launches once without Inbox (repository: %s, cancel during create: %s)",
+    async (withRepository, cancelDuringCreate) => {
       const { mf, db } = await setupMiniflare();
       resources.push(mf);
       const ownerId = "direct-owner";
@@ -193,6 +197,23 @@ describe("direct Task dispatch", () => {
             expect(request.prompt).toContain(task.id);
             expect(request.prompt).not.toContain(other.id);
             expect(outgoing.headers.get("idempotency-key")).toBeTruthy();
+            if (cancelDuringCreate) {
+              cancelling = true;
+              const cancellation = await api.fetch(
+                new Request(`${env.AK_PUBLIC_ORIGIN}/api/tasks/${task.id}`, {
+                  method: "PATCH",
+                  headers: {
+                    cookie: browser.cookie,
+                    "x-csrf-token": browser.csrfToken,
+                    "API-Version": "2026-08-29",
+                    "content-type": "application/merge-patch+json",
+                  },
+                  body: JSON.stringify({ status: "cancelled" }),
+                }),
+                env,
+              );
+              expect(cancellation.status, await cancellation.clone().text()).toBe(200);
+            }
             return Response.json({ metadata: { uid: "session-1", projectId: "project-1" } }, { status: 201 });
           }
           throw new Error(`Unexpected upstream request: ${outgoing.method} ${url.pathname}`);
@@ -214,6 +235,14 @@ describe("direct Task dispatch", () => {
         );
       const first = await assign();
       expect(first.status, await first.clone().text()).toBe(200);
+      if (cancelDuringCreate) {
+        await expect(first.json()).resolves.toMatchObject({
+          status: "cancelled",
+          metadata: { annotations: { "agent-kanban.dev/session-id": "session-1" }, "agent-kanban.dev/launch": { state: "settled" } },
+        });
+        expect(calls.filter((call) => call === "PATCH /api/v1/sessions/session-1")).toHaveLength(1);
+        return;
+      }
       await expect(first.json()).resolves.toMatchObject({
         status: "todo",
         metadata: { annotations: { "agent-kanban.dev/session-id": "session-1" } },
