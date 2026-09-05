@@ -143,7 +143,7 @@ function twoRequestBarrier(): () => Promise<void> {
 }
 
 describe("Agent and Machine projection HTTP resources", () => {
-  it("[spec: agents/authoritative-projection] returns bound and unbound Enbor Agents as safe AK resources", async () => {
+  it("[spec: agents/authoritative-projection] lists identity-bound Enbor Agents including unavailable members while preserving pagination", async () => {
     vi.stubGlobal(
       "fetch",
       delegatedAgencyFetch(["agents:read"], async (request) => {
@@ -174,20 +174,36 @@ describe("Agent and Machine projection HTTP resources", () => {
           status: { phase: "active", schedulable: false },
         };
         if (new URL(request.url).pathname.endsWith("/agent-unbound")) return Response.json(unboundAgent);
-        return Response.json({ data: [boundAgent, unboundAgent], pagination: { nextCursor: "agent-page-2", hasMore: true } });
+        const url = new URL(request.url);
+        expect(url.searchParams.get("identityBound")).toBe("true");
+        expect(url.searchParams.has("schedulable")).toBe(false);
+        if (url.searchParams.has("cursor")) {
+          expect(url.searchParams.get("cursor")).toBe("agent-page-2");
+          return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
+        }
+        const unavailableAgent = {
+          ...unboundAgent,
+          metadata: metadata("agent-unavailable", "Unavailable member"),
+          spec: { ...unboundAgent.spec, identity: { subject: "unavailable-subject", username: "unavailable", runtime: "codex" } },
+        };
+        return Response.json({ data: [boundAgent, unavailableAgent], pagination: { nextCursor: "agent-page-2", hasMore: true } });
       }),
     );
 
     const list = await browserGet("/agents");
     expect(list.status, await list.clone().text()).toBe(200);
-    await expect(list.json()).resolves.toMatchObject({
+    const page = (await list.json()) as { pagination: { nextPageToken: string } };
+    expect(page).toMatchObject({
       items: [
         expect.objectContaining({ id: "agent-1", subject: "realmroot-agent-subject" }),
-        expect.objectContaining({ id: "agent-unbound", subject: null, username: null, runtime: null }),
+        expect.objectContaining({ id: "agent-unavailable", subject: "unavailable-subject", schedulable: false }),
       ],
       pagination: { pageSize: 2, nextPageToken: expect.any(String) },
     });
     expect(list.headers.get("Link")).toContain('rel="next"');
+    const continuation = await browserGet(`/agents?pageToken=${encodeURIComponent(page.pagination.nextPageToken)}`);
+    expect(continuation.status).toBe(200);
+    await expect(continuation.json()).resolves.toMatchObject({ items: [], pagination: { pageSize: 0 } });
     const detail = await browserGet("/agents/agent-unbound");
     expect(detail.status, await detail.clone().text()).toBe(200);
     const detailText = await detail.text();
