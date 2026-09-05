@@ -14,8 +14,8 @@ export default defineConfig({
     react(),
     tailwindcss(),
     cloudflare({
-      configPath: "./wrangler.toml",
-      persistState: { path: path.resolve(__dirname, ".wrangler/state") },
+      configPath: process.env.AK_E2E_WRANGLER_CONFIG ?? "./wrangler.toml",
+      persistState: { path: process.env.AK_E2E_STATE_DIR ?? path.resolve(__dirname, ".wrangler/state") },
       config: (config) => ({
         vars: {
           ...config.vars,

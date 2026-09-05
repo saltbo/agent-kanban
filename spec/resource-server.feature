@@ -27,5 +27,5 @@ Feature: Realmroot Resource Server
   @journey:resource-server/workflow-commands @entrypoint:toolbox @proof:integration
   Scenario: Publish only AK-specific resource-first commands
     When Toolbox reads the AK OpenAPI document
-    Then claim, release, review, reject, complete, cancel, and wait have stable resource-first command names
+    Then wait has a stable resource-first command name
     And ordinary CRUD does not create duplicate resource-first commands

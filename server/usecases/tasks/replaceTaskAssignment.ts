@@ -1,4 +1,5 @@
 export interface TaskAssignmentTarget {
+  version: number;
   status: string;
   assignedTo: string | null;
   assigneeIdentityType: string | null;
@@ -13,7 +14,13 @@ export interface TaskAssignmentCommit {
 
 export interface TaskAssignmentRepository {
   findTarget(ownerId: string, taskId: string): Promise<TaskAssignmentTarget | null>;
-  create(input: { ownerId: string; taskId: string; assigneeActorId: string; assignedByActorId: string }): Promise<TaskAssignmentCommit | null>;
+  create(input: {
+    ownerId: string;
+    taskId: string;
+    assigneeActorId: string;
+    assignedByActorId: string;
+    expectedTaskVersion?: number;
+  }): Promise<TaskAssignmentCommit | null>;
 }
 
 export interface TaskAssignment {
@@ -38,10 +45,11 @@ export class TaskAssignmentFailure extends Error {
 
 export async function replaceTaskAssignment(
   repository: TaskAssignmentRepository,
-  input: { ownerId: string; taskId: string; assigneeActorId: string; assignedByActorId: string },
+  input: { ownerId: string; taskId: string; assigneeActorId: string; assignedByActorId: string; expectedTaskVersion?: number },
 ): Promise<{ assignment: TaskAssignment; version: string; created: boolean }> {
   const target = await repository.findTarget(input.ownerId, input.taskId);
   if (!target) throw new TaskAssignmentFailure("TASK_NOT_FOUND", "Task not found");
+  assertTaskVersion(target.version, input.expectedTaskVersion);
   if (target.assignedTo === input.assigneeActorId && target.assigneeIdentityType === "realmroot_actor" && target.activeAssignment) {
     return assignmentResult(input.taskId, input.assigneeActorId, target.activeAssignment, false);
   }
@@ -52,12 +60,19 @@ export async function replaceTaskAssignment(
   const committed = await repository.create(input);
   if (!committed) {
     const winner = await repository.findTarget(input.ownerId, input.taskId);
+    if (winner) assertTaskVersion(winner.version, input.expectedTaskVersion);
     if (winner?.assignedTo === input.assigneeActorId && winner.assigneeIdentityType === "realmroot_actor" && winner.activeAssignment) {
       return assignmentResult(input.taskId, input.assigneeActorId, winner.activeAssignment, false);
     }
     throw new TaskAssignmentFailure("TASK_ASSIGNMENT_CONFLICT", "Task state or assignment changed before the assignment was committed");
   }
   return assignmentResult(input.taskId, input.assigneeActorId, committed, true);
+}
+
+function assertTaskVersion(actual: number, expected?: number): void {
+  if (expected !== undefined && actual !== expected) {
+    throw new TaskAssignmentFailure("TASK_ASSIGNMENT_CONFLICT", "Task changed before the assignment was committed");
+  }
 }
 
 function assignmentResult(

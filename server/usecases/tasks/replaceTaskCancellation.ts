@@ -1,14 +1,15 @@
-export type TaskCancellationActor = { type: "agent" | "human" | "system"; id: string };
+export type TaskCancellationActor = { type: "agent" | "human" | "machine" | "service" | "system"; id: string };
 
 export interface StoredTaskCancellation {
   actionId: string;
-  actorType: "agent" | "human" | "system";
+  actorType: TaskCancellationActor["type"];
   actorId: string;
   cancelledAt: string;
   assigneeActorId: string | null;
 }
 
 export interface TaskCancellationTarget {
+  version: number;
   status: string;
   assignedTo: string | null;
   assigneeIdentityType: string | null;
@@ -22,13 +23,14 @@ export interface TaskCancellationRepository {
     taskId: string;
     actor: TaskCancellationActor;
     assigneeActorId: string | null;
+    expectedTaskVersion?: number;
   }): Promise<StoredTaskCancellation | null>;
 }
 
 export interface TaskCancellation {
   id: string;
   taskId: string;
-  cancelledByActorType: "agent" | "human" | "system";
+  cancelledByActorType: TaskCancellationActor["type"];
   cancelledByActorId: string;
   cancelledAt: string;
 }
@@ -47,10 +49,11 @@ export class TaskCancellationFailure extends Error {
 
 export async function replaceTaskCancellation(
   repository: TaskCancellationRepository,
-  input: { ownerId: string; taskId: string; actor: TaskCancellationActor },
+  input: { ownerId: string; taskId: string; actor: TaskCancellationActor; expectedTaskVersion?: number },
 ): Promise<{ cancellation: TaskCancellation; version: string; created: boolean; assigneeActorId: string | null }> {
   let target = await repository.findTarget(input.ownerId, input.taskId);
   if (!target) throw new TaskCancellationFailure("TASK_NOT_FOUND", "Task not found");
+  assertTaskVersion(target.version, input.expectedTaskVersion);
   let assigneeActorId = target.cancellation?.assigneeActorId ?? (target.assigneeIdentityType === "realmroot_actor" ? target.assignedTo : null);
 
   let cancellation = target.cancellation;
@@ -63,6 +66,7 @@ export async function replaceTaskCancellation(
     if (!cancellation) {
       target = await repository.findTarget(input.ownerId, input.taskId);
       if (!target) throw new TaskCancellationFailure("TASK_NOT_FOUND", "Task not found");
+      assertTaskVersion(target.version, input.expectedTaskVersion);
       cancellation = target.cancellation;
       if (!cancellation) {
         throw new TaskCancellationFailure("TASK_CANCELLATION_CONFLICT", "Task state changed before the cancellation was committed");
@@ -85,6 +89,12 @@ export async function replaceTaskCancellation(
     created,
     assigneeActorId,
   };
+}
+
+function assertTaskVersion(actual: number, expected?: number): void {
+  if (expected !== undefined && actual !== expected) {
+    throw new TaskCancellationFailure("TASK_CANCELLATION_CONFLICT", "Task changed before the cancellation was committed");
+  }
 }
 
 function isCancellable(status: string): boolean {

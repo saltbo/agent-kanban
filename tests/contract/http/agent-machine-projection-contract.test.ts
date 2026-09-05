@@ -39,14 +39,20 @@ describe("Agent and Machine projection HTTP contract", () => {
     }
   });
 
-  it("[spec: agents/assignment-subject] keeps Assignment as an opaque Realmroot subject contract", async () => {
+  it("[spec: agents/assignment-subject] assigns an opaque Realmroot subject through canonical Task merge patch", async () => {
     const openapi = await document();
-    expect(openapi.components.schemas.TaskAssignmentWrite).toMatchObject({
-      additionalProperties: false,
-      required: ["agentActorId"],
-      properties: { agentActorId: { type: "string" } },
+    expect(openapi.paths["/tasks/{taskId}"].patch.requestBody).toEqual({
+      required: true,
+      content: { "application/merge-patch+json": { schema: { $ref: "#/components/schemas/TaskUpdate" } } },
     });
-    expect(openapi.components.schemas.TaskAssignmentWrite.properties).not.toHaveProperty("agentId");
+    expect(openapi.components.schemas.TaskUpdate.oneOf).toContainEqual({ $ref: "#/components/schemas/TaskAssignmentUpdate" });
+    expect(openapi.components.schemas.TaskAssignmentUpdate).toMatchObject({
+      additionalProperties: false,
+      required: ["assignedTo"],
+      properties: { assignedTo: { type: "string" } },
+    });
+    expect(openapi.components.schemas.TaskAssignmentUpdate.properties).not.toHaveProperty("agentId");
+    expect(openapi.components.schemas).not.toHaveProperty("TaskAssignmentWrite");
   });
 
   it("[spec: machines/environment-projection] [spec: machines/create-runner-setup] publishes per-Runner usage and setup commands on Machine detail", async () => {

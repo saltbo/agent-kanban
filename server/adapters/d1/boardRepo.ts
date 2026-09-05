@@ -93,7 +93,7 @@ export async function getBoard(db: D1, boardId: string, ownerId: string): Promis
 
   const tasks = await db
     .prepare(`
-    SELECT t.*, r.name as repository_name FROM tasks t
+    SELECT t.*, r.name as repository_name, ? AS board_type FROM tasks t
     LEFT JOIN repositories r ON t.repository_id = r.id
     WHERE t.board_id = ?
     ORDER BY
@@ -101,7 +101,7 @@ export async function getBoard(db: D1, boardId: string, ownerId: string): Promis
       CASE WHEN t.status = 'todo' THEN t.position END ASC,
       CASE WHEN t.status != 'todo' THEN t.updated_at END DESC
   `)
-    .bind(boardId)
+    .bind(board.type, boardId)
     .all<Task>();
 
   const taskIds = tasks.results.map((t: Task) => t.id);
@@ -209,7 +209,7 @@ export async function updateBoardLabel(db: D1, boardId: string, ownerId: string,
       .filter((task) => task.labels.includes(name))
       .map((task) =>
         db
-          .prepare("UPDATE tasks SET labels = ?, updated_at = ? WHERE id = ?")
+          .prepare("UPDATE tasks SET labels = ?, updated_at = ?, version = version + 1 WHERE id = ?")
           .bind(JSON.stringify(task.labels.map((label) => (label === name ? next.name : label))), new Date().toISOString(), task.id),
       );
     if (statements.length > 0) await db.batch(statements);
@@ -236,7 +236,9 @@ export async function deleteBoardLabel(db: D1, boardId: string, ownerId: string,
       return { id: task.id, current, next: current.filter((label) => label !== name) };
     })
     .filter((task) => task.current.length !== task.next.length)
-    .map((task) => db.prepare("UPDATE tasks SET labels = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(task.next), now, task.id));
+    .map((task) =>
+      db.prepare("UPDATE tasks SET labels = ?, updated_at = ?, version = version + 1 WHERE id = ?").bind(JSON.stringify(task.next), now, task.id),
+    );
   if (statements.length > 0) await db.batch(statements);
 
   return updateBoard(db, boardId, ownerId, { labels: labels.filter((label) => label.name !== name) });

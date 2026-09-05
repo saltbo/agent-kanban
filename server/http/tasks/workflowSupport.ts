@@ -4,35 +4,24 @@ import type { Context } from "hono";
 
 export type TaskContext = Context<{ Bindings: Env }>;
 
-export function verifiedAgentActorId(c: TaskContext): string | null {
+export function requestActorId(c: TaskContext): string {
   const principal = c.get("principal");
-  return principal.type === "agent" && principal.actorId ? principal.actorId : null;
+  return principal.actorId ?? principal.subjectId;
 }
 
 export function verifiedAgentRuntimeSession(c: TaskContext): { runtime: string; sessionId: string } | null {
   const principal = c.get("principal");
-  return principal.type === "agent" && principal.runtime && principal.runtimeSessionId
-    ? { runtime: principal.runtime, sessionId: principal.runtimeSessionId }
-    : null;
+  return principal.runtime && principal.runtimeSessionId ? { runtime: principal.runtime, sessionId: principal.runtimeSessionId } : null;
 }
 
-export function taskWorkflowActor(c: TaskContext): { type: "agent" | "human"; id: string } | null {
+export function taskWorkflowActor(c: TaskContext): { type: "agent" | "human" | "machine" | "service"; id: string } {
   const principal = c.get("principal");
   if (principal.type === "agent" && principal.actorId) return { type: "agent", id: principal.actorId };
-  if (principal.type === "human") return { type: "human", id: principal.subjectId };
-  return null;
-}
-
-export function actorRequired(c: TaskContext): Response {
-  return v2Problem(c, 403, "permission-denied", "Permission denied", "A Realmroot human or verified Agent actor is required");
-}
-
-export function agentActorRequired(c: TaskContext): Response {
-  return v2Problem(c, 403, "permission-denied", "Permission denied", "A verified Realmroot Agent actor is required");
+  return { type: principal.type, id: principal.subjectId };
 }
 
 export function agentRuntimeSessionRequired(c: TaskContext): Response {
-  return v2Problem(c, 403, "runtime-session-required", "Runtime Session required", "Task Claim requires verified Agent runtime Session context");
+  return v2Problem(c, 409, "runtime-session-required", "Runtime Session required", "Task Claim requires a verified runtime Session binding");
 }
 
 export function taskNotFound(c: TaskContext, detail: string): Response {
@@ -41,10 +30,6 @@ export function taskNotFound(c: TaskContext, detail: string): Response {
 
 export function mediaType(c: TaskContext): string | undefined {
   return c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-}
-
-export function resourceLocation(c: TaskContext, collection: string, taskId: string): string {
-  return new URL(`/api/${collection}/${encodeURIComponent(taskId)}`, c.req.url).toString();
 }
 
 export function readStrongVersionPrecondition(c: TaskContext, resourceName: string): string | Response {

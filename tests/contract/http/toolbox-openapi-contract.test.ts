@@ -48,7 +48,92 @@ describe("published Resource Server contract", () => {
     expect((await api.request("/api/toolbox/openapi.json", {}, env)).status).toBe(404);
   });
 
-  it("exposes exactly the seven resource-first Task commands with x-cli-name", async () => {
+  it("publishes one canonical API contract for OAuth tokens and browser sessions", async () => {
+    const contract = await document();
+    const additionalOperations = [
+      ["/boards/{boardId}", "patch"],
+      ["/boards/{boardId}", "delete"],
+      ["/boards/{boardId}/labels", "post"],
+      ["/boards/{boardId}/labels/{labelName}", "patch"],
+      ["/boards/{boardId}/labels/{labelName}", "delete"],
+      ["/boards/{boardId}/stream", "get"],
+      ["/repositories/{repositoryId}", "delete"],
+      ["/tasks/{taskId}", "patch"],
+      ["/tasks/{taskId}", "delete"],
+      ["/tasks/{taskId}/session", "get"],
+      ["/tasks/{taskId}/session/ws", "get"],
+      ["/tasks/{taskId}/stream", "get"],
+      ["/tasks/{taskId}/claims", "post"],
+    ] as const;
+
+    expect(Object.values(contract.paths).flatMap((pathItem) => Object.keys(pathItem).filter((key) => key !== "parameters"))).toHaveLength(36);
+    for (const [path, method] of additionalOperations) {
+      expect(contract.paths[path]?.[method], `${method.toUpperCase()} ${path}`).toBeDefined();
+    }
+    expect(contract.paths["/github-app/config"].get).toMatchObject({
+      operationId: "getGithubAppConfiguration",
+      security: [{ realmroot: ["repository:read"] }, { browserSession: [] }],
+    });
+    expect(contract.paths["/github-app/repositories"].get).toMatchObject({
+      operationId: "listGithubAppRepositories",
+      security: [{ realmroot: ["repository:read"] }, { browserSession: [] }],
+    });
+    expect(contract.paths["/repository-installations/{installationId}"].put).toMatchObject({
+      operationId: "replaceRepositoryInstallation",
+      security: [{ realmroot: ["repository:write"] }, { browserSession: [] }],
+      parameters: expect.arrayContaining([{ $ref: "#/components/parameters/CsrfToken" }]),
+    });
+    expect(contract.paths).not.toHaveProperty("/github-app/setup");
+    expect(contract.components.schemas.GithubAppConfiguration).toMatchObject({
+      required: expect.arrayContaining(["installUrl"]),
+      properties: expect.objectContaining({ installUrl: expect.any(Object) }),
+    });
+    expect(contract.components.schemas.GithubAppRepository).toMatchObject({
+      required: expect.arrayContaining(["fullName", "cloneUrl", "alreadyAdded"]),
+      properties: expect.objectContaining({ fullName: expect.any(Object), cloneUrl: expect.any(Object), alreadyAdded: expect.any(Object) }),
+    });
+    for (const [path, pathItem] of Object.entries(contract.paths)) {
+      for (const [method, operation] of Object.entries(pathItem)) {
+        if (method === "parameters") continue;
+        const scope = ((operation.security as Array<Record<string, string[]>>)[0].realmroot ?? []) as string[];
+        expect(scope, `${method.toUpperCase()} ${path}`).toHaveLength(1);
+        expect(operation.security, `${method.toUpperCase()} ${path}`).toEqual([{ realmroot: scope }, { browserSession: [] }]);
+      }
+    }
+    expect(JSON.stringify(contract)).not.toContain('"x-audience"');
+    expect(Object.keys(contract.components.schemas)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^Web/)]));
+    expect((contract.components.securitySchemes as Record<string, unknown>).browserSession).toEqual({
+      type: "apiKey",
+      in: "cookie",
+      name: "ak_session",
+      description: expect.any(String),
+    });
+    expect(contract.components.parameters.CsrfToken).toMatchObject({
+      name: "X-CSRF-Token",
+      in: "header",
+      required: false,
+      schema: { type: "string" },
+    });
+    for (const path of ["/boards/{boardId}/stream", "/tasks/{taskId}/stream"] as const) {
+      expect(contract.paths[path].get.responses).toMatchObject({
+        "200": { content: { "text/event-stream": { schema: { type: "string" } } } },
+      });
+    }
+    expect(contract.paths["/tasks/{taskId}/session/ws"].get.responses).toMatchObject({
+      "101": { description: "WebSocket relay established" },
+      "200": { content: { "application/json": { schema: { $ref: "#/components/schemas/TaskSessionSocket" } } } },
+    });
+    const problem = { schema: { $ref: "#/components/schemas/Problem" } };
+    for (const path of ["/tasks/{taskId}/session", "/tasks/{taskId}/session/ws"] as const) {
+      const responses = contract.paths[path].get.responses as Record<string, { content?: Record<string, unknown> }>;
+      for (const status of ["401", "403", "404", "500", "502", "503"] as const) {
+        expect(responses[status].content, `${status} GET ${path}`).toEqual({ "application/problem+json": problem });
+      }
+    }
+    expect((await api.request("/api/docs/openapi.json", {}, env)).status).toBe(404);
+  });
+
+  it("exposes only the Task wait command with x-cli-name", async () => {
     const toolbox = await document();
     const commands = Object.values(toolbox.paths)
       .flatMap((path) => Object.values(path))
@@ -56,7 +141,7 @@ describe("published Resource Server contract", () => {
       .map((operation) => operation["x-cli-name"])
       .sort();
 
-    expect(commands).toEqual(["cancel", "claim", "complete", "reject", "release", "review", "wait"]);
+    expect(commands).toEqual(["wait"]);
     for (const path of ["/agents", "/agents/{agentId}", "/machines", "/machines/{machineId}"]) {
       expect(toolbox.paths).toHaveProperty(path);
     }
@@ -109,8 +194,6 @@ describe("published Resource Server contract", () => {
       ["/tasks/{taskId}/notes", "get"],
       ["/tasks/{taskId}/notes", "post"],
       ["/tasks/{taskId}/notes/{noteId}", "get"],
-      ["/task-assignments/{taskId}", "put"],
-      ["/task-review-submissions/{taskId}", "get"],
     ] as const) {
       expect(toolbox.paths[path]?.[method]).not.toHaveProperty("x-cli-hidden");
       expect(toolbox.paths[path]?.[method]).not.toHaveProperty("x-cli-name");
@@ -118,15 +201,38 @@ describe("published Resource Server contract", () => {
     expect(JSON.stringify(toolbox)).not.toContain("x-cli-hidden");
   });
 
-  it("publishes only the allowed paginated and idempotent generic resource operations", async () => {
+  it("groups every operation by the resource protected by its Realmroot scope", async () => {
+    const toolbox = await document();
+    const operations = Object.entries(toolbox.paths).flatMap(([path, pathItem]) =>
+      Object.entries(pathItem)
+        .filter(([method]) => method !== "parameters")
+        .map(([method, operation]) => ({ path, method, operation })),
+    );
+
+    for (const { path, method, operation } of operations) {
+      const scopes = ((operation.security as Array<Record<string, string[]>> | undefined)?.[0]?.realmroot ?? []) as string[];
+      expect(scopes, `${method.toUpperCase()} ${path}`).toHaveLength(1);
+      expect(operation.tags, `${method.toUpperCase()} ${path}`).toEqual([scopes[0].split(":", 1)[0]]);
+    }
+
+    for (const [path, method, operationId] of [
+      ["/repositories", "get", "listRepositories"],
+      ["/repositories", "post", "createRepository"],
+      ["/repositories/{repositoryId}", "get", "getRepository"],
+    ] as const) {
+      expect(toolbox.paths[path][method]).toMatchObject({ operationId, tags: ["repository"] });
+    }
+  });
+
+  it("publishes the allowed paginated and idempotent generic resource operations", async () => {
     const toolbox = await document();
     const genericOperations = {
       "/boards": ["get", "post"],
-      "/boards/{boardId}": ["get"],
+      "/boards/{boardId}": ["get", "patch", "delete"],
       "/repositories": ["get", "post"],
-      "/repositories/{repositoryId}": ["get"],
+      "/repositories/{repositoryId}": ["get", "delete"],
       "/tasks": ["get", "post"],
-      "/tasks/{taskId}": ["get"],
+      "/tasks/{taskId}": ["get", "patch", "delete"],
       "/tasks/{taskId}/notes": ["get", "post"],
     } as const;
 
@@ -135,8 +241,6 @@ describe("published Resource Server contract", () => {
       expect(pathItem, path).toBeDefined();
       expect(Object.keys(pathItem).filter((key) => key !== "parameters")).toEqual(methods);
     }
-    expect(Object.keys(toolbox.paths)).not.toEqual(expect.arrayContaining([expect.stringMatching(/labels/)]));
-
     for (const path of ["/boards", "/repositories"] as const) {
       expect(toolbox.paths[path].post.parameters).not.toEqual(expect.arrayContaining([{ $ref: "#/components/parameters/IdempotencyKey" }]));
     }
@@ -214,7 +318,7 @@ describe("published Resource Server contract", () => {
         },
       },
     });
-    const until = toolbox.paths["/task-events"].get.parameters.find((parameter: { name?: string }) => parameter.name === "until");
+    const until = toolbox.paths["/tasks/{taskId}/events"].get.parameters.find((parameter: { name?: string }) => parameter.name === "until");
     expect(until).toEqual({
       name: "until",
       in: "query",
@@ -229,7 +333,7 @@ describe("published Resource Server contract", () => {
     const note = toolbox.paths["/tasks/{taskId}/notes/{noteId}"].get;
     expect(note).toMatchObject({
       operationId: "getTaskNote",
-      security: [{ realmroot: ["task:read"] }],
+      security: [{ realmroot: ["task:read"] }, { browserSession: [] }],
       parameters: expect.arrayContaining([{ $ref: "#/components/parameters/ApiVersion" }]),
       responses: {
         "200": {
@@ -251,12 +355,19 @@ describe("published Resource Server contract", () => {
     });
     expect((toolbox.components.schemas.TaskNote as { properties: Record<string, unknown> }).properties).not.toHaveProperty("task_id");
 
-    const events = toolbox.paths["/task-events"].get;
+    const eventPath = toolbox.paths["/tasks/{taskId}/events"];
+    expect(eventPath.parameters).toEqual([{ $ref: "#/components/parameters/TaskId" }]);
+    const events = eventPath.get;
     expect(events).toMatchObject({
-      security: [{ realmroot: ["task:read"] }],
+      operationId: "listTaskEvents",
+      "x-cli-name": "wait",
+      security: [{ realmroot: ["task:read"] }, { browserSession: [] }],
       parameters: expect.arrayContaining([{ $ref: "#/components/parameters/ApiVersion" }]),
       responses: { "200": { content: { "application/json": { schema: { $ref: "#/components/schemas/TaskEventSnapshot" } } } } },
     });
+    expect(Object.keys(events.responses).sort()).toEqual(["200", "400", "401", "403", "404", "500"]);
+    expect(events.parameters).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "taskId", in: "query" })]));
+    expect(toolbox.paths).not.toHaveProperty("/task-events");
     expect(toolbox.components.schemas.TaskEventSnapshot).toMatchObject({
       required: ["cursor", "outcome", "tasks", "until"],
       properties: {
@@ -271,12 +382,90 @@ describe("published Resource Server contract", () => {
     });
   });
 
-  it("keeps every operation versioned and aligned with declared runtime scopes without publishing internal Task Session routes", async () => {
+  it("publishes canonical Task mutations and collection-only Claim creation", async () => {
+    const toolbox = await document();
+    const taskPatch = toolbox.paths["/tasks/{taskId}"].patch;
+    expect(taskPatch.parameters).toEqual(
+      expect.arrayContaining([{ $ref: "#/components/parameters/ApiVersion" }, { $ref: "#/components/parameters/CsrfToken" }]),
+    );
+    expect(taskPatch.parameters).not.toEqual(expect.arrayContaining([{ $ref: "#/components/parameters/IfMatch" }]));
+    expect(taskPatch.requestBody).toEqual({
+      required: true,
+      content: { "application/merge-patch+json": { schema: { $ref: "#/components/schemas/TaskUpdate" } } },
+    });
+    expect(taskPatch.responses).toEqual(
+      expect.objectContaining(
+        Object.fromEntries([200, 400, 401, 403, 404, 409, 415, 422, 500].map((status) => [String(status), expect.any(Object)])),
+      ),
+    );
+    expect(taskPatch.responses).not.toHaveProperty("412");
+    expect(taskPatch.responses).not.toHaveProperty("428");
+
+    const schemas = toolbox.components.schemas as Record<string, Record<string, unknown>>;
+    const resolveSchema = (reference: { $ref: string }) => schemas[reference.$ref.split("/").at(-1)!];
+    const variants = (schemas.TaskUpdate.oneOf as Array<{ $ref: string }>).map(resolveSchema);
+    expect(variants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ minProperties: 1, additionalProperties: false }),
+        expect.objectContaining({ required: ["assignedTo"], additionalProperties: false, properties: { assignedTo: expect.any(Object) } }),
+        expect.objectContaining({ oneOf: expect.any(Array) }),
+      ]),
+    );
+    const statusSchema = variants.find((variant) => Array.isArray(variant.oneOf))!;
+    const statusVariants = statusSchema.oneOf as Array<{ properties: { status: { type?: string; const?: string; enum?: string[] } } }>;
+    expect(statusVariants.map((variant) => variant.properties.status)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ const: "in-review" }),
+        expect.objectContaining({ const: "in-progress" }),
+        expect.objectContaining({ enum: ["done", "cancelled"] }),
+      ]),
+    );
+
+    const claimCollection = toolbox.paths["/tasks/{taskId}/claims"];
+    expect(claimCollection.post).toMatchObject({
+      operationId: "createTaskClaim",
+      security: [{ realmroot: ["task:claim"] }, { browserSession: [] }],
+      parameters: expect.arrayContaining([{ $ref: "#/components/parameters/IdempotencyKey" }]),
+    });
+    const claimResponseHeaders = {
+      "API-Version": { $ref: "#/components/headers/ApiVersion" },
+      "Request-Id": { $ref: "#/components/headers/RequestId" },
+      traceparent: { $ref: "#/components/headers/Traceparent" },
+      Link: { $ref: "#/components/headers/Link" },
+      "Idempotency-Replayed": { $ref: "#/components/headers/IdempotencyReplayed" },
+    };
+    for (const status of ["200", "201"] as const) {
+      expect(claimCollection.post.responses[status]).toMatchObject({
+        headers: claimResponseHeaders,
+        content: { "application/json": { schema: { $ref: "#/components/schemas/TaskClaim" } } },
+      });
+      expect(claimCollection.post.responses[status].headers).not.toHaveProperty("Location");
+      expect(claimCollection.post.responses[status].headers).not.toHaveProperty("ETag");
+    }
+    expect(claimCollection.post).not.toHaveProperty("requestBody");
+    expect(toolbox.paths).not.toHaveProperty("/tasks/{taskId}/claims/{claimId}");
+
+    for (const [path, method] of [
+      ["/task-assignments/{taskId}", "put"],
+      ["/task-claims/{taskId}", "put"],
+      ["/task-claims/{taskId}", "delete"],
+      ["/task-review-submissions/{taskId}", "get"],
+      ["/task-review-submissions/{taskId}", "put"],
+      ["/task-review-rejections/{taskId}", "put"],
+      ["/task-review-completions/{taskId}", "put"],
+      ["/task-cancellations/{taskId}", "put"],
+    ] as const) {
+      expect(toolbox.paths[path], `${method.toUpperCase()} ${path}`).toBeUndefined();
+    }
+  });
+
+  it("keeps every operation versioned and aligned with declared runtime scopes", async () => {
     const toolbox = await document();
     const scheme = toolbox.components.securitySchemes.realmroot;
     const declaredScopes = scheme["x-scopes-supported"];
     expect(scheme.openIdConnectUrl).toBe(`${env.OIDC_ISSUER}/.well-known/openid-configuration`);
     expect(Object.keys(declaredScopes).sort()).toEqual([...RESOURCE_SCOPES].sort());
+    expect(RESOURCE_SCOPES).not.toContain("task:release");
 
     for (const [path, pathItem] of Object.entries(toolbox.paths)) {
       for (const [method, operation] of Object.entries(pathItem)) {
@@ -312,58 +501,21 @@ describe("published Resource Server contract", () => {
           .map((operation) => [operation["x-cli-name"], { path, scopes: operation.security }]),
       ),
     );
-    expect(workflowScopes).toMatchObject({
-      claim: { path: "/task-claims/{taskId}", scopes: [{ realmroot: ["task:claim"] }] },
-      release: { path: "/task-claims/{taskId}", scopes: [{ realmroot: ["task:release"] }] },
-      review: { path: "/task-review-submissions/{taskId}", scopes: [{ realmroot: ["task:review"] }] },
-      reject: { path: "/task-review-rejections/{taskId}", scopes: [{ realmroot: ["task:reject"] }] },
-      complete: { path: "/task-review-completions/{taskId}", scopes: [{ realmroot: ["task:complete"] }] },
-      cancel: { path: "/task-cancellations/{taskId}", scopes: [{ realmroot: ["task:cancel"] }] },
-      wait: { path: "/task-events", scopes: [{ realmroot: ["task:read"] }] },
+    expect(workflowScopes).toEqual({
+      wait: { path: "/tasks/{taskId}/events", scopes: [{ realmroot: ["task:read"] }, { browserSession: [] }] },
     });
-    expect(toolbox.paths).not.toHaveProperty("/tasks/{taskId}/session");
-    expect(toolbox.paths).not.toHaveProperty("/tasks/{taskId}/session/ws");
+    expect(toolbox.paths).toHaveProperty("/tasks/{taskId}/session");
+    expect(toolbox.paths).toHaveProperty("/tasks/{taskId}/session/ws");
   });
 
-  it("publishes required reviewSubmissionVersion JSON bodies without If-Match on Review Decisions", async () => {
+  it("constrains each canonical Task pullRequestUrl mutation schema to absolute HTTP(S)", async () => {
     const toolbox = await document();
-    expect(toolbox.paths["/task-review-submissions/{taskId}"].put.requestBody).toEqual({
-      required: true,
-      content: { "application/json": { schema: { $ref: "#/components/schemas/TaskReviewSubmissionWrite" } } },
-    });
-    expect(toolbox.components.schemas.TaskReviewSubmissionWrite).toMatchObject({ example: {} });
-    expect(toolbox.components.schemas.TaskReviewSubmission).toMatchObject({
-      required: expect.arrayContaining(["reviewSubmissionVersion"]),
-      properties: { reviewSubmissionVersion: { type: "string" } },
-    });
-    for (const [path, schema] of [
-      ["/task-review-rejections/{taskId}", "TaskReviewRejectionWrite"],
-      ["/task-review-completions/{taskId}", "TaskReviewCompletionWrite"],
-    ] as const) {
-      const operation = toolbox.paths[path].put;
-      expect(operation.requestBody).toEqual({
-        required: true,
-        content: { "application/json": { schema: { $ref: `#/components/schemas/${schema}` } } },
-      });
-      expect(operation.parameters).not.toEqual(expect.arrayContaining([{ $ref: "#/components/parameters/IfMatch" }]));
-      expect(toolbox.components.schemas[schema]).toMatchObject({ required: ["reviewSubmissionVersion"] });
-    }
-  });
+    type Schema = { properties: Record<string, Schema>; oneOf: Schema[]; const?: string; format?: string; pattern?: string };
+    const schemas = toolbox.components.schemas as unknown as Record<string, Schema>;
+    const reviewStatus = schemas.TaskStatusUpdate.oneOf.find((variant) => variant.properties.status.const === "in-review")!;
 
-  it("documents committed notification failures only for Inbox-notifying Task mutations", async () => {
-    const toolbox = await document();
-    const expected = ["PUT /task-assignments/{taskId}", "PUT /task-review-rejections/{taskId}"];
-    const actual: string[] = [];
-    for (const [path, pathItem] of Object.entries(toolbox.paths)) {
-      const operation = pathItem.put;
-      if (!path.startsWith("/task-") || !operation) continue;
-      const unavailable = (operation.responses as Record<string, Record<string, unknown>>)["503"];
-      if (!unavailable || typeof unavailable.description !== "string" || !/committed.*Retry the same idempotent PUT/i.test(unavailable.description)) {
-        continue;
-      }
-      actual.push(`PUT ${path}`);
-      expect(unavailable.headers).toMatchObject({ "Retry-After": { $ref: "#/components/headers/RetryAfter" } });
+    for (const pullRequestUrl of [schemas.TaskFieldsUpdate.properties.pullRequestUrl, reviewStatus.properties.pullRequestUrl]) {
+      expect(pullRequestUrl).toMatchObject({ format: "uri", pattern: "^https?://" });
     }
-    expect(actual).toEqual(expected);
   });
 });

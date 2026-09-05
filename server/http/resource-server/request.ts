@@ -12,18 +12,14 @@ import { HTTPException } from "hono/http-exception";
 
 type ApiContext = Context<{ Bindings: Env }>;
 
-export function isResourcePrincipal(c: ApiContext): boolean {
-  return c.get("principal")?.source === "token";
-}
-
 export function resolveActor(c: ApiContext): { actorType: TaskActionWriteActorType; actorId: string; sessionId: null } {
-  const identity = c.get("identityType") || "user";
-  if (identity !== "user" && identity !== "realmroot:agent") {
-    throw new HTTPException(403, { message: "User or Agent identity is required" });
-  }
-  const actorId = identity === "user" ? c.get("ownerId") : c.get("principal")?.actorId;
-  if (!actorId) throw new HTTPException(403, { message: "Actor identity is required" });
-  return { actorType: identity, actorId, sessionId: null };
+  const principal = c.get("principal");
+  const actorType: TaskActionWriteActorType = principal.type === "agent" ? "realmroot:agent" : principal.type === "human" ? "user" : principal.type;
+  return {
+    actorType,
+    actorId: principal.actorId ?? principal.subjectId,
+    sessionId: null,
+  };
 }
 
 export function assertResourceWriteFields(
@@ -87,6 +83,7 @@ export function resourceIdempotencyFor<T extends { id: string }>(
   collection: string,
   versionOf: (resource: T) => string,
   represent: (resource: T) => unknown,
+  options: { includeResourceHeaders?: boolean } = {},
 ): ResourceIdempotency<T> | undefined {
   const idempotency = c.get("resourceIdempotency");
   if (!idempotency) return undefined;
@@ -98,24 +95,21 @@ export function resourceIdempotencyFor<T extends { id: string }>(
         status: 201,
         body: JSON.stringify(represent(resource)),
         contentType: "application/json; charset=UTF-8",
-        location: new URL(`/api/${collection}/${encodeURIComponent(id)}`, c.req.url).toString(),
-        etag: `"${versionOf(resource)}"`,
+        location: options.includeResourceHeaders === false ? "" : new URL(`/api/${collection}/${encodeURIComponent(id)}`, c.req.url).toString(),
+        etag: options.includeResourceHeaders === false ? "" : `"${versionOf(resource)}"`,
       };
     },
   };
 }
 
 export async function readJsonBody<T>(c: ApiContext): Promise<T | Response> {
-  if (isResourcePrincipal(c) && c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
     return v2Problem(c, 415, "unsupported-media-type", "Unsupported media type", "Content-Type must be application/json");
   }
   try {
     return await c.req.json<T>();
   } catch {
-    if (isResourcePrincipal(c)) {
-      return v2Problem(c, 400, "invalid-json", "Invalid JSON", "The request body must be valid JSON");
-    }
-    throw new HTTPException(400, { message: "The request body must be valid JSON" });
+    return v2Problem(c, 400, "invalid-json", "Invalid JSON", "The request body must be valid JSON");
   }
 }
 
@@ -125,15 +119,18 @@ export async function completeExternalCreation(
   resourceId: string,
   version: string,
   responseBody: unknown,
+  status: 200 | 201 = 201,
+  options: { includeResourceHeaders?: boolean } = {},
 ): Promise<void> {
   const idempotency = c.get("resourceIdempotency");
   if (!idempotency) return;
-  const location = new URL(`/api/${collection}/${encodeURIComponent(resourceId)}`, c.req.url).toString();
-  const etag = `"${version}"`;
+  const location =
+    options.includeResourceHeaders === false ? "" : new URL(`/api/${collection}/${encodeURIComponent(resourceId)}`, c.req.url).toString();
+  const etag = options.includeResourceHeaders === false ? "" : `"${version}"`;
   const completed = {
     ...idempotency,
     responseFor: () => ({
-      status: 201,
+      status,
       body: JSON.stringify(responseBody),
       contentType: "application/json; charset=UTF-8",
       location,

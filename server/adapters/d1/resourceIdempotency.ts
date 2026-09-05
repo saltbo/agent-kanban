@@ -54,6 +54,44 @@ export function completeIdempotency<T>(db: D1, idempotency: ResourceIdempotency<
     );
 }
 
+export function completeIdempotencyWhen<T>(
+  db: D1,
+  idempotency: ResourceIdempotency<T>,
+  resourceId: string,
+  resource: T,
+  existsSql: string,
+  existsBindings: readonly unknown[],
+): D1PreparedStatement {
+  if (!idempotency.responseFor) throw new Error("Idempotent creation is missing its response snapshot factory");
+  const response = idempotency.responseFor(resource);
+  return db
+    .prepare(
+      `INSERT INTO resource_idempotency_records
+         (owner_id, actor_id, api_version, idempotency_key, method, path,
+          request_hash, resource_kind, resource_id, response_status, response_body,
+          response_content_type, response_location, response_etag, expires_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+24 hours')
+       WHERE EXISTS (${existsSql})`,
+    )
+    .bind(
+      idempotency.ownerId,
+      idempotency.actorId,
+      idempotency.apiVersion,
+      idempotency.key,
+      idempotency.method,
+      idempotency.path,
+      idempotency.requestHash,
+      idempotency.resourceKind,
+      resourceId,
+      response.status,
+      response.body,
+      response.contentType,
+      response.location,
+      response.etag,
+      ...existsBindings,
+    );
+}
+
 export async function resolveIdempotentResponse<T>(db: D1, idempotency: ResourceIdempotency<T>): Promise<IdempotentHttpResponse | null> {
   const record = await db
     .prepare(

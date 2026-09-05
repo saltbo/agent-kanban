@@ -20,6 +20,7 @@ describe("Resource Server HTTP capabilities", () => {
     const html = await docs.text();
     expect(html).toContain("Agent Kanban API Docs");
     expect(html).toContain("/api/openapi.json");
+    expect((await api.request("/api/docs/openapi.json", {}, env)).status).toBe(404);
 
     expect(openapi.status).toBe(200);
     expect(openapi.headers.get("content-type")).toContain("application/json");
@@ -45,7 +46,7 @@ describe("Resource Server HTTP capabilities", () => {
     expect((await api.request("/api/toolbox/openapi.json", {}, env)).status).toBe(404);
   });
 
-  it("[spec: resource-server/workflow-commands] publishes only the seven resource-first workflow command names", async () => {
+  it("[spec: resource-server/workflow-commands] publishes only the Task wait command name", async () => {
     const response = await api.request("/api/openapi.json", {}, env);
     expect(response.status).toBe(200);
     const document = (await response.json()) as { paths: Record<string, Record<string, Record<string, unknown>>> };
@@ -55,6 +56,6 @@ describe("Resource Server HTTP capabilities", () => {
       .map((operation) => operation["x-cli-name"])
       .sort();
 
-    expect(commands).toEqual(["cancel", "claim", "complete", "reject", "release", "review", "wait"]);
+    expect(commands).toEqual(["wait"]);
   });
 });

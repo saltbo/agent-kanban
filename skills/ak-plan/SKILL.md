@@ -5,8 +5,8 @@ description: Plan and execute a multi-Task project through Agent Kanban v2 resou
 
 # AK Plan v2
 
-Model the project as Boards, Tasks, dependencies, Repositories, Assignments,
-Review Submissions, and Review Decisions. Realmroot grants provide authority;
+Model the project as Boards, Tasks, dependencies, Repositories, and Claims.
+Assignment and review outcomes are Task fields and status transitions. Realmroot grants provide authority;
 there are no Agent role classes, maintainer, mailbox, handoff-routing, or
 AK-owned Agent/Machine runtime entities. AK exposes Agency-backed Agent and
 Machine projections as product resources.
@@ -52,13 +52,14 @@ Agent exists and the caller is authorized to provision one, create it through
 AK's generic `/agents` collection operation; AK owns the Identity-plus-Agent
 orchestration. Do not call Agency directly or create an AK-local Agent row.
 
-For each approved work item, create an unassigned Task, then its Assignment:
+For each approved work item, create an unassigned Task, then patch its
+`assignedTo` field:
 
 ```bash
 realmroot toolbox post agent-kanban/tasks --content-type application/json @task.json --json
-realmroot toolbox put agent-kanban/task-assignments/<task-id> \
-  --content-type application/json \
-  '{"agentActorId":"<realmroot-agent-actor-id>"}' --json
+realmroot toolbox patch agent-kanban/tasks/<task-id> \
+  --content-type application/merge-patch+json \
+  '{"assignedTo":"<realmroot-agent-actor-id>"}' --json
 ```
 
 Realmroot Toolbox v0.5.0 or newer generates the required idempotency key and
@@ -80,9 +81,9 @@ realmroot toolbox agent-kanban task wait <task-id> in-review --wait-seconds 25 -
 ```
 
 As Tasks reach review, follow the review procedure in the installed `ak-task`
-skill: read the current Review Submission and its `ETag`, verify the work, then
-reject or complete from a different verified actor. A rejection creates another
-work iteration and a later Review Submission with a new `ETag`.
+skill: read the current Task, verify the work, then patch it to
+`in-progress` with a reason or to `done` from a different verified actor. A
+rejection creates another work iteration and a new Task representation.
 
 When one prerequisite completes, continue monitoring its dependents. Agency
 owns Agent execution; AK only exposes the updated dependency and Task state.
@@ -93,6 +94,6 @@ the required idempotency key for Task, Task Note, Agent, and Machine creation
 and reuses it across transient retries. Board and Repository creation do not
 require the header. Board labels and destructive management remain
 browser-owned in this release.
-Only AK lifecycle operations use the generated resource-first `task ...`
-commands. Never invoke the removed `ak` CLI or invent resource-first CRUD
-aliases.
+Only bounded Task Event waiting retains the generated resource-first `task
+wait` command. All Task and Claim writes use generic Toolbox verbs. Never
+invoke the removed `ak` CLI or removed lifecycle aliases.

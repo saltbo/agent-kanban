@@ -33,8 +33,7 @@ describe("removed internal HTTP routes", () => {
       env,
     );
 
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ error: { code: "FORBIDDEN", message: "Operation is not available to this principal" } });
+    expect(response.status).toBe(404);
   });
 
   it("rejects the removed repository GitHub token action route at the API boundary", async () => {
@@ -52,7 +51,6 @@ describe("removed internal HTTP routes", () => {
       env,
     );
 
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ error: { code: "FORBIDDEN", message: "Operation is not available to this principal" } });
+    expect(response.status).toBe(404);
   });
 });

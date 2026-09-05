@@ -2,69 +2,72 @@ import { connectSessionSocket, EnborApiError, type EnborClient, type Session } f
 import { createAgencyClient } from "@server/adapters/agency/client";
 import {
   addTaskAction,
-  assertTaskOwner,
   createTask,
   deleteTask,
   getTask,
   getTaskAction,
-  getTaskNotes,
   listTaskNotePage,
   listTaskPage,
-  listTasks,
   updateTask,
 } from "@server/adapters/d1/taskRepo";
+import { d1TaskAssignmentRepository } from "@server/adapters/d1/tasks/d1TaskAssignments";
+import { d1TaskCancellationRepository } from "@server/adapters/d1/tasks/d1TaskCancellations";
+import { d1TaskReviewDecisionRepository } from "@server/adapters/d1/tasks/d1TaskReviewDecisions";
+import { d1TaskReviewSubmissionRepository } from "@server/adapters/d1/tasks/d1TaskReviewSubmissions";
+import { inboxTaskLifecycleNotifier } from "@server/adapters/realmroot/inboxTaskLifecycleNotifier";
 import { createSSEResponse } from "@server/adapters/stream/sse";
+import { authorizeScope } from "@server/auth/middleware";
 import type { Env } from "@server/env";
+import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
+import { v2Problem } from "@server/http/middleware/v2Contract";
 import { agencyAuthorization } from "@server/http/resource-server/agencyDependencies";
+import { mergePatch } from "@server/http/resource-server/mergePatch";
 import { pageResponse, readPageWindow } from "@server/http/resource-server/pagination";
 import { taskNoteResource, taskResource } from "@server/http/resource-server/representation";
 import {
   assertRequiredResourceString,
   assertResourceWriteFields,
-  isResourcePrincipal,
   readJsonBody,
   resolveActor,
   resourceIdempotencyFor,
   setCreatedResourceHeaders,
 } from "@server/http/resource-server/request";
 import { normalizeTaskCreate, normalizeTaskUpdate } from "@server/http/tasks/request";
+import { AgencySessionInvalidResponse } from "@server/usecases/agency/failures";
+import { replaceTaskAssignment, TaskAssignmentFailure } from "@server/usecases/tasks/replaceTaskAssignment";
+import { replaceTaskCancellation, TaskCancellationFailure } from "@server/usecases/tasks/replaceTaskCancellation";
+import { replaceTaskReviewCompletion, replaceTaskReviewRejection, TaskReviewDecisionFailure } from "@server/usecases/tasks/replaceTaskReviewDecision";
+import {
+  readTaskReviewSubmission,
+  replaceTaskReviewSubmission,
+  TaskReviewSubmissionFailure,
+} from "@server/usecases/tasks/replaceTaskReviewSubmission";
+import { notifyTaskLifecycle } from "@server/usecases/tasks/taskLifecycleNotifications";
 import { TASK_STATUSES, type Task } from "@shared";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { mediaType, readStrongVersionPrecondition, requestActorId, taskWorkflowActor } from "./workflowSupport";
 
 export function registerTaskResourceRoutes(api: Hono<{ Bindings: Env }>): void {
-  registerTaskOwnership(api);
-  api.post("/api/tasks", createTaskResource);
-  api.get("/api/tasks", listTaskResources);
-  api.get("/api/tasks/:id", getTaskResource);
-  api.patch("/api/tasks/:id", updateTaskResource);
-  api.delete("/api/tasks/:id", deleteTaskResource);
-  api.get("/api/tasks/:id/session", getTaskSession);
-  api.get("/api/tasks/:id/session/ws", getTaskSessionWebSocket);
-  api.post("/api/tasks/:id/notes", createTaskNote);
-  api.get("/api/tasks/:id/notes", listTaskNotes);
-  api.get("/api/tasks/:id/notes/:noteId", getTaskNote);
-  api.get("/api/tasks/:id/stream", streamTask);
+  api.post("/api/tasks", authorizeScope("task:write"), idempotencyMiddleware, createTaskResource);
+  api.get("/api/tasks", authorizeScope("task:read"), listTaskResources);
+  api.get("/api/tasks/:id", authorizeScope("task:read"), getTaskResource);
+  api.patch("/api/tasks/:id", authorizeScope("task:write"), updateTaskResource);
+  api.delete("/api/tasks/:id", authorizeScope("task:write"), deleteTaskResource);
+  api.get("/api/tasks/:id/session", authorizeScope("task:read"), getTaskSession);
+  api.get("/api/tasks/:id/session/ws", authorizeScope("task:read"), getTaskSessionWebSocket);
+  api.post("/api/tasks/:id/notes", authorizeScope("task:write"), idempotencyMiddleware, createTaskNote);
+  api.get("/api/tasks/:id/notes", authorizeScope("task:read"), listTaskNotes);
+  api.get("/api/tasks/:id/notes/:noteId", authorizeScope("task:read"), getTaskNote);
+  api.get("/api/tasks/:id/stream", authorizeScope("task:read"), streamTask);
 }
 
 type TaskContext = Context<{ Bindings: Env }>;
 
-function registerTaskOwnership(api: Hono<{ Bindings: Env }>): void {
-  api.use("/api/tasks/:id/*", async (c, next) => {
-    await assertTaskOwner(c.env.DB, c.req.param("id"), c.get("ownerId"));
-    return next();
-  });
-  api.use("/api/tasks/:id", async (c, next) => {
-    if (c.req.method === "POST") return next();
-    await assertTaskOwner(c.env.DB, c.req.param("id"), c.get("ownerId"));
-    return next();
-  });
-}
-
 async function createTaskResource(c: TaskContext): Promise<Response> {
   const body = await readJsonBody<Record<string, unknown>>(c);
   if (body instanceof Response) return body;
-  normalizeTaskCreate(body, isResourcePrincipal(c));
+  normalizeTaskCreate(body);
   const { actorType, actorId } = resolveActor(c);
   const task = await createTask(
     c.env.DB,
@@ -73,71 +76,255 @@ async function createTaskResource(c: TaskContext): Promise<Response> {
     resourceIdempotencyFor(
       c,
       "tasks",
-      (resource) => resource.updated_at,
+      (resource) => String(resource.version),
       (resource) => taskResource(resource, c.req.url),
     ),
   );
-  if (isResourcePrincipal(c)) {
-    setCreatedResourceHeaders(c, "tasks", task.id, task.updated_at);
-    return c.json(taskResource(task, c.req.url), 201);
-  }
-  return c.json(task, 201);
+  setCreatedResourceHeaders(c, "tasks", task.id, String(task.version));
+  return c.json(taskResource(task, c.req.url), 201);
 }
 
 async function listTaskResources(c: TaskContext): Promise<Response> {
   const query = c.req.query();
   const filters = {
-    repository_id: isResourcePrincipal(c) ? query.repositoryId : query.repository_id,
-    board_id: isResourcePrincipal(c) ? query.boardId : query.board_id,
-    assigned_to: isResourcePrincipal(c) ? query.assignedTo : query.assigned_to,
-    status: isResourcePrincipal(c) ? query.status?.replaceAll("-", "_") : query.status,
+    repository_id: query.repositoryId,
+    board_id: query.boardId,
+    assigned_to: query.assignedTo,
+    status: query.status?.replaceAll("-", "_"),
     label: query.label,
     parent: query.parent,
   };
   if (filters.status !== undefined && !TASK_STATUSES.includes(filters.status as (typeof TASK_STATUSES)[number])) {
     throw new HTTPException(400, { message: `status must be one of: ${TASK_STATUSES.join(", ")}` });
   }
-  if (isResourcePrincipal(c)) {
-    const window = await readPageWindow(c);
-    if (window instanceof Response) return window;
-    return pageResponse(c, await listTaskPage(c.env.DB, c.get("ownerId"), filters, window), window, taskResource);
-  }
-  return c.json(await listTasks(c.env.DB, c.get("ownerId"), filters));
+  const window = await readPageWindow(c);
+  if (window instanceof Response) return window;
+  return pageResponse(c, await listTaskPage(c.env.DB, c.get("ownerId"), filters, window), window, taskResource);
 }
 
 async function getTaskResource(c: TaskContext): Promise<Response> {
   const task = await requireTask(c);
-  if (isResourcePrincipal(c)) {
-    c.header("ETag", `"${task.updated_at}"`);
-    return c.json(taskResource(task, c.req.url));
-  }
-  return c.json(task);
+  c.header("ETag", `"${task.version}"`);
+  return c.json(taskResource(task, c.req.url));
 }
 
 async function updateTaskResource(c: TaskContext): Promise<Response> {
-  const body = await c.req.json();
-  normalizeTaskUpdate(body);
-  await requireTask(c);
-  const task = await updateTask(c.env.DB, taskId(c), body, c.get("ownerId"));
-  if (!task) throw new HTTPException(404, { message: "Task not found" });
-  return c.json(task);
+  if (mediaType(c) !== "application/merge-patch+json") {
+    return v2Problem(c, 415, "unsupported-media-type", "Unsupported media type", "Content-Type must be application/merge-patch+json");
+  }
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return v2Problem(c, 400, "invalid-json", "Invalid JSON", "The request body must be valid JSON");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return v2Problem(c, 422, "invalid-task-patch", "Invalid Task patch", "Task patch must be a JSON object");
+  }
+  const current = await requireTask(c);
+
+  const patch = body as Record<string, unknown>;
+  if (Object.keys(patch).length === 0) {
+    return v2Problem(c, 422, "invalid-task-patch", "Invalid Task patch", "Task patch must contain at least one property");
+  }
+  const isAssignment = Object.hasOwn(patch, "assignedTo");
+  const isTransition = Object.hasOwn(patch, "status");
+  if (isAssignment && isTransition) {
+    return v2Problem(c, 422, "invalid-task-patch", "Invalid Task patch", "Assignment and status changes must be separate requests");
+  }
+  if (isAssignment) return patchTaskAssignment(c, patch, current.version);
+  if (isTransition) return patchTaskStatus(c, patch, current.version);
+
+  normalizeTaskUpdate(patch);
+  for (const field of ["input", "metadata"] as const) {
+    if (Object.hasOwn(patch, field)) patch[field] = mergePatch(current[field], patch[field]);
+  }
+  const task = await updateTask(c.env.DB, taskId(c), patch, c.get("ownerId"), current.version);
+  if (!task) return taskUpdateConflict(c, "Task changed before the patch was committed; reread it before retrying");
+  c.header("ETag", `"${task.version}"`);
+  return c.json(taskResource(task, c.req.url));
+}
+
+async function patchTaskAssignment(c: TaskContext, patch: Record<string, unknown>, expectedTaskVersion: number): Promise<Response> {
+  if (Object.keys(patch).length !== 1 || typeof patch.assignedTo !== "string" || !patch.assignedTo.trim() || patch.assignedTo.length > 200) {
+    return v2Problem(
+      c,
+      422,
+      "invalid-task-assignment",
+      "Invalid Task assignment",
+      "assignedTo must be the only property and contain an Agent actor ID",
+    );
+  }
+  try {
+    const result = await replaceTaskAssignment(d1TaskAssignmentRepository(c.env.DB), {
+      ownerId: c.get("ownerId"),
+      taskId: taskId(c),
+      assigneeActorId: patch.assignedTo,
+      assignedByActorId: taskWorkflowActor(c).id,
+      expectedTaskVersion,
+    });
+    await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
+      taskId: result.assignment.taskId,
+      assigneeActorId: result.assignment.agentActorId,
+      ownerId: c.get("ownerId"),
+      event: "assigned",
+      version: result.version,
+    });
+    return updatedTaskResponse(c);
+  } catch (error) {
+    if (!(error instanceof TaskAssignmentFailure)) throw error;
+    if (await taskVersionChanged(c, expectedTaskVersion)) {
+      return taskUpdateConflict(c, "Task changed before the assignment was committed; reread it before retrying");
+    }
+    if (error.code === "TASK_NOT_FOUND") return v2Problem(c, 404, "task-not-found", "Task not found", error.message);
+    return v2Problem(c, 409, "task-assignment-conflict", "Task assignment conflict", error.message);
+  }
+}
+
+async function patchTaskStatus(c: TaskContext, patch: Record<string, unknown>, expectedTaskVersion: number): Promise<Response> {
+  const status = patch.status;
+  if (typeof status !== "string" || !["in-review", "in-progress", "done", "cancelled"].includes(status)) {
+    return v2Problem(c, 422, "invalid-task-status", "Invalid Task status", "status must be in-review, in-progress, done, or cancelled");
+  }
+  const allowed =
+    status === "in-review"
+      ? new Set(["status", "pullRequestUrl"])
+      : status === "in-progress"
+        ? new Set(["status", "statusReason"])
+        : new Set(["status"]);
+  if (Object.keys(patch).some((field) => !allowed.has(field))) {
+    return v2Problem(c, 422, "invalid-task-transition", "Invalid Task transition", `Unsupported properties for transition to ${status}`);
+  }
+  if (patch.pullRequestUrl !== undefined && (typeof patch.pullRequestUrl !== "string" || !isHttpUrl(patch.pullRequestUrl))) {
+    return v2Problem(c, 422, "invalid-task-transition", "Invalid Task transition", "pullRequestUrl must be an absolute HTTP or HTTPS URL");
+  }
+  if (patch.statusReason !== undefined && (typeof patch.statusReason !== "string" || patch.statusReason.length > 4000)) {
+    return v2Problem(c, 422, "invalid-task-transition", "Invalid Task transition", "statusReason must be a string of at most 4000 characters");
+  }
+
+  try {
+    if (status === "in-review") {
+      await replaceTaskReviewSubmission(d1TaskReviewSubmissionRepository(c.env.DB), {
+        ownerId: c.get("ownerId"),
+        taskId: taskId(c),
+        agentActorId: requestActorId(c),
+        pullRequestUrl: (patch.pullRequestUrl as string | undefined) ?? null,
+        expectedTaskVersion,
+      });
+    } else if (status === "cancelled") {
+      await replaceTaskCancellation(d1TaskCancellationRepository(c.env.DB), {
+        ownerId: c.get("ownerId"),
+        taskId: taskId(c),
+        actor: taskWorkflowActor(c),
+        expectedTaskVersion,
+      });
+    } else {
+      const submission = await readTaskReviewSubmission(d1TaskReviewSubmissionRepository(c.env.DB), {
+        ownerId: c.get("ownerId"),
+        taskId: taskId(c),
+      });
+      if (status === "in-progress") {
+        const result = await replaceTaskReviewRejection(d1TaskReviewDecisionRepository(c.env.DB), {
+          ownerId: c.get("ownerId"),
+          taskId: taskId(c),
+          reviewSubmissionVersion: submission.version,
+          actor: taskWorkflowActor(c),
+          reason: (patch.statusReason as string | undefined) || null,
+          expectedTaskVersion,
+        });
+        await notifyTaskLifecycle(inboxTaskLifecycleNotifier(c.env), {
+          taskId: result.rejection.taskId,
+          assigneeActorId: result.assigneeActorId,
+          ownerId: c.get("ownerId"),
+          event: "review_rejected",
+          version: result.version,
+        });
+      } else {
+        await replaceTaskReviewCompletion(d1TaskReviewDecisionRepository(c.env.DB), {
+          ownerId: c.get("ownerId"),
+          taskId: taskId(c),
+          reviewSubmissionVersion: submission.version,
+          actor: taskWorkflowActor(c),
+          expectedTaskVersion,
+        });
+      }
+    }
+    return updatedTaskResponse(c);
+  } catch (error) {
+    if (error instanceof TaskReviewSubmissionFailure) {
+      if (await taskVersionChanged(c, expectedTaskVersion)) {
+        return taskUpdateConflict(c, "Task changed before the transition was committed; reread it before retrying");
+      }
+      if (error.code === "TASK_NOT_FOUND") return v2Problem(c, 404, "task-not-found", "Task not found", error.message);
+      if (error.code === "TASK_REVIEW_FORBIDDEN") return v2Problem(c, 403, "task-transition-forbidden", "Task transition forbidden", error.message);
+      return v2Problem(c, 409, "task-transition-conflict", "Task transition conflict", error.message);
+    }
+    if (error instanceof TaskReviewDecisionFailure) {
+      if (await taskVersionChanged(c, expectedTaskVersion)) {
+        return taskUpdateConflict(c, "Task changed before the transition was committed; reread it before retrying");
+      }
+      if (error.code === "TASK_NOT_FOUND") return v2Problem(c, 404, "task-not-found", "Task not found", error.message);
+      if (error.code === "TASK_REVIEW_DECISION_FORBIDDEN")
+        return v2Problem(c, 403, "task-transition-forbidden", "Task transition forbidden", error.message);
+      if (error.code === "TASK_REVIEW_PRECONDITION_FAILED") return taskUpdateConflict(c, `${error.message}; reread the Task before retrying`);
+      return v2Problem(c, 409, "task-transition-conflict", "Task transition conflict", error.message);
+    }
+    if (error instanceof TaskCancellationFailure) {
+      if (await taskVersionChanged(c, expectedTaskVersion)) {
+        return taskUpdateConflict(c, "Task changed before the transition was committed; reread it before retrying");
+      }
+      if (error.code === "TASK_NOT_FOUND") return v2Problem(c, 404, "task-not-found", "Task not found", error.message);
+      return v2Problem(c, 409, "task-transition-conflict", "Task transition conflict", error.message);
+    }
+    throw error;
+  }
+}
+
+function taskUpdateConflict(c: TaskContext, detail: string): Response {
+  return v2Problem(c, 409, "task-update-conflict", "Task update conflict", detail);
+}
+
+async function taskVersionChanged(c: TaskContext, expectedTaskVersion: number): Promise<boolean> {
+  const task = await getTask(c.env.DB, taskId(c), c.get("ownerId"));
+  return task !== null && task.version !== expectedTaskVersion;
+}
+
+async function updatedTaskResponse(c: TaskContext): Promise<Response> {
+  const task = await getTask(c.env.DB, taskId(c), c.get("ownerId"));
+  if (!task) return v2Problem(c, 404, "task-not-found", "Task not found", "Task not found");
+  c.header("ETag", `"${task.version}"`);
+  return c.json(taskResource(task, c.req.url));
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function deleteTaskResource(c: TaskContext): Promise<Response> {
-  await requireTask(c);
-  if (!(await deleteTask(c.env.DB, taskId(c), c.get("ownerId")))) {
+  const expectedVersion = readStrongVersionPrecondition(c, "Task");
+  if (expectedVersion instanceof Response) return expectedVersion;
+  const current = await requireTask(c);
+  if (String(current.version) !== expectedVersion) {
+    return v2Problem(c, 412, "task-precondition-failed", "Task precondition failed", "If-Match does not identify the current Task version");
+  }
+  if (!(await deleteTask(c.env.DB, taskId(c), c.get("ownerId"), current.version))) {
+    const latest = await getTask(c.env.DB, taskId(c), c.get("ownerId"));
+    if (latest) return v2Problem(c, 412, "task-precondition-failed", "Task precondition failed", "Task changed before deletion was committed");
     throw new HTTPException(404, { message: "Task not found" });
   }
-  return c.json({ ok: true });
+  return c.body(null, 204);
 }
 
 async function createTaskNote(c: TaskContext): Promise<Response> {
   const body = await readJsonBody<{ detail: string }>(c);
   if (body instanceof Response) return body;
-  if (isResourcePrincipal(c)) {
-    assertResourceWriteFields(body, new Set(["detail"]), "Task Note");
-    assertRequiredResourceString(body, "detail", "Task Note");
-  }
+  assertResourceWriteFields(body, new Set(["detail"]), "Task Note");
+  assertRequiredResourceString(body, "detail", "Task Note");
   if (!body.detail) throw new HTTPException(400, { message: "detail is required" });
   await requireTask(c);
   const { actorType, actorId, sessionId } = resolveActor(c);
@@ -156,33 +343,24 @@ async function createTaskNote(c: TaskContext): Promise<Response> {
       (resource) => taskNoteResource(resource, c.req.url),
     ),
   );
-  if (isResourcePrincipal(c)) {
-    setCreatedResourceHeaders(c, `tasks/${encodeURIComponent(taskId(c))}/notes`, note.id, note.id);
-    return c.json(taskNoteResource(note, c.req.url), 201);
-  }
-  return c.json(note, 201);
+  setCreatedResourceHeaders(c, `tasks/${encodeURIComponent(taskId(c))}/notes`, note.id, note.id);
+  return c.json(taskNoteResource(note, c.req.url), 201);
 }
 
 async function listTaskNotes(c: TaskContext): Promise<Response> {
   await requireTask(c);
   const since = c.req.query("since") || undefined;
-  if (isResourcePrincipal(c)) {
-    const window = await readPageWindow(c);
-    if (window instanceof Response) return window;
-    return pageResponse(c, await listTaskNotePage(c.env.DB, taskId(c), window, since), window, taskNoteResource);
-  }
-  return c.json(await getTaskNotes(c.env.DB, taskId(c), since));
+  const window = await readPageWindow(c);
+  if (window instanceof Response) return window;
+  return pageResponse(c, await listTaskNotePage(c.env.DB, taskId(c), window, since), window, taskNoteResource);
 }
 
 async function getTaskNote(c: TaskContext): Promise<Response> {
   await requireTask(c);
   const note = await getTaskAction(c.env.DB, taskId(c), noteId(c));
   if (note?.action !== "commented") throw new HTTPException(404, { message: "Task Note not found" });
-  if (isResourcePrincipal(c)) {
-    c.header("ETag", `"${note.id}"`);
-    return c.json(taskNoteResource(note, c.req.url));
-  }
-  return c.json(note);
+  c.header("ETag", `"${note.id}"`);
+  return c.json(taskNoteResource(note, c.req.url));
 }
 
 async function getTaskSession(c: TaskContext): Promise<Response> {
@@ -247,9 +425,9 @@ async function taskSessionClient(c: TaskContext, scopes: readonly string[]) {
 
 async function readAgencySession(client: EnborClient, sessionId: string, projectId: string): Promise<Session> {
   const session = await client.sessions.get(sessionId);
-  if (!session?.metadata) throw new EnborApiError(502, "Agency returned an invalid Session response", session);
+  if (!session?.metadata) throw new AgencySessionInvalidResponse("Agency returned an invalid Session response");
   if (session.metadata.uid !== sessionId || session.metadata.projectId !== projectId) {
-    throw new EnborApiError(502, "Agency returned a Session outside the requested identity or Project", session);
+    throw new AgencySessionInvalidResponse("Agency returned a Session outside the requested identity or Project");
   }
   return session;
 }
@@ -328,10 +506,13 @@ function isBackfillRequest(value: string | ArrayBuffer): value is string {
 
 function mapSessionObservationFailure(c: TaskContext, error: unknown): Response {
   if (error instanceof EnborApiError && error.status === 404) {
-    return c.json({ error: { code: "AGENCY_SESSION_NOT_FOUND", message: "Agency Session not found for the Task" } }, 404);
+    return v2Problem(c, 404, "agency-session-not-found", "Agency Session not found", "Agency Session not found for the Task");
+  }
+  if (error instanceof AgencySessionInvalidResponse) {
+    return v2Problem(c, 502, "agency-session-invalid-response", "Invalid Agency Session response", "Agency returned an invalid Session response");
   }
   if (error instanceof EnborApiError) {
-    return c.json({ error: { code: "AGENCY_SESSION_UNAVAILABLE", message: "Agency Session observation is unavailable" } }, 503);
+    return v2Problem(c, 503, "agency-session-unavailable", "Agency Session unavailable", "Agency Session observation is unavailable");
   }
   throw error;
 }

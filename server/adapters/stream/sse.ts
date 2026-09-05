@@ -1,6 +1,7 @@
 import { getTaskActions } from "@server/adapters/d1/taskRepo";
 import { MAX_TASK_PARTITION_ROWS } from "@server/db";
 import type { Env } from "@server/env";
+import { ApplicationError } from "@server/usecases/applicationError";
 
 interface SSEEvent {
   id: string;
@@ -20,15 +21,7 @@ export async function createSSEResponse(env: Env, taskId: string, lastEventId: s
       .bind(lastEventId, taskId)
       .first<{ created_at: string }>();
     if (!ref) {
-      return Response.json(
-        {
-          error: {
-            code: "INVALID_LAST_EVENT_ID",
-            message: "Unknown event ID, reconnect without Last-Event-ID",
-          },
-        },
-        { status: 400 },
-      );
+      throw new ApplicationError("invalid-request", "Unknown event ID, reconnect without Last-Event-ID");
     }
     since = ref.created_at;
   }

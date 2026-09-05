@@ -1,5 +1,6 @@
+import { completeIdempotencyWhen, type ResourceIdempotency } from "@server/adapters/d1/resourceIdempotency";
 import { type D1, newLongId } from "@server/db";
-import type { TaskClaimCommit, TaskClaimRepository } from "@server/usecases/tasks/replaceTaskClaim";
+import type { TaskClaim, TaskClaimCommit, TaskClaimRepository } from "@server/usecases/tasks/replaceTaskClaim";
 
 interface CommitTaskClaimInput {
   ownerId?: string;
@@ -10,20 +11,33 @@ interface CommitTaskClaimInput {
   runtimeSessionId: string;
 }
 
-export async function commitTaskClaim(db: D1, input: CommitTaskClaimInput): Promise<TaskClaimCommit | null> {
+export async function commitTaskClaim(
+  db: D1,
+  input: CommitTaskClaimInput,
+  idempotency?: ResourceIdempotency<TaskClaim>,
+): Promise<TaskClaimCommit | null> {
   const claimedAt = new Date().toISOString();
   const actionId = newLongId();
   const ownerGuard = input.ownerId ? "AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)" : "";
   const updateBindings: unknown[] = [claimedAt, actionId, input.taskId, input.actorId];
   if (input.ownerId) updateBindings.push(input.ownerId);
 
-  const results = await db.batch([
+  const canonicalClaim: TaskClaim = {
+    id: actionId,
+    taskId: input.taskId,
+    agentActorId: input.actorId,
+    runtime: input.runtime,
+    runtimeSessionId: input.runtimeSessionId,
+    claimedAt,
+  };
+  const statements = [
     db
       .prepare(`
         UPDATE tasks SET
           status = 'in_progress',
           creation_token = NULL,
           updated_at = ?,
+          version = version + 1,
           transition_token = ?
         WHERE id = ? AND status = 'todo' AND assigned_to = ?
           AND assignee_identity_type = 'realmroot_actor'
@@ -49,6 +63,18 @@ export async function commitTaskClaim(db: D1, input: CommitTaskClaimInput): Prom
         WHERE id = ? AND transition_token = ?
       `)
       .bind(input.taskId, actionId, input.actorId, input.runtime, input.runtimeSessionId, claimedAt, input.taskId, actionId),
+    ...(idempotency
+      ? [
+          completeIdempotencyWhen(
+            db,
+            idempotency,
+            actionId,
+            canonicalClaim,
+            "SELECT 1 FROM task_actions WHERE id = ? AND task_id = ? AND action = 'claimed'",
+            [actionId, input.taskId],
+          ),
+        ]
+      : []),
     db
       .prepare(`
         UPDATE tasks SET active_claim_id = ?
@@ -61,14 +87,15 @@ export async function commitTaskClaim(db: D1, input: CommitTaskClaimInput): Prom
         WHERE id = ? AND transition_token = ?
       `)
       .bind(input.taskId, actionId),
-  ]);
+  ];
+  const results = await db.batch(statements);
 
   return (results[0]?.meta?.changes ?? 0) === 1 && (results[2]?.meta?.changes ?? 0) === 1
     ? { actionId, claimedAt, runtime: input.runtime, runtimeSessionId: input.runtimeSessionId }
     : null;
 }
 
-export function d1TaskClaimRepository(db: D1): TaskClaimRepository {
+export function d1TaskClaimRepository(db: D1, idempotency?: ResourceIdempotency<TaskClaim>): TaskClaimRepository {
   return {
     async findTarget(ownerId, taskId) {
       const row = await db
@@ -118,14 +145,18 @@ export function d1TaskClaimRepository(db: D1): TaskClaimRepository {
         : null;
     },
     create(input) {
-      return commitTaskClaim(db, {
-        ownerId: input.ownerId,
-        taskId: input.taskId,
-        actorType: "realmroot:agent",
-        actorId: input.agentActorId,
-        runtime: input.runtime,
-        runtimeSessionId: input.runtimeSessionId,
-      });
+      return commitTaskClaim(
+        db,
+        {
+          ownerId: input.ownerId,
+          taskId: input.taskId,
+          actorType: "realmroot:agent",
+          actorId: input.agentActorId,
+          runtime: input.runtime,
+          runtimeSessionId: input.runtimeSessionId,
+        },
+        idempotency,
+      );
     },
   };
 }

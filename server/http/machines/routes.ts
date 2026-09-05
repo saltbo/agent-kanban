@@ -1,5 +1,7 @@
+import { authorizeScope } from "@server/auth/middleware";
 import type { Env } from "@server/env";
 import { machineDetailRepresentation, machineRepresentation } from "@server/http/machines/representation";
+import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
 import { agencyDependencies } from "@server/http/resource-server/agencyDependencies";
 import { externalPageResponse, readExternalPage } from "@server/http/resource-server/externalPagination";
 import { representationEtag } from "@server/http/resource-server/representation";
@@ -14,7 +16,7 @@ import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
 export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
-  api.get("/api/machines", async (c) => {
+  api.get("/api/machines", authorizeScope("machine:read"), async (c) => {
     const page = await readExternalPage(c);
     if (page instanceof Response) return page;
     const { client } = await agencyDependencies(c, ["environments:read", "runners:read"]);
@@ -26,7 +28,7 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
     );
   });
 
-  api.post("/api/machines", async (c) => {
+  api.post("/api/machines", authorizeScope("machine:write"), idempotencyMiddleware, async (c) => {
     const bodyError = await rejectRequestBody(c, "Machine");
     if (bodyError) return bodyError;
     const { client, projectId } = await agencyDependencies(c, ["environments:write"]);
@@ -43,9 +45,9 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
     return c.json(response, 201);
   });
 
-  api.get("/api/machines/:machineId", async (c) => {
+  api.get("/api/machines/:machineId", authorizeScope("machine:read"), async (c) => {
     const { client, projectId } = await agencyDependencies(c, ["environments:read", "runners:read"]);
-    const machine = await getMachine(client, c.req.param("machineId"));
+    const machine = await getMachine(client, c.req.param("machineId")!);
     if (!machine) throw new HTTPException(404, { message: "Machine not found" });
     const represented = {
       ...machineDetailRepresentation(machine, c.req.url),
@@ -56,9 +58,9 @@ export function registerMachineRoutes(api: Hono<{ Bindings: Env }>): void {
     return c.json(represented);
   });
 
-  api.delete("/api/machines/:machineId", async (c) => {
+  api.delete("/api/machines/:machineId", authorizeScope("machine:write"), async (c) => {
     const { client } = await agencyDependencies(c, ["environments:write"]);
-    await client.environments.delete(c.req.param("machineId"));
+    await client.environments.delete(c.req.param("machineId")!);
     return c.body(null, 204);
   });
 }

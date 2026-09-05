@@ -9,3 +9,10 @@ export class RealmrootDelegationFailure extends Error {
     this.name = "RealmrootDelegationFailure";
   }
 }
+
+export class AgencySessionInvalidResponse extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgencySessionInvalidResponse";
+  }
+}

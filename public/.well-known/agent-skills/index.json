@@ -6,21 +6,21 @@
       "type": "archive",
       "description": "Work on an assigned Agent Kanban v2 Task through Realmroot Toolbox. Use when an Agent running in an Agency Session needs to inspect, claim, update, or submit assigned work.",
       "url": "/.well-known/agent-skills/agent-kanban.tar.gz",
-      "digest": "sha256:9c54e36d30ce8a83bd86f73d2841bd9610f5533b8e7dd9ff1cc3707071ceae55"
+      "digest": "sha256:0ace51eb92a476f0cfd4ecdeb4c11189be4b32380424289000d3c93de53328b3"
     },
     {
       "name": "ak-plan",
       "type": "archive",
       "description": "Plan and execute a multi-Task project through Agent Kanban v2 resources and Realmroot Toolbox. Use only when the user explicitly asks for AK Plan, an Agent Kanban project plan, or execution of a project through an AK board.",
       "url": "/.well-known/agent-skills/ak-plan.tar.gz",
-      "digest": "sha256:2f28ce2293b29fea262eb11bf81de611406debe0cabf3c5473e92b444f8fa9f2"
+      "digest": "sha256:4529045afb3b8122c66572b6d5d72491f02473c1fc5d3d30507669c1e4440b1d"
     },
     {
       "name": "ak-task",
       "type": "archive",
       "description": "Create, assign, monitor, and review one Agent Kanban v2 Task through Realmroot Toolbox. Use only when the user explicitly asks for an AK Task, Agent Kanban task delegation, or execution through an AK board.",
       "url": "/.well-known/agent-skills/ak-task.tar.gz",
-      "digest": "sha256:da16a84f035817dbe879ba0e6d55a57821bc48ae71ec52aec0ed2ded95478239"
+      "digest": "sha256:de0f8887573eeaaddb8c56dd0f0ee970f7aed10f743dd010e03b90c1d732a630"
     }
   ]
 }

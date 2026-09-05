@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
+import { type ResourceScope, WEB_SESSION_SCOPES } from "../../server/auth/realmroot";
 
-const MIGRATIONS_DIR = join(__dirname, "../../migrations");
+const MIGRATIONS_DIR = join(import.meta.dirname, "../../migrations");
 export function createTestEnv() {
   return {
     DB: null as any as D1Database,
@@ -79,6 +80,9 @@ export async function applyMigrations(db: D1Database) {
     "0051_idempotent_response_snapshots.sql",
     "0052_realmroot_web_session_grants.sql",
     "0053_enbor_contract.sql",
+    "0054_realmroot_web_session_scopes.sql",
+    "0055_task_service_actor_types.sql",
+    "0056_task_version.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -89,8 +93,16 @@ export async function applyMigrations(db: D1Database) {
 export async function applyMigrationSql(db: D1Database, sql: string) {
   const triggerStart = sql.indexOf("CREATE TRIGGER");
   const ordinarySql = triggerStart === -1 ? sql : sql.slice(0, triggerStart);
-  for (const statement of splitSqlStatements(ordinarySql)) await db.prepare(statement).run();
-  if (triggerStart !== -1) await db.prepare(sql.slice(triggerStart).trim().replace(/;\s*$/, "")).run();
+  const statements = splitSqlStatements(ordinarySql);
+  if (statements.length > 0) await db.batch(statements.map((statement) => db.prepare(statement)));
+  if (triggerStart !== -1) {
+    for (const trigger of sql
+      .slice(triggerStart)
+      .trim()
+      .split(/\n(?=CREATE TRIGGER )/)) {
+      await db.prepare(trigger.trim().replace(/;\s*$/, "")).run();
+    }
+  }
 }
 
 function splitSqlStatements(sql: string): string[] {
@@ -163,7 +175,7 @@ export async function seedUser(db: D1Database, id: string, email: string) {
 export async function createTestWebSession(
   db: D1Database,
   tenantId: string,
-  options: { role?: "member" | "admin"; subjectId?: string; email?: string } = {},
+  options: { role?: "member" | "admin"; subjectId?: string; email?: string; scopes?: ResourceScope[] } = {},
 ) {
   const token = randomUUID();
   const csrfToken = randomUUID();
@@ -171,8 +183,8 @@ export async function createTestWebSession(
   await db
     .prepare(
       `INSERT INTO realmroot_web_sessions
-        (id, token_hash, tenant_id, subject_id, email, name, role, csrf_token, expires_at)
-       VALUES (?, ?, ?, ?, ?, 'Test User', ?, ?, ?)`,
+        (id, token_hash, tenant_id, subject_id, email, name, role, scopes_json, csrf_token, expires_at)
+       VALUES (?, ?, ?, ?, ?, 'Test User', ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -181,6 +193,7 @@ export async function createTestWebSession(
       options.subjectId ?? `subject:${tenantId}`,
       options.email ?? `${tenantId}@test.local`,
       options.role ?? "member",
+      JSON.stringify(options.scopes ?? WEB_SESSION_SCOPES),
       csrfToken,
       new Date(Date.now() + 3_600_000).toISOString(),
     )

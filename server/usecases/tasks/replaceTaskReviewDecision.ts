@@ -16,6 +16,7 @@ export interface StoredTaskReviewDecision {
 }
 
 export interface TaskReviewDecisionTarget {
+  version: number;
   taskId: string;
   status: string;
   assignedTo: string | null;
@@ -35,6 +36,7 @@ export interface TaskReviewDecisionRepository {
     kind: TaskReviewDecisionKind;
     reason: string | null;
     actor: TaskReviewDecisionActor;
+    expectedTaskVersion?: number;
   }): Promise<StoredTaskReviewDecision | null>;
   finalize(input: {
     ownerId: string;
@@ -92,6 +94,7 @@ interface ReplaceDecisionInput {
   reviewSubmissionVersion: string;
   actor: TaskReviewDecisionActor;
   reason: string | null;
+  expectedTaskVersion?: number;
 }
 
 export async function replaceTaskReviewRejection(
@@ -150,6 +153,7 @@ async function replaceDecision(
       ...input,
       expectedAssignedTo: target.assignedTo!,
       kind,
+      expectedTaskVersion: input.expectedTaskVersion,
     });
     if (!decision) {
       target = await repository.findTarget(input.ownerId, input.taskId, input.reviewSubmissionVersion);
@@ -204,6 +208,9 @@ function validateTarget(
   kind: TaskReviewDecisionKind,
 ): asserts target is TaskReviewDecisionTarget {
   if (!target) throw new TaskReviewDecisionFailure("TASK_NOT_FOUND", "Task not found");
+  if (input.expectedTaskVersion !== undefined && target.version !== input.expectedTaskVersion) {
+    throw new TaskReviewDecisionFailure("TASK_REVIEW_PRECONDITION_FAILED", "Task changed before the review decision was committed");
+  }
   const authority = taskReviewDecisionAuthority(target.assigneeIdentityType, target.assignedTo, input.actor);
   if (authority === "self-review") {
     throw new TaskReviewDecisionFailure("TASK_REVIEW_DECISION_FORBIDDEN", "An Agent cannot decide its own assigned Task review");

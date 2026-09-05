@@ -5,7 +5,7 @@ import type { StoredTaskReviewDecision, TaskReviewDecisionRepository } from "@se
 interface DecisionRow {
   kind: "rejection" | "completion";
   reason: string | null;
-  actor_type: "user" | "realmroot:agent" | "system";
+  actor_type: "user" | "machine" | "service" | "realmroot:agent" | "system";
   actor_id: string;
   reservation_id: string;
   state: "pending" | "accepted";
@@ -41,7 +41,7 @@ export function d1TaskReviewDecisionRepository(db: D1): TaskReviewDecisionReposi
     async findTarget(ownerId, taskId, reviewSubmissionVersion) {
       const row = await db
         .prepare(`
-          SELECT t.id, t.status, t.assigned_to, t.assignee_identity_type,
+          SELECT t.id, t.version, t.status, t.assigned_to, t.assignee_identity_type,
             active_submission.id AS active_submission_version,
             decision.kind, decision.reason, decision.actor_type, decision.actor_id,
             decision.reservation_id, decision.state, decision.effect_state,
@@ -67,6 +67,7 @@ export function d1TaskReviewDecisionRepository(db: D1): TaskReviewDecisionReposi
         .bind(reviewSubmissionVersion, taskId, ownerId)
         .first<{
           id: string;
+          version: number;
           status: string;
           assigned_to: string | null;
           assignee_identity_type: string | null;
@@ -86,6 +87,7 @@ export function d1TaskReviewDecisionRepository(db: D1): TaskReviewDecisionReposi
       if (!row) return null;
       return {
         taskId: row.id,
+        version: row.version,
         status: row.status,
         assignedTo: row.assigned_to,
         assigneeIdentityType: row.assignee_identity_type,
@@ -133,8 +135,18 @@ export function d1TaskReviewDecisionRepository(db: D1): TaskReviewDecisionReposi
                 ORDER BY submission_order.ordinal DESC
                 LIMIT 1
               )
+              ${input.expectedTaskVersion !== undefined ? "AND version = ?" : ""}
           `)
-          .bind(reservationId, input.taskId, input.ownerId, input.expectedAssignedTo, input.reviewSubmissionVersion),
+          .bind(
+            ...[
+              reservationId,
+              input.taskId,
+              input.ownerId,
+              input.expectedAssignedTo,
+              input.reviewSubmissionVersion,
+              ...(input.expectedTaskVersion === undefined ? [] : [input.expectedTaskVersion]),
+            ],
+          ),
         db
           .prepare(`
             INSERT INTO task_review_decisions (
@@ -185,7 +197,8 @@ export function d1TaskReviewDecisionRepository(db: D1): TaskReviewDecisionReposi
             UPDATE tasks
             SET status = ?,
               active_claim_id = CASE WHEN ? = 'done' THEN NULL ELSE active_claim_id END,
-              updated_at = ?
+              updated_at = ?,
+              version = version + 1
             WHERE id = ?
               AND board_id IN (SELECT id FROM boards WHERE owner_id = ?)
               AND status = 'in_review'
@@ -240,6 +253,17 @@ export function d1TaskReviewDecisionRepository(db: D1): TaskReviewDecisionReposi
               AND EXISTS (SELECT 1 FROM task_actions WHERE id = ?)
           `)
           .bind(actionId, decidedAt, input.reviewSubmissionVersion, input.taskId, input.decision.reservationId, actionId),
+        db
+          .prepare(`
+            UPDATE tasks
+            SET version = version + 1, updated_at = ?
+            WHERE id IN (SELECT task_id FROM task_dependencies WHERE depends_on = ?)
+              AND EXISTS (
+                SELECT 1 FROM tasks completed
+                WHERE completed.id = ? AND completed.status = 'done' AND completed.transition_token = ?
+              )
+          `)
+          .bind(decidedAt, input.taskId, input.taskId, input.decision.reservationId),
         db.prepare("UPDATE tasks SET transition_token = NULL WHERE id = ? AND transition_token = ?").bind(input.taskId, input.decision.reservationId),
       ]);
       return (results[0]?.meta?.changes ?? 0) === 1
@@ -301,11 +325,11 @@ function storedDecision(row: DecisionRow): StoredTaskReviewDecision {
 function storedActorType(actor: TaskReviewDecisionActor): DecisionRow["actor_type"] {
   if (actor.type === "agent") return "realmroot:agent";
   if (actor.type === "human") return "user";
-  return "system";
+  return actor.type;
 }
 
 function publicActor(type: DecisionRow["actor_type"], id: string): TaskReviewDecisionActor {
   if (type === "realmroot:agent") return { type: "agent", id };
   if (type === "user") return { type: "human", id };
-  return { type: "system", id };
+  return { type, id };
 }

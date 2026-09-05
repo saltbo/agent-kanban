@@ -145,14 +145,12 @@ describe("createSSEResponse", () => {
     expect(text).toContain("Polled event from loop");
   }, 15000);
 
-  it("returns 400 JSON error when lastEventId is not found in DB", async () => {
+  it("rejects an unknown lastEventId so the HTTP boundary can render a Problem", async () => {
     const { createSSEResponse } = await import("../server/adapters/stream/sse");
-    const response = await createSSEResponse(env as any, taskId, "nonexistent-event-id-xyz");
-    expect(response.status).toBe(400);
-    expect(response.headers.get("Content-Type")).toContain("application/json");
-    const body = (await response.json()) as any;
-    expect(body.error.code).toBe("INVALID_LAST_EVENT_ID");
-    expect(body.error.message).toBe("Unknown event ID, reconnect without Last-Event-ID");
+    await expect(createSSEResponse(env as any, taskId, "nonexistent-event-id-xyz")).rejects.toMatchObject({
+      kind: "invalid-request",
+      message: "Unknown event ID, reconnect without Last-Event-ID",
+    });
   });
 
   it("lastSeen defaults to current time when no batch and no since", async () => {

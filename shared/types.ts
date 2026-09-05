@@ -31,6 +31,7 @@ export type TaskStatus = "todo" | "in_progress" | "in_review" | "done" | "cancel
 
 export interface Task {
   id: string;
+  version: number;
   board_id: string;
   seq: number;
   status: TaskStatus;
@@ -88,8 +89,8 @@ export type TaskActionType =
   | "dispatched"
   | "dispatch_failed";
 
-export type ActorType = "user" | "machine" | "realmroot:agent" | "agent:worker" | "agent:leader" | "system";
-export type TaskActionWriteActorType = "user" | "realmroot:agent" | "system";
+export type ActorType = "user" | "machine" | "service" | "realmroot:agent" | "agent:worker" | "agent:leader" | "system";
+export type TaskActionWriteActorType = "user" | "machine" | "service" | "realmroot:agent" | "system";
 
 export interface TaskAction {
   id: string;

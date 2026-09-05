@@ -2,10 +2,10 @@ import { expect, type Page, test } from "@playwright/test";
 import { seedTask, signUpAndGetBoard } from "../../helpers/auth";
 
 const API_VERSION = "2026-08-29";
-const REVIEW_ETAG = '"review-submission-v1"';
+const TASK_ETAG = '"task-version-v1"';
 
 test.describe("Board Page", () => {
-  test("[spec: tasks/human-review] human review actions use the canonical version-protected resources", async ({ page }) => {
+  test("[spec: tasks/human-review] human review actions directly patch the canonical Task resource", async ({ page }) => {
     await signUpAndGetBoard(page, `reviewactions_${Date.now()}@example.com`);
 
     const boardId = page.url().split("/boards/")[1];
@@ -14,32 +14,54 @@ test.describe("Board Page", () => {
     const rejectTaskId = seedTask(boardId, rejectTitle, "in_review");
     const completeTaskId = seedTask(boardId, completeTitle, "in_review");
 
-    const canonicalCalls: Array<{ method: string; path: string; apiVersion?: string; ifMatch?: string; body: unknown }> = [];
-    const legacyCommandCalls: string[] = [];
+    const taskReads = new Map<string, number>();
+    const taskBodies = new Map<string, Record<string, unknown>>();
+    const taskPatches: Array<{
+      path: string;
+      apiVersion?: string;
+      contentType?: string;
+      ifMatch?: string;
+      readsBeforePatch: number;
+      body: unknown;
+    }> = [];
+    const obsoleteCalls: string[] = [];
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
-      if (/\/api\/tasks\/[^/]+\/(?:reject|complete)$/.test(path)) legacyCommandCalls.push(`${request.method()} ${path}`);
+      if (/\/api\/(?:tasks\/[^/]+\/(?:reject|complete)|task-review-(?:submissions|rejections|completions)\/[^/]+)$/.test(path)) {
+        obsoleteCalls.push(`${request.method()} ${path}`);
+      }
     });
-    await page.route(/\/api\/task-review-(?:submissions|rejections|completions)\/[^/?]+$/, async (route) => {
+    await page.route(/\/api\/tasks\/[^/?]+$/, async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
-      canonicalCalls.push({
-        method: request.method(),
-        path,
-        apiVersion: request.headers()["api-version"],
-        ifMatch: request.headers()["if-match"],
-        body: request.postDataJSON() ?? null,
-      });
+      const taskId = path.split("/").at(-1)!;
 
       if (request.method() === "GET") {
+        taskReads.set(taskId, (taskReads.get(taskId) ?? 0) + 1);
+        const response = await route.fetch();
+        const task = (await response.json()) as Record<string, unknown>;
+        taskBodies.set(taskId, task);
         await route.fulfill({
-          json: { taskId: path.split("/").at(-1), state: "submitted" },
-          headers: { ETag: REVIEW_ETAG, "API-Version": API_VERSION },
+          status: response.status(),
+          json: task,
+          headers: { ETag: TASK_ETAG, "API-Version": API_VERSION },
         });
         return;
       }
 
-      await route.fulfill({ json: { taskId: path.split("/").at(-1) }, headers: { "API-Version": API_VERSION } });
+      const body = request.postDataJSON() as Record<string, unknown>;
+      taskPatches.push({
+        path,
+        apiVersion: request.headers()["api-version"],
+        contentType: request.headers()["content-type"],
+        ifMatch: request.headers()["if-match"],
+        readsBeforePatch: taskReads.get(taskId) ?? 0,
+        body,
+      });
+      await route.fulfill({
+        json: { ...taskBodies.get(taskId), ...body },
+        headers: { ETag: '"task-version-v2"', "API-Version": API_VERSION },
+      });
     });
 
     await page.reload();
@@ -49,38 +71,26 @@ test.describe("Board Page", () => {
     await reviewTask(page, completeTitle, "Complete");
 
     await expect
-      .poll(() => canonicalCalls)
+      .poll(() => taskPatches)
       .toEqual([
         {
-          method: "GET",
-          path: `/api/task-review-submissions/${rejectTaskId}`,
+          path: `/api/tasks/${rejectTaskId}`,
           apiVersion: API_VERSION,
+          contentType: "application/merge-patch+json",
           ifMatch: undefined,
-          body: null,
+          readsBeforePatch: 1,
+          body: { status: "in-progress" },
         },
         {
-          method: "PUT",
-          path: `/api/task-review-rejections/${rejectTaskId}`,
+          path: `/api/tasks/${completeTaskId}`,
           apiVersion: API_VERSION,
+          contentType: "application/merge-patch+json",
           ifMatch: undefined,
-          body: { reviewSubmissionVersion: "review-submission-v1" },
-        },
-        {
-          method: "GET",
-          path: `/api/task-review-submissions/${completeTaskId}`,
-          apiVersion: API_VERSION,
-          ifMatch: undefined,
-          body: null,
-        },
-        {
-          method: "PUT",
-          path: `/api/task-review-completions/${completeTaskId}`,
-          apiVersion: API_VERSION,
-          ifMatch: undefined,
-          body: { reviewSubmissionVersion: "review-submission-v1" },
+          readsBeforePatch: 1,
+          body: { status: "done" },
         },
       ]);
-    expect(legacyCommandCalls).toEqual([]);
+    expect(obsoleteCalls).toEqual([]);
   });
 });
 

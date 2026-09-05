@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, Page } from "@playwright/test";
 
-const d1Dir = join(process.cwd(), ".wrangler/state/v3/d1/miniflare-D1DatabaseObject");
+const d1Dir = join(process.env.AK_E2E_STATE_DIR ?? join(process.cwd(), ".wrangler/state"), "v3/d1/miniflare-D1DatabaseObject");
 
 /**
  * Creates an AK Realmroot-backed web session and completes the onboarding flow,
@@ -72,8 +72,8 @@ export function seedTask(boardId: string, title: string, status: "todo" | "in_pr
 async function firstBoardId(page: Page): Promise<string | null> {
   return page.evaluate(async () => {
     const res = await fetch("/api/boards", { credentials: "include" });
-    const boards = (await res.json()) as { id: string }[];
-    return boards[0]?.id ?? null;
+    const responsePage = (await res.json()) as { items: { id: string }[] };
+    return responsePage.items[0]?.id ?? null;
   });
 }
 

@@ -1,11 +1,11 @@
 import type { RepoAppStatus, Repository } from "@shared";
 import { Github } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Header } from "@/features/boards/components/Header";
-import { useGithubAppConfig, useInstallableRepos } from "@/features/repositories/useGithubApp";
+import { useAcceptGithubInstallation, useGithubAppConfig, useInstallableRepos } from "@/features/repositories/useGithubApp";
 import { useCreateRepository, useDeleteRepository, useRepositories } from "@/features/repositories/useRepositories";
 import { formatRelative } from "@/features/tasks/components/TaskDetailFields";
 
@@ -39,6 +39,7 @@ export function RepositoriesPage() {
   const config = useGithubAppConfig();
   const createRepo = useCreateRepository();
   const deleteRepo = useDeleteRepository();
+  const { mutate: acceptInstallation } = useAcceptGithubInstallation();
   const [showDialog, setShowDialog] = useState(false);
   const [addTab, setAddTab] = useState("github");
   const [newName, setNewName] = useState("");
@@ -47,6 +48,13 @@ export function RepositoriesPage() {
 
   const installUrl = config?.install_url ?? null;
   const installable = useInstallableRepos(showDialog && addTab === "github" && Boolean(config?.configured));
+
+  useEffect(() => {
+    const installationId = Number(new URLSearchParams(window.location.search).get("installation_id"));
+    if (!Number.isInteger(installationId) || installationId <= 0) return;
+    window.history.replaceState({}, "", "/repositories");
+    acceptInstallation(installationId);
+  }, [acceptInstallation]);
 
   async function handleAddManual() {
     if (!newName.trim() || !newUrl.trim()) return;

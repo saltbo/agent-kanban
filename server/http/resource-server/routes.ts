@@ -27,7 +27,8 @@ export function registerResourceServerRoutes(app: Api): void {
       Link: `<${openapi}>; rel="service-desc"; type="application/vnd.oai.openapi+json;version=3.1"`,
     });
   });
-  app.get("/api/openapi.json", (c) => c.json(toolboxDocument(c.env)));
+  app.get("/api/openapi.json", (c) => c.json(apiDocument(c.env)));
+  app.get("/api/docs/openapi.json", (c) => c.notFound());
   app.get(
     "/api/docs",
     Scalar({
@@ -55,7 +56,7 @@ export function registerResourceServerRoutes(app: Api): void {
   app.get("/api/toolbox/openapi.json", (c) => c.notFound());
 }
 
-function toolboxDocument(env: Env) {
+function baseDocument(env: Env) {
   const taskStatuses = TASK_STATUSES.map((status) => status.replaceAll("_", "-"));
   const version = { $ref: "#/components/parameters/ApiVersion" };
   const pageToken = { $ref: "#/components/parameters/PageToken" };
@@ -102,42 +103,14 @@ function toolboxDocument(env: Env) {
   const projectionCreateProblems = problems([400, 401, 403, 409, 415, 422, 502, 503]);
   const createProblems = problems([400, 401, 403, 409, 415, 422, 500]);
   const dependentCreateProblems = problems([400, 401, 403, 404, 409, 415, 422, 500]);
-  const workflowProblems = problems([400, 401, 403, 404, 409, 412, 415, 422, 428, 500]);
-  const notificationProblems = {
-    "503": {
-      ...problem(
-        "The Task mutation was committed, but Inbox notification delivery is unavailable. Retry the same idempotent PUT to retry the notification.",
-        503,
-      ),
-      headers: { ...responseHeaders, "Retry-After": { $ref: "#/components/headers/RetryAfter" } },
-    },
-  };
-  const secured = (scope: string) => ({ security: [{ realmroot: [scope] }] });
+  const secured = (scope: string) => ({ security: [{ realmroot: [scope] }, { browserSession: [] }] });
   const operation = (operationId: string, scope: string, description: string, status = "200") => ({
     operationId,
-    tags: [operationId.includes("Board") ? "board" : operationId.includes("Repository") ? "repository" : "task"],
+    tags: [scope.split(":", 1)[0]],
     ...secured(scope),
     parameters: [version],
     responses: { [status]: response(description) },
   });
-  const workflow = (operationId: string, scope: string, command: string, schema: string, extra: object = {}) => ({
-    operationId,
-    tags: ["task"],
-    "x-cli-name": command,
-    ...secured(scope),
-    parameters: [version],
-    ...extra,
-    responses: {
-      "200": entityResponse("Existing resource", { $ref: `#/components/schemas/${schema}` }),
-      "201": createdResponse("Resource created", { $ref: `#/components/schemas/${schema}` }),
-      ...workflowProblems,
-    },
-  });
-  const notifyingWorkflow = (operationId: string, scope: string, command: string, schema: string, extra: object = {}) => {
-    const definition = workflow(operationId, scope, command, schema, extra);
-    return { ...definition, responses: { ...definition.responses, ...notificationProblems } };
-  };
-
   return {
     openapi: "3.1.0",
     info: { title: "Agent Kanban API", version: "2.0.0" },
@@ -205,7 +178,6 @@ function toolboxDocument(env: Env) {
       "/agents": {
         get: {
           ...operation("listAgents", "agent:read", "Agents"),
-          tags: ["agent"],
           parameters: [
             version,
             pageToken,
@@ -218,7 +190,6 @@ function toolboxDocument(env: Env) {
         },
         post: {
           ...operation("createAgent", "agent:write", "Agent created", "201"),
-          tags: ["agent"],
           parameters: [version, idempotencyKey],
           requestBody: { required: true, ...json({ $ref: "#/components/schemas/AgentWrite" }) },
           responses: { "201": createdResponse("Agent created", { $ref: "#/components/schemas/Agent" }), ...projectionCreateProblems },
@@ -228,20 +199,17 @@ function toolboxDocument(env: Env) {
         parameters: [{ name: "agentId", in: "path", required: true, schema: { type: "string" } }],
         get: {
           ...operation("getAgent", "agent:read", "Agent"),
-          tags: ["agent"],
           responses: { "200": entityResponse("Agent", { $ref: "#/components/schemas/Agent" }), ...projectionReadProblems },
         },
       },
       "/machines": {
         get: {
           ...operation("listMachines", "machine:read", "Machines"),
-          tags: ["machine"],
           parameters: [version, pageToken, pageSize],
           responses: { "200": response("Machine collection", { $ref: "#/components/schemas/MachineCollection" }), ...projectionReadProblems },
         },
         post: {
           ...operation("createMachine", "machine:write", "Machine created", "201"),
-          tags: ["machine"],
           parameters: [version, idempotencyKey],
           responses: {
             "201": createdResponse("Machine created with Runner setup", { $ref: "#/components/schemas/MachineCreateResult" }),
@@ -253,12 +221,10 @@ function toolboxDocument(env: Env) {
         parameters: [{ name: "machineId", in: "path", required: true, schema: { type: "string" } }],
         get: {
           ...operation("getMachine", "machine:read", "Machine"),
-          tags: ["machine"],
           responses: { "200": entityResponse("Machine", { $ref: "#/components/schemas/MachineDetail" }), ...projectionReadProblems },
         },
         delete: {
           ...operation("archiveMachine", "machine:write", "Machine archived", "204"),
-          tags: ["machine"],
           responses: { "204": response("Machine archived"), ...projectionReadProblems },
         },
       },
@@ -322,65 +288,13 @@ function toolboxDocument(env: Env) {
           responses: { "200": entityResponse("Task Note", { $ref: "#/components/schemas/TaskNote" }), ...readProblems },
         },
       },
-      "/task-assignments/{taskId}": {
-        parameters: [taskId],
-        put: {
-          ...operation("replaceTaskAssignment", "task:assign", "Task Assignment"),
-          parameters: [version],
-          requestBody: { required: true, ...json({ $ref: "#/components/schemas/TaskAssignmentWrite" }) },
-          responses: {
-            "200": entityResponse("Existing Task Assignment", { $ref: "#/components/schemas/TaskAssignment" }),
-            "201": createdResponse("Task Assignment created", { $ref: "#/components/schemas/TaskAssignment" }),
-            ...workflowProblems,
-            ...notificationProblems,
-          },
-        },
-      },
-      "/task-claims/{taskId}": {
-        parameters: [taskId],
-        put: workflow("replaceTaskClaim", "task:claim", "claim", "TaskClaim"),
-        delete: {
-          ...workflow("deleteTaskClaim", "task:release", "release", "TaskClaim"),
-          parameters: [version, { $ref: "#/components/parameters/IfMatch" }],
-          responses: { "204": response("Claim released"), ...workflowProblems },
-        },
-      },
-      "/task-review-submissions/{taskId}": {
+      "/tasks/{taskId}/events": {
         parameters: [taskId],
         get: {
-          ...operation("getTaskReviewSubmission", "task:read", "Task Review Submission"),
-          parameters: [version],
-          responses: {
-            "200": entityResponse("Task Review Submission", { $ref: "#/components/schemas/TaskReviewSubmission" }),
-            ...readProblems,
-          },
-        },
-        put: workflow("replaceTaskReviewSubmission", "task:review", "review", "TaskReviewSubmission", {
-          requestBody: { required: true, ...json({ $ref: "#/components/schemas/TaskReviewSubmissionWrite" }) },
-        }),
-      },
-      "/task-review-rejections/{taskId}": {
-        parameters: [taskId],
-        put: notifyingWorkflow("replaceTaskReviewRejection", "task:reject", "reject", "TaskReviewRejection", {
-          requestBody: { required: true, ...json({ $ref: "#/components/schemas/TaskReviewRejectionWrite" }) },
-        }),
-      },
-      "/task-review-completions/{taskId}": {
-        parameters: [taskId],
-        put: workflow("replaceTaskReviewCompletion", "task:complete", "complete", "TaskReviewCompletion", {
-          requestBody: { required: true, ...json({ $ref: "#/components/schemas/TaskReviewCompletionWrite" }) },
-        }),
-      },
-      "/task-cancellations/{taskId}": {
-        parameters: [taskId],
-        put: workflow("replaceTaskCancellation", "task:cancel", "cancel", "TaskCancellation"),
-      },
-      "/task-events": {
-        get: {
-          ...workflow("listTaskEvents", "task:read", "wait", "TaskEventSnapshot"),
+          ...operation("listTaskEvents", "task:read", "Task Event snapshot"),
+          "x-cli-name": "wait",
           parameters: [
             version,
-            { name: "taskId", in: "query", required: true, schema: { type: "array", items: { type: "string" } } },
             {
               name: "until",
               in: "query",
@@ -398,7 +312,7 @@ function toolboxDocument(env: Env) {
           ],
           responses: {
             "200": response("Task Event snapshot", { $ref: "#/components/schemas/TaskEventSnapshot" }),
-            ...workflowProblems,
+            ...readProblems,
           },
         },
       },
@@ -436,7 +350,7 @@ function toolboxDocument(env: Env) {
           in: "header",
           required: true,
           description:
-            "Client-generated RFC 8941 string scoped to the caller, operation, request content, and API version. Automatic retries of one invocation reuse the value; a new invocation uses a new value. Toolbox clients should generate it without caller input. The original response is replayable for 24 hours.",
+            "Client-generated RFC 8941 string scoped to the caller, operation, request content, and API version. Automatic retries of one invocation reuse the value; a new invocation uses a new value. Clients should generate it without user input. The original response is replayable for 24 hours.",
           schema: { type: "string", pattern: '^"[A-Za-z0-9._:-]{8,200}"$', example: '"0198f4d2-9055-7e52-a31a-e0d9a06bc847"' },
         },
         IfMatch: { name: "If-Match", in: "header", required: true, schema: { type: "string" } },
@@ -464,12 +378,16 @@ function toolboxDocument(env: Env) {
         Board: {
           type: "object",
           additionalProperties: false,
-          required: ["id", "name", "description", "type", "createdAt", "updatedAt", "links"],
+          required: ["id", "name", "description", "type", "labels", "visibility", "shareSlug", "createdAt", "updatedAt", "links"],
           properties: {
             id: { type: "string" },
             name: { type: "string" },
             description: { type: ["string", "null"] },
             type: { type: "string", enum: ["dev", "ops"] },
+            labels: { type: "array", items: { $ref: "#/components/schemas/BoardLabel" } },
+            visibility: { type: "string", enum: ["private", "public"] },
+            shareSlug: { type: ["string", "null"] },
+            tasks: { type: "array", items: { $ref: "#/components/schemas/Task" } },
             createdAt: { type: "string" },
             updatedAt: { type: "string" },
             links: {
@@ -534,9 +452,12 @@ function toolboxDocument(env: Env) {
             "description",
             "boardId",
             "repositoryId",
+            "repositoryName",
             "labels",
             "createdBy",
             "assignedTo",
+            "assigneeName",
+            "boardType",
             "pullRequestUrl",
             "input",
             "metadata",
@@ -545,6 +466,9 @@ function toolboxDocument(env: Env) {
             "position",
             "blocked",
             "dependsOn",
+            "durationMinutes",
+            "subtaskCount",
+            "sessionBinding",
             "createdAt",
             "updatedAt",
             "links",
@@ -557,9 +481,12 @@ function toolboxDocument(env: Env) {
             description: { type: ["string", "null"] },
             boardId: { type: "string" },
             repositoryId: { type: ["string", "null"] },
+            repositoryName: { type: ["string", "null"] },
             labels: { type: "array", items: { type: "string" } },
             createdBy: { type: ["string", "null"] },
             assignedTo: { type: ["string", "null"] },
+            assigneeName: { type: ["string", "null"] },
+            boardType: { type: ["string", "null"], enum: ["dev", "ops", null] },
             pullRequestUrl: { type: ["string", "null"], format: "uri" },
             input: { type: ["object", "null"], additionalProperties: true },
             metadata: { type: "object", additionalProperties: true },
@@ -568,20 +495,32 @@ function toolboxDocument(env: Env) {
             position: { type: "number" },
             blocked: { type: "boolean" },
             dependsOn: { type: "array", items: { type: "string" } },
+            durationMinutes: { type: ["number", "null"] },
+            subtaskCount: { type: "integer", minimum: 0 },
+            sessionBinding: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              required: ["agentActorId", "runtime", "runtimeSessionId", "boundAt"],
+              properties: {
+                agentActorId: { type: "string" },
+                runtime: { type: "string" },
+                runtimeSessionId: { type: "string" },
+                boundAt: { type: "string", format: "date-time" },
+              },
+            },
+            notes: { type: "array", items: { $ref: "#/components/schemas/TaskActivity" } },
             createdAt: { type: "string", format: "date-time" },
             updatedAt: { type: "string", format: "date-time" },
             links: {
               type: "object",
               additionalProperties: false,
-              required: ["self", "board", "repository", "notes", "assignment", "claim", "reviewSubmission"],
+              required: ["self", "board", "repository", "notes", "claims"],
               properties: {
                 self: { type: "string", format: "uri" },
                 board: { type: "string", format: "uri" },
                 repository: { type: ["string", "null"], format: "uri" },
                 notes: { type: "string", format: "uri" },
-                assignment: { type: "string", format: "uri" },
-                claim: { type: "string", format: "uri" },
-                reviewSubmission: { type: "string", format: "uri" },
+                claims: { type: "string", format: "uri" },
               },
             },
           },
@@ -600,10 +539,48 @@ function toolboxDocument(env: Env) {
             id: { type: "string" },
             taskId: { type: "string" },
             action: { type: "string", const: "commented" },
-            actorType: { type: "string", enum: ["user", "realmroot:agent", "system"] },
+            actorType: { type: "string", enum: ["user", "machine", "service", "realmroot:agent", "system"] },
             actorId: { type: "string" },
             actorName: { type: ["string", "null"] },
             detail: { type: "string" },
+            createdAt: { type: "string", format: "date-time" },
+            links: {
+              type: "object",
+              additionalProperties: false,
+              required: ["self", "task"],
+              properties: { self: { type: "string", format: "uri" }, task: { type: "string", format: "uri" } },
+            },
+          },
+        },
+        TaskActivity: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "taskId", "action", "actorType", "actorId", "actorName", "detail", "createdAt", "links"],
+          properties: {
+            id: { type: "string" },
+            taskId: { type: "string" },
+            action: {
+              type: "string",
+              enum: [
+                "created",
+                "claimed",
+                "moved",
+                "commented",
+                "completed",
+                "assigned",
+                "released",
+                "timed_out",
+                "cancelled",
+                "rejected",
+                "review_requested",
+                "dispatched",
+                "dispatch_failed",
+              ],
+            },
+            actorType: { type: "string", enum: ["user", "machine", "service", "realmroot:agent", "agent:worker", "agent:leader", "system"] },
+            actorId: { type: "string" },
+            actorName: { type: ["string", "null"] },
+            detail: { type: ["string", "null"] },
             createdAt: { type: "string", format: "date-time" },
             links: {
               type: "object",
@@ -801,12 +778,6 @@ function toolboxDocument(env: Env) {
         MachineCollection: collectionSchema("Machine"),
         TaskCollection: collectionSchema("Task"),
         TaskNoteCollection: collectionSchema("TaskNote"),
-        TaskAssignmentWrite: {
-          type: "object",
-          additionalProperties: false,
-          required: ["agentActorId"],
-          properties: { agentActorId: { type: "string" } },
-        },
         TaskClaim: {
           type: "object",
           additionalProperties: false,
@@ -818,88 +789,6 @@ function toolboxDocument(env: Env) {
             runtime: { type: "string", enum: [...AGENCY_RUNTIMES] },
             runtimeSessionId: { type: "string" },
             claimedAt: { type: "string", format: "date-time" },
-          },
-        },
-        TaskReviewSubmissionWrite: {
-          type: "object",
-          additionalProperties: false,
-          properties: { pullRequestUrl: { type: "string", format: "uri" } },
-          example: {},
-        },
-        TaskReviewRejectionWrite: {
-          type: "object",
-          additionalProperties: false,
-          required: ["reviewSubmissionVersion"],
-          properties: { reviewSubmissionVersion: { type: "string", minLength: 1, maxLength: 200 }, reason: { type: "string", maxLength: 4000 } },
-        },
-        TaskReviewCompletionWrite: {
-          type: "object",
-          additionalProperties: false,
-          required: ["reviewSubmissionVersion"],
-          properties: { reviewSubmissionVersion: { type: "string", minLength: 1, maxLength: 200 } },
-        },
-        TaskAssignment: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "taskId", "agentActorId", "assignedByActorId", "assignedAt"],
-          properties: {
-            id: { type: "string" },
-            taskId: { type: "string" },
-            agentActorId: { type: "string" },
-            assignedByActorId: { type: "string" },
-            assignedAt: { type: "string", format: "date-time" },
-          },
-        },
-        TaskReviewSubmission: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "taskId", "agentActorId", "reviewSubmissionVersion", "pullRequestUrl", "submittedAt"],
-          properties: {
-            id: { type: "string" },
-            taskId: { type: "string" },
-            agentActorId: { type: "string" },
-            reviewSubmissionVersion: { type: "string" },
-            pullRequestUrl: { type: ["string", "null"], format: "uri" },
-            submittedAt: { type: "string", format: "date-time" },
-          },
-        },
-        TaskReviewRejection: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "taskId", "reviewSubmissionVersion", "rejectedByActorType", "rejectedByActorId", "reason", "rejectedAt"],
-          properties: {
-            id: { type: "string" },
-            taskId: { type: "string" },
-            reviewSubmissionVersion: { type: "string" },
-            rejectedByActorType: { type: "string", enum: ["agent", "human"] },
-            rejectedByActorId: { type: "string" },
-            reason: { type: ["string", "null"] },
-            rejectedAt: { type: "string", format: "date-time" },
-          },
-        },
-        TaskReviewCompletion: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "taskId", "reviewSubmissionVersion", "completedByActorType", "completedByActorId", "completedAt"],
-          properties: {
-            id: { type: "string" },
-            taskId: { type: "string" },
-            reviewSubmissionVersion: { type: "string" },
-            completedByActorType: { type: "string", enum: ["agent", "human"] },
-            completedByActorId: { type: "string" },
-            completedAt: { type: "string", format: "date-time" },
-          },
-        },
-        TaskCancellation: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "taskId", "cancelledByActorType", "cancelledByActorId", "cancelledAt"],
-          properties: {
-            id: { type: "string" },
-            taskId: { type: "string" },
-            cancelledByActorType: { type: "string", enum: ["agent", "human", "system"] },
-            cancelledByActorId: { type: "string" },
-            cancelledAt: { type: "string", format: "date-time" },
           },
         },
         TaskEventSnapshot: {
@@ -916,6 +805,463 @@ function toolboxDocument(env: Env) {
       },
     },
   };
+}
+
+function apiDocument(env: Env) {
+  const document = baseDocument(env);
+  const paths: Record<string, Record<string, unknown>> = document.paths;
+  const components: {
+    parameters: Record<string, unknown>;
+    schemas: Record<string, unknown>;
+    securitySchemes: Record<string, unknown>;
+  } = document.components;
+  const csrf = { $ref: "#/components/parameters/CsrfToken" };
+  const apiVersion = { $ref: "#/components/parameters/ApiVersion" };
+  const taskId = { $ref: "#/components/parameters/TaskId" };
+  const apiResponseHeaders = {
+    "API-Version": { $ref: "#/components/headers/ApiVersion" },
+    "Request-Id": { $ref: "#/components/headers/RequestId" },
+    traceparent: { $ref: "#/components/headers/Traceparent" },
+    Link: { $ref: "#/components/headers/Link" },
+    "Idempotency-Replayed": { $ref: "#/components/headers/IdempotencyReplayed" },
+  };
+  const json = (schema: object) => ({ content: { "application/json": { schema } } });
+  const apiResponse = (description: string, schema?: object) => ({
+    description,
+    headers: apiResponseHeaders,
+    ...(schema ? json(schema) : {}),
+  });
+  const apiProblems = (...statuses: number[]) =>
+    Object.fromEntries(
+      statuses.map((status) => [
+        String(status),
+        {
+          description: "Request rejected",
+          headers: apiResponseHeaders,
+          content: { "application/problem+json": { schema: { $ref: "#/components/schemas/Problem" } } },
+        },
+      ]),
+    );
+  const apiOperation = (operationId: string, scope: (typeof RESOURCE_SCOPES)[number], summary: string, responses: object, extra: object = {}) => ({
+    operationId,
+    tags: [scope.split(":", 1)[0]],
+    summary,
+    security: [{ realmroot: [scope] }, { browserSession: [] }],
+    ...extra,
+    responses,
+  });
+
+  paths["/boards/{boardId}"] = {
+    ...paths["/boards/{boardId}"],
+    patch: apiOperation(
+      "updateBoard",
+      "board:write",
+      "Update a Board",
+      {
+        "200": apiResponse("Board updated", { $ref: "#/components/schemas/Board" }),
+        ...apiProblems(400, 401, 403, 404, 500),
+      },
+      {
+        parameters: [csrf],
+        requestBody: { required: true, ...json({ $ref: "#/components/schemas/BoardUpdate" }) },
+      },
+    ),
+    delete: apiOperation(
+      "deleteBoard",
+      "board:write",
+      "Delete a Board",
+      {
+        "200": apiResponse("Board deleted", { $ref: "#/components/schemas/DeleteResult" }),
+        ...apiProblems(401, 403, 404, 500),
+      },
+      { parameters: [csrf] },
+    ),
+  };
+  paths["/boards/{boardId}/labels"] = {
+    parameters: [{ name: "boardId", in: "path", required: true, schema: { type: "string" } }],
+    post: apiOperation(
+      "createBoardLabel",
+      "board:write",
+      "Create a Board Label",
+      {
+        "201": apiResponse("Board Label created", { $ref: "#/components/schemas/Board" }),
+        ...apiProblems(400, 401, 403, 404, 409, 500),
+      },
+      {
+        parameters: [csrf],
+        requestBody: { required: true, ...json({ $ref: "#/components/schemas/BoardLabelWrite" }) },
+      },
+    ),
+  };
+  paths["/boards/{boardId}/labels/{labelName}"] = {
+    parameters: [
+      { name: "boardId", in: "path", required: true, schema: { type: "string" } },
+      { name: "labelName", in: "path", required: true, schema: { type: "string" } },
+    ],
+    patch: apiOperation(
+      "updateBoardLabel",
+      "board:write",
+      "Update a Board Label",
+      {
+        "200": apiResponse("Board Label updated", { $ref: "#/components/schemas/Board" }),
+        ...apiProblems(400, 401, 403, 404, 409, 500),
+      },
+      {
+        parameters: [csrf],
+        requestBody: { required: true, ...json({ $ref: "#/components/schemas/BoardLabelUpdate" }) },
+      },
+    ),
+    delete: apiOperation(
+      "deleteBoardLabel",
+      "board:write",
+      "Delete a Board Label",
+      {
+        "200": apiResponse("Board Label deleted", { $ref: "#/components/schemas/Board" }),
+        ...apiProblems(401, 403, 404, 500),
+      },
+      { parameters: [csrf] },
+    ),
+  };
+  paths["/boards/{boardId}/stream"] = {
+    parameters: [{ name: "boardId", in: "path", required: true, schema: { type: "string" } }],
+    get: apiOperation("streamBoardEvents", "board:read", "Stream Board events", {
+      "200": {
+        description: "A bounded Server-Sent Events stream of Board Task activity",
+        headers: apiResponseHeaders,
+        content: { "text/event-stream": { schema: { type: "string" } } },
+      },
+      ...apiProblems(401, 403, 500),
+    }),
+  };
+
+  paths["/repositories/{repositoryId}"] = {
+    ...paths["/repositories/{repositoryId}"],
+    delete: apiOperation(
+      "deleteRepository",
+      "repository:write",
+      "Delete a Repository",
+      {
+        "200": apiResponse("Repository deleted", { $ref: "#/components/schemas/DeleteResult" }),
+        ...apiProblems(401, 403, 404, 500),
+      },
+      { parameters: [csrf] },
+    ),
+  };
+  paths["/github-app/config"] = {
+    get: apiOperation("getGithubAppConfiguration", "repository:read", "Read the GitHub App configuration", {
+      "200": apiResponse("GitHub App configuration", { $ref: "#/components/schemas/GithubAppConfiguration" }),
+      ...apiProblems(401, 403, 500),
+    }),
+  };
+  paths["/github-app/repositories"] = {
+    get: apiOperation("listGithubAppRepositories", "repository:read", "List repositories visible to the GitHub App", {
+      "200": apiResponse("Repositories visible to active installations", { $ref: "#/components/schemas/GithubAppRepositoryCollection" }),
+      ...apiProblems(401, 403, 500, 502, 503),
+    }),
+  };
+  paths["/repository-installations/{installationId}"] = {
+    parameters: [
+      {
+        name: "installationId",
+        in: "path",
+        required: true,
+        schema: { type: "integer", minimum: 1 },
+      },
+    ],
+    put: apiOperation(
+      "replaceRepositoryInstallation",
+      "repository:write",
+      "Accept a GitHub App installation for the current owner",
+      {
+        "204": apiResponse("Repository installation accepted"),
+        ...apiProblems(400, 401, 403, 500, 502, 503),
+      },
+      { parameters: [csrf] },
+    ),
+  };
+
+  paths["/tasks/{taskId}"] = {
+    ...paths["/tasks/{taskId}"],
+    patch: apiOperation(
+      "updateTask",
+      "task:write",
+      "Update a Task",
+      {
+        "200": {
+          ...apiResponse("Task updated", { $ref: "#/components/schemas/Task" }),
+          headers: { ...apiResponseHeaders, ETag: { $ref: "#/components/headers/ETag" } },
+        },
+        ...apiProblems(400, 401, 403, 404, 409, 415, 422, 500),
+      },
+      {
+        parameters: [csrf],
+        requestBody: {
+          required: true,
+          content: { "application/merge-patch+json": { schema: { $ref: "#/components/schemas/TaskUpdate" } } },
+        },
+      },
+    ),
+    delete: apiOperation(
+      "deleteTask",
+      "task:write",
+      "Delete a Task",
+      {
+        "204": apiResponse("Task deleted"),
+        ...apiProblems(400, 401, 403, 404, 409, 412, 428, 500),
+      },
+      { parameters: [csrf, { $ref: "#/components/parameters/IfMatch" }] },
+    ),
+  };
+  paths["/tasks/{taskId}/claims"] = {
+    parameters: [taskId],
+    post: apiOperation(
+      "createTaskClaim",
+      "task:claim",
+      "Create a Task Claim",
+      {
+        "200": {
+          ...apiResponse("Existing Task Claim", { $ref: "#/components/schemas/TaskClaim" }),
+          headers: apiResponseHeaders,
+        },
+        "201": {
+          ...apiResponse("Task Claim created", { $ref: "#/components/schemas/TaskClaim" }),
+          headers: apiResponseHeaders,
+        },
+        ...apiProblems(400, 401, 403, 404, 409, 415, 422, 500),
+      },
+      { parameters: [csrf, { $ref: "#/components/parameters/IdempotencyKey" }] },
+    ),
+  };
+  paths["/tasks/{taskId}/session"] = {
+    parameters: [taskId],
+    get: apiOperation("getTaskSession", "task:read", "Read a Task's Agency Session", {
+      "200": apiResponse("The Agency Session bound to the Task", { $ref: "#/components/schemas/AgencySession" }),
+      ...apiProblems(401, 403, 404, 500, 502, 503),
+    }),
+  };
+  paths["/tasks/{taskId}/session/ws"] = {
+    parameters: [taskId],
+    get: apiOperation(
+      "getTaskSessionSocket",
+      "task:read",
+      "Observe a Task's Agency Session over WebSocket",
+      {
+        "101": apiResponse("WebSocket relay established"),
+        "200": apiResponse("WebSocket connection details", { $ref: "#/components/schemas/TaskSessionSocket" }),
+        ...apiProblems(401, 403, 404, 500, 502, 503),
+      },
+      {
+        parameters: [
+          {
+            name: "Upgrade",
+            in: "header",
+            required: false,
+            description: "Set to websocket to establish the read-only relay; omit it to retrieve connection details.",
+            schema: { type: "string", const: "websocket" },
+          },
+        ],
+      },
+    ),
+  };
+  paths["/tasks/{taskId}/stream"] = {
+    parameters: [taskId],
+    get: apiOperation(
+      "streamTaskEvents",
+      "task:read",
+      "Stream Task Notes",
+      {
+        "200": {
+          description: "A bounded Server-Sent Events stream of Task Notes",
+          headers: apiResponseHeaders,
+          content: { "text/event-stream": { schema: { type: "string" } } },
+        },
+        ...apiProblems(400, 401, 403, 404, 500),
+      },
+      {
+        parameters: [
+          {
+            name: "Last-Event-ID",
+            in: "header",
+            required: false,
+            description: "Resume after a previously observed Task Note identifier.",
+            schema: { type: "string" },
+          },
+        ],
+      },
+    ),
+  };
+
+  components.securitySchemes.browserSession = {
+    type: "apiKey",
+    in: "cookie",
+    name: "ak_session",
+    description: "Opaque HttpOnly browser session established by the Realmroot OIDC sign-in flow.",
+  };
+  components.parameters.CsrfToken = {
+    name: "X-CSRF-Token",
+    in: "header",
+    required: false,
+    description: "Required for unsafe requests authenticated with browserSession; omitted for OAuth access-token authentication.",
+    schema: { type: "string" },
+  };
+  Object.assign(components.schemas, {
+    DeleteResult: {
+      type: "object",
+      additionalProperties: false,
+      required: ["ok"],
+      properties: { ok: { type: "boolean", const: true } },
+    },
+    BoardLabel: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "color", "description"],
+      properties: { name: { type: "string" }, color: { type: "string" }, description: { type: "string" } },
+    },
+    BoardLabelWrite: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "color"],
+      properties: { name: { type: "string" }, color: { type: "string" }, description: { type: "string" } },
+    },
+    BoardLabelUpdate: {
+      type: "object",
+      additionalProperties: false,
+      properties: { name: { type: "string" }, color: { type: "string" }, description: { type: "string" } },
+    },
+    BoardUpdate: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string" },
+        description: { type: ["string", "null"] },
+        visibility: { type: "string", enum: ["private", "public"] },
+        labels: { type: "array", items: { $ref: "#/components/schemas/BoardLabel" } },
+      },
+    },
+    TaskUpdate: {
+      oneOf: [
+        { $ref: "#/components/schemas/TaskFieldsUpdate" },
+        { $ref: "#/components/schemas/TaskAssignmentUpdate" },
+        { $ref: "#/components/schemas/TaskStatusUpdate" },
+      ],
+    },
+    TaskFieldsUpdate: {
+      type: "object",
+      additionalProperties: false,
+      minProperties: 1,
+      properties: {
+        title: { type: "string" },
+        description: { type: ["string", "null"] },
+        repositoryId: { type: ["string", "null"] },
+        labels: { type: ["array", "null"], items: { type: "string" } },
+        pullRequestUrl: { type: ["string", "null"], format: "uri", pattern: "^https?://" },
+        input: { type: ["object", "null"], additionalProperties: true },
+        metadata: { type: "object", additionalProperties: true },
+        position: { type: "number" },
+        scheduledAt: { type: ["string", "null"], format: "date-time" },
+        dependsOn: { type: "array", items: { type: "string" } },
+      },
+    },
+    TaskAssignmentUpdate: {
+      type: "object",
+      additionalProperties: false,
+      required: ["assignedTo"],
+      properties: { assignedTo: { type: "string", minLength: 1, maxLength: 200 } },
+    },
+    TaskStatusUpdate: {
+      oneOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["status"],
+          properties: {
+            status: { type: "string", const: "in-review" },
+            pullRequestUrl: { type: "string", format: "uri", pattern: "^https?://" },
+          },
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["status"],
+          properties: {
+            status: { type: "string", const: "in-progress" },
+            statusReason: { type: "string", maxLength: 4000 },
+          },
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["status"],
+          properties: { status: { type: "string", enum: ["done", "cancelled"] } },
+        },
+      ],
+    },
+    GithubAppConfiguration: {
+      type: "object",
+      additionalProperties: false,
+      required: ["configured", "slug", "installUrl", "installed", "accounts"],
+      properties: {
+        configured: { type: "boolean" },
+        slug: { type: ["string", "null"] },
+        installUrl: { type: ["string", "null"], format: "uri" },
+        installed: { type: "boolean" },
+        accounts: { type: "array", items: { type: "string" } },
+      },
+    },
+    GithubAppRepository: {
+      type: "object",
+      additionalProperties: false,
+      required: ["fullName", "name", "cloneUrl", "private", "alreadyAdded"],
+      properties: {
+        fullName: { type: "string" },
+        name: { type: "string" },
+        cloneUrl: { type: "string", format: "uri" },
+        private: { type: "boolean" },
+        alreadyAdded: { type: "boolean" },
+      },
+    },
+    GithubAppRepositoryCollection: {
+      type: "object",
+      additionalProperties: false,
+      required: ["installed", "repositories"],
+      properties: {
+        installed: { type: "boolean" },
+        repositories: { type: "array", items: { $ref: "#/components/schemas/GithubAppRepository" } },
+      },
+    },
+    AgencySession: {
+      type: "object",
+      additionalProperties: true,
+      required: ["metadata", "spec", "status"],
+      properties: {
+        metadata: { type: "object", additionalProperties: true },
+        spec: { type: "object", additionalProperties: true },
+        status: { type: "object", additionalProperties: true },
+      },
+    },
+    TaskSessionSocket: {
+      type: "object",
+      additionalProperties: false,
+      required: ["url", "sessionId"],
+      properties: { url: { type: "string", format: "uri" }, sessionId: { type: "string" } },
+    },
+  });
+  for (const pathItem of Object.values(paths)) {
+    for (const [method, value] of Object.entries(pathItem)) {
+      if (method === "parameters" || !value || typeof value !== "object") continue;
+      const operation = value as { parameters?: unknown[] };
+      operation.parameters ??= [];
+      if (!operation.parameters.some((parameter) => (parameter as { $ref?: string }).$ref === apiVersion.$ref))
+        operation.parameters.unshift(apiVersion);
+      if (
+        !["get", "head", "options"].includes(method) &&
+        !operation.parameters.some((parameter) => (parameter as { $ref?: string }).$ref === csrf.$ref)
+      ) {
+        operation.parameters.push(csrf);
+      }
+    }
+  }
+  return document;
 }
 
 function collectionSchema(itemSchema: string) {
