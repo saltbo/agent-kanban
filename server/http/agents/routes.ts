@@ -1,5 +1,9 @@
 import type { RuntimeName } from "@realmroot/enbor-sdk";
+import { createAgentPermissionGateway } from "@server/adapters/realmroot/agentPermissions";
+import { delegatedResourceToken } from "@server/adapters/realmroot/delegatedAgencyToken";
 import { authorizeScope } from "@server/auth/middleware";
+import { RESOURCE_SCOPES } from "@server/auth/realmroot";
+import { akResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
 import { agentRepresentation } from "@server/http/agents/representation";
 import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
@@ -12,6 +16,7 @@ import {
   externalCreationIdempotencyKey,
   readJsonBody,
 } from "@server/http/resource-server/request";
+import { AgentPermissionProvisioningError, grantDefaultAgentPermissions } from "@server/usecases/agents/defaultPermissions";
 import { createAgencyAgent } from "@server/usecases/agents/projectAgents";
 import { AGENCY_RUNTIMES } from "@shared";
 import type { Hono } from "hono";
@@ -35,6 +40,13 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
     const model = optionalNullableString(body.model, "Agent.model", 200);
     const skills = optionalStringArray(body.skills, "Agent.skills");
     const idempotencyKey = externalCreationIdempotencyKey(c);
+    const principal = c.get("principal");
+    const platformResource = new URL("/api", c.env.OIDC_ISSUER).toString();
+    const permissionToken = await delegatedResourceToken(c.env, {
+      user: { tenantId: principal.tenantId, subjectId: principal.subjectId },
+      resource: platformResource,
+      scopes: ["permissions:read", "permissions:write"],
+    });
     const { client } = await agencyDependencies(c, ["identities:write", "agents:write"]);
     const agent = await createAgencyAgent(client, {
       name,
@@ -47,6 +59,17 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
       skills,
       idempotencyKey,
     });
+    try {
+      if (!agent.spec.identity) throw new Error("Enbor did not return a bound Realmroot identity");
+      await grantDefaultAgentPermissions(createAgentPermissionGateway(platformResource, permissionToken), agent.spec.identity.agentId, {
+        akResource: akResource(c.env),
+        githubResource: c.env.GITHUB_RESOURCE,
+        tenantContextId: principal.tenantId.replace(/^user:/, ""),
+        akScopes: RESOURCE_SCOPES,
+      });
+    } catch (error) {
+      throw new AgentPermissionProvisioningError(agent.metadata.uid, error);
+    }
     const represented = agentRepresentation(agent, c.req.url);
     const etag = await representationEtag(represented);
     await completeExternalCreation(c, "agents", agent.metadata.uid, etag.slice(1, -1), represented);

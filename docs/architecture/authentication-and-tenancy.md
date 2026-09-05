@@ -66,3 +66,34 @@ rotating one refresh token twice; a busy refresh is an explicit temporary error.
 Repeated webhook delivery can finish terminal Task effects without duplicating
 Session creation. Errors propagate to the webhook caller; failed effects are
 not reported as completed.
+
+## Permissions for newly created Agents
+
+`POST /api/agents` exchanges the creating user's saved AK grant for Realmroot
+`permissions:read` and `permissions:write` using the existing AK Web Application.
+Its token exchange policy maps AK `agent:write` to those target scopes. Agent
+credentials are not used as a substitute for the user's grant.
+
+After Enbor creates the bound identity and Agent, AK discovers the controller's
+permission Contexts and grants persistent AK scopes in the current tenant and
+the default GitHub scopes in the connected GitHub installation Contexts. The
+GitHub Resource URL is configured by `GITHUB_RESOURCE`; provider connection and
+installation scope limits remain enforced by Realmroot and its Adapter.
+
+The GitHub defaults are metadata read, contents read/write, pull requests
+read/write, checks read, statuses read, actions read/write, workflows write,
+and issues read/write. The current Git transport requires workflows write for
+all pushes. Contexts retain the GitHub App installation's repository selection.
+No external automatic-approval policy is introduced.
+
+Creation returns success only after permission configuration succeeds. A 409
+`agent-permissions-incomplete` identifies the created Enbor Agent through its
+Location header and detail. Retry the same creation and Idempotency-Key to
+reuse Enbor resources and complete equivalent permissions. No local Agent or
+permission table is added. Existing Agent reads and assignments do not backfill
+grants; this change applies only to new creations.
+
+Acceptance: create a new Agent through Toolbox in Demo, inspect its permissions
+before assignment, then run a repository Task including Issue, PR, CI log, and
+review continuation operations. Use a new Session to prove existing grants can
+be acquired without controller approval. Keep existing Agent grants unchanged.

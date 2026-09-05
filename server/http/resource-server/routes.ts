@@ -189,7 +189,7 @@ function baseDocument(env: Env) {
           responses: { "200": response("Agent collection", { $ref: "#/components/schemas/AgentCollection" }), ...projectionReadProblems },
         },
         post: {
-          ...operation("createAgent", "agent:write", "Agent created", "201"),
+          ...operation("createAgent", "agent:write", "Agent created with persistent AK and GitHub development permissions", "201"),
           parameters: [version, idempotencyKey],
           requestBody: { required: true, ...json({ $ref: "#/components/schemas/AgentWrite" }) },
           responses: { "201": createdResponse("Agent created", { $ref: "#/components/schemas/Agent" }), ...projectionCreateProblems },
