@@ -64,11 +64,9 @@ describe("published Resource Server contract", () => {
       ["/tasks/{taskId}/session/ws", "get"],
       ["/tasks/{taskId}/stream", "get"],
       ["/tasks/{taskId}/claims", "post"],
-      ["/tasks/{taskId}/claims/{claimId}", "get"],
-      ["/tasks/{taskId}/claims/{claimId}", "delete"],
     ] as const;
 
-    expect(Object.values(contract.paths).flatMap((pathItem) => Object.keys(pathItem).filter((key) => key !== "parameters"))).toHaveLength(38);
+    expect(Object.values(contract.paths).flatMap((pathItem) => Object.keys(pathItem).filter((key) => key !== "parameters"))).toHaveLength(36);
     for (const [path, method] of additionalOperations) {
       expect(contract.paths[path]?.[method], `${method.toUpperCase()} ${path}`).toBeDefined();
     }
@@ -384,7 +382,7 @@ describe("published Resource Server contract", () => {
     });
   });
 
-  it("publishes conditional JSON Merge Patch Task mutations and addressable Claim resources", async () => {
+  it("publishes canonical Task mutations and collection-only Claim creation", async () => {
     const toolbox = await document();
     const taskPatch = toolbox.paths["/tasks/{taskId}"].patch;
     expect(taskPatch.parameters).toEqual(
@@ -429,29 +427,23 @@ describe("published Resource Server contract", () => {
       security: [{ realmroot: ["task:claim"] }, { browserSession: [] }],
       parameters: expect.arrayContaining([{ $ref: "#/components/parameters/IdempotencyKey" }]),
     });
-    expect(claimCollection.post.responses["201"]).toMatchObject({
-      headers: expect.objectContaining({
-        ETag: { $ref: "#/components/headers/ETag" },
-        Location: { $ref: "#/components/headers/Location" },
-      }),
-      content: { "application/json": { schema: { $ref: "#/components/schemas/TaskClaim" } } },
-    });
+    const claimResponseHeaders = {
+      "API-Version": { $ref: "#/components/headers/ApiVersion" },
+      "Request-Id": { $ref: "#/components/headers/RequestId" },
+      traceparent: { $ref: "#/components/headers/Traceparent" },
+      Link: { $ref: "#/components/headers/Link" },
+      "Idempotency-Replayed": { $ref: "#/components/headers/IdempotencyReplayed" },
+    };
+    for (const status of ["200", "201"] as const) {
+      expect(claimCollection.post.responses[status]).toMatchObject({
+        headers: claimResponseHeaders,
+        content: { "application/json": { schema: { $ref: "#/components/schemas/TaskClaim" } } },
+      });
+      expect(claimCollection.post.responses[status].headers).not.toHaveProperty("Location");
+      expect(claimCollection.post.responses[status].headers).not.toHaveProperty("ETag");
+    }
     expect(claimCollection.post).not.toHaveProperty("requestBody");
-    const claimItem = toolbox.paths["/tasks/{taskId}/claims/{claimId}"];
-    expect(claimItem.parameters).toEqual(
-      expect.arrayContaining([{ $ref: "#/components/parameters/TaskId" }, expect.objectContaining({ name: "claimId", in: "path", required: true })]),
-    );
-    expect(claimItem.get).toMatchObject({
-      operationId: "getTaskClaim",
-      security: [{ realmroot: ["task:read"] }, { browserSession: [] }],
-      responses: { "200": { content: { "application/json": { schema: { $ref: "#/components/schemas/TaskClaim" } } } } },
-    });
-    expect(claimItem.delete).toMatchObject({
-      operationId: "deleteTaskClaim",
-      security: [{ realmroot: ["task:release"] }, { browserSession: [] }],
-      parameters: expect.arrayContaining([{ $ref: "#/components/parameters/IfMatch" }]),
-      responses: { "204": expect.any(Object), "412": expect.any(Object) },
-    });
+    expect(toolbox.paths).not.toHaveProperty("/tasks/{taskId}/claims/{claimId}");
 
     for (const [path, method] of [
       ["/task-assignments/{taskId}", "put"],
@@ -473,6 +465,7 @@ describe("published Resource Server contract", () => {
     const declaredScopes = scheme["x-scopes-supported"];
     expect(scheme.openIdConnectUrl).toBe(`${env.OIDC_ISSUER}/.well-known/openid-configuration`);
     expect(Object.keys(declaredScopes).sort()).toEqual([...RESOURCE_SCOPES].sort());
+    expect(RESOURCE_SCOPES).not.toContain("task:release");
 
     for (const [path, pathItem] of Object.entries(toolbox.paths)) {
       for (const [method, operation] of Object.entries(pathItem)) {

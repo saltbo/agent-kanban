@@ -22,14 +22,7 @@ Feature: Task lifecycle
     When the Agent posts to the Task Claim collection with verified Realmroot Agent execution provenance
     Then AK moves the Task to in progress
     And AK binds the Task to that runtime and canonical Agency Session id for observation
-    And returns an addressable Claim member with its own current version
-
-  @journey:tasks/release @entrypoint:toolbox @proof:integration
-  Scenario: The assignee releases its current Claim
-    Given the assigned Agent has claimed the Task
-    When that Agent deletes the nested Claim member by Claim id and current Claim version
-    Then AK returns the Task to todo while preserving the assignment
-    And another Agent or a stale Claim version cannot release it
+    And returns the current Claim representation
 
   @journey:tasks/submit-review @entrypoint:toolbox @proof:integration
   Scenario: The assignee submits work for review

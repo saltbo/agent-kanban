@@ -83,6 +83,7 @@ export function resourceIdempotencyFor<T extends { id: string }>(
   collection: string,
   versionOf: (resource: T) => string,
   represent: (resource: T) => unknown,
+  options: { includeResourceHeaders?: boolean } = {},
 ): ResourceIdempotency<T> | undefined {
   const idempotency = c.get("resourceIdempotency");
   if (!idempotency) return undefined;
@@ -94,8 +95,8 @@ export function resourceIdempotencyFor<T extends { id: string }>(
         status: 201,
         body: JSON.stringify(represent(resource)),
         contentType: "application/json; charset=UTF-8",
-        location: new URL(`/api/${collection}/${encodeURIComponent(id)}`, c.req.url).toString(),
-        etag: `"${versionOf(resource)}"`,
+        location: options.includeResourceHeaders === false ? "" : new URL(`/api/${collection}/${encodeURIComponent(id)}`, c.req.url).toString(),
+        etag: options.includeResourceHeaders === false ? "" : `"${versionOf(resource)}"`,
       };
     },
   };
@@ -119,11 +120,13 @@ export async function completeExternalCreation(
   version: string,
   responseBody: unknown,
   status: 200 | 201 = 201,
+  options: { includeResourceHeaders?: boolean } = {},
 ): Promise<void> {
   const idempotency = c.get("resourceIdempotency");
   if (!idempotency) return;
-  const location = new URL(`/api/${collection}/${encodeURIComponent(resourceId)}`, c.req.url).toString();
-  const etag = `"${version}"`;
+  const location =
+    options.includeResourceHeaders === false ? "" : new URL(`/api/${collection}/${encodeURIComponent(resourceId)}`, c.req.url).toString();
+  const etag = options.includeResourceHeaders === false ? "" : `"${version}"`;
   const completed = {
     ...idempotency,
     responseFor: () => ({

@@ -1021,40 +1021,15 @@ function apiDocument(env: Env) {
       {
         "200": {
           ...apiResponse("Existing Task Claim", { $ref: "#/components/schemas/TaskClaim" }),
-          headers: {
-            ...apiResponseHeaders,
-            ETag: { $ref: "#/components/headers/ETag" },
-            Location: { $ref: "#/components/headers/Location" },
-          },
+          headers: apiResponseHeaders,
         },
         "201": {
           ...apiResponse("Task Claim created", { $ref: "#/components/schemas/TaskClaim" }),
-          headers: {
-            ...apiResponseHeaders,
-            ETag: { $ref: "#/components/headers/ETag" },
-            Location: { $ref: "#/components/headers/Location" },
-          },
+          headers: apiResponseHeaders,
         },
         ...apiProblems(400, 401, 403, 404, 409, 415, 422, 500),
       },
       { parameters: [csrf, { $ref: "#/components/parameters/IdempotencyKey" }] },
-    ),
-  };
-  paths["/tasks/{taskId}/claims/{claimId}"] = {
-    parameters: [taskId, { name: "claimId", in: "path", required: true, schema: { type: "string" } }],
-    get: apiOperation("getTaskClaim", "task:read", "Read a Task Claim", {
-      "200": {
-        ...apiResponse("Task Claim", { $ref: "#/components/schemas/TaskClaim" }),
-        headers: { ...apiResponseHeaders, ETag: { $ref: "#/components/headers/ETag" } },
-      },
-      ...apiProblems(401, 403, 404, 500),
-    }),
-    delete: apiOperation(
-      "deleteTaskClaim",
-      "task:release",
-      "Delete a Task Claim",
-      { "204": apiResponse("Task Claim deleted"), ...apiProblems(400, 401, 403, 404, 409, 412, 428, 500) },
-      { parameters: [csrf, { $ref: "#/components/parameters/IfMatch" }] },
     ),
   };
   paths["/tasks/{taskId}/session"] = {

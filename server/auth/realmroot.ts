@@ -30,10 +30,9 @@ export const RESOURCE_SCOPES = [
   "task:read",
   "task:write",
   "task:claim",
-  "task:release",
 ] as const;
 export type ResourceScope = (typeof RESOURCE_SCOPES)[number];
-export const WEB_SESSION_SCOPES: readonly ResourceScope[] = RESOURCE_SCOPES.filter((scope) => scope !== "task:claim" && scope !== "task:release");
+export const WEB_SESSION_SCOPES: readonly ResourceScope[] = RESOURCE_SCOPES.filter((scope) => scope !== "task:claim");
 
 type OidcMetadata = {
   issuer: string;

@@ -58,7 +58,8 @@ describe("Agent Skills Discovery artifacts", () => {
     expect(instructions).toContain("agent-kanban/tasks/<task-id>/claims");
     expect(instructions).toContain("realmroot toolbox patch agent-kanban/tasks/<task-id>");
     expect(instructions).not.toContain('If-Match: "<task-etag>"');
-    expect(instructions).toContain('If-Match: "<claim-etag>"');
+    expect(instructions).not.toContain("claims/<claim-id>");
+    expect(instructions).not.toContain('If-Match: "<claim-etag>"');
     for (const legacyPath of [
       "agent-kanban/task-assignments",
       "agent-kanban/task-claims",

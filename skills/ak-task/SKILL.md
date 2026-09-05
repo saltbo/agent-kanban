@@ -97,18 +97,15 @@ proven. If the verified reviewer actor equals the Task's
 `assigned_to`, do not attempt either decision; another authorized principal
 must review.
 
-Cancel a non-terminal Task through the same conditional Task patch. Delete an
-active Claim only at its nested Claim URI, using the Claim's own ETag:
+Cancel a non-terminal Task through the same Task patch:
 
 ```bash
 realmroot toolbox patch agent-kanban/tasks/<task-id> \
   --content-type application/merge-patch+json \
   '{"status":"cancelled"}' --json
-
-realmroot toolbox delete agent-kanban/tasks/<task-id>/claims/<claim-id> \
-  --header 'If-Match: "<claim-etag>"' --json
 ```
 
-Use generic verb-first Toolbox operations for every Task and Claim mutation.
+Use generic verb-first Toolbox operations for every Task mutation and Claim
+creation.
 `task wait` is the only generated resource-first convenience command. Never
 invoke the removed `ak` CLI or the removed lifecycle aliases.

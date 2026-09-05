@@ -15,8 +15,6 @@ describe("isPublishedV2Operation", () => {
     ["GET", "/api/tasks/task-1/session/ws"],
     ["GET", "/api/tasks/task-1/stream"],
     ["POST", "/api/tasks/task-1/claims"],
-    ["GET", "/api/tasks/task-1/claims/claim-1"],
-    ["DELETE", "/api/tasks/task-1/claims/claim-1"],
     ["GET", "/api/tasks/task-1/events"],
   ])("recognizes the published Task operation %s %s", (method, path) => {
     expect(isPublishedV2Operation(method, path)).toBe(true);
@@ -43,6 +41,8 @@ describe("isPublishedV2Operation", () => {
     ["GET", "/api/tasks/task-1/notes/note-1/extra"],
     ["GET", "/api/tasks/task-1/claims"],
     ["PUT", "/api/tasks/task-1/claims"],
+    ["GET", "/api/tasks/task-1/claims/claim-1"],
+    ["DELETE", "/api/tasks/task-1/claims/claim-1"],
     ["POST", "/api/tasks/task-1/claims/claim-1"],
     ["GET", "/api/tasks/task-1/claims/claim-1/extra"],
     ["POST", "/api/tasks/task-1/events"],

@@ -8,7 +8,6 @@ export const V2_API_VERSION = SHARED_V2_API_VERSION;
 export function isPublishedV2Operation(method: string, path: string): boolean {
   if (/^\/api\/tasks\/[^/]+\/events$/.test(path)) return method === "GET";
   if (/^\/api\/tasks\/[^/]+\/claims$/.test(path)) return method === "POST";
-  if (/^\/api\/tasks\/[^/]+\/claims\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
   if (path === "/api/boards") return method === "GET" || method === "POST";
   if (/^\/api\/boards\/[^/]+$/.test(path)) return method === "GET" || method === "PATCH" || method === "DELETE";
   if (/^\/api\/boards\/[^/]+\/labels$/.test(path)) return method === "POST";

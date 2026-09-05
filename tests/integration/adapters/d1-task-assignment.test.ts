@@ -5,9 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createBoard } from "../../../server/adapters/d1/boardRepo";
 import { createTask } from "../../../server/adapters/d1/taskRepo";
 import { d1TaskAssignmentRepository } from "../../../server/adapters/d1/tasks/d1TaskAssignments";
-import { d1TaskClaimDeletionRepository } from "../../../server/adapters/d1/tasks/d1TaskClaimDeletions";
 import { d1TaskClaimRepository } from "../../../server/adapters/d1/tasks/d1TaskClaims";
-import { deleteTaskClaim } from "../../../server/usecases/tasks/deleteTaskClaim";
 import { replaceTaskAssignment } from "../../../server/usecases/tasks/replaceTaskAssignment";
 import { replaceTaskClaim } from "../../../server/usecases/tasks/replaceTaskClaim";
 import { seedUser, setupMiniflare } from "../../helpers/db";
@@ -48,46 +46,45 @@ describe("D1 Task Assignment", () => {
     });
   });
 
-  it("deletes the Session binding on release so the Task can be claimed with new Agency Session provenance", async () => {
+  it("stores each claimed Task's independent Agency Session provenance", async () => {
     const { mf, db } = await setupMiniflare();
     resources.push(mf);
-    const ownerId = `tenant-release-${randomUUID()}`;
+    const ownerId = `tenant-claim-provenance-${randomUUID()}`;
     await seedUser(db, ownerId, `${ownerId}@test.local`);
-    const board = await createBoard(db, ownerId, "Release binding", "ops");
-    const task = await createTask(db, ownerId, { title: "Reclaim after release", board_id: board.id });
-    await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
-      ownerId,
-      taskId: task.id,
-      assigneeActorId: "actor-target",
-      assignedByActorId: "actor-manager",
-    });
-    const first = await replaceTaskClaim(d1TaskClaimRepository(db), {
-      ownerId,
-      taskId: task.id,
-      agentActorId: "actor-target",
-      runtime: "codex",
-      runtimeSessionId: "resume-first",
-    });
+    const board = await createBoard(db, ownerId, "Claim bindings", "ops");
+    const tasks = await Promise.all([
+      createTask(db, ownerId, { title: "First claimed Task", board_id: board.id }),
+      createTask(db, ownerId, { title: "Second claimed Task", board_id: board.id }),
+    ]);
 
-    await deleteTaskClaim(d1TaskClaimDeletionRepository(db), {
-      ownerId,
-      taskId: task.id,
-      expectedClaimVersion: first.version,
-      deletedByActorId: "actor-target",
-    });
-    await expect(db.prepare("SELECT * FROM task_session_bindings WHERE task_id = ?").bind(task.id).first()).resolves.toBeNull();
-
-    await expect(
-      replaceTaskClaim(d1TaskClaimRepository(db), {
+    for (const [index, task] of tasks.entries()) {
+      await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
         ownerId,
         taskId: task.id,
-        agentActorId: "actor-target",
-        runtime: "codex",
-        runtimeSessionId: "resume-second",
-      }),
-    ).resolves.toMatchObject({ created: true, claim: { runtime: "codex", runtimeSessionId: "resume-second" } });
+        assigneeActorId: "actor-target",
+        assignedByActorId: "actor-manager",
+      });
+      await expect(
+        replaceTaskClaim(d1TaskClaimRepository(db), {
+          ownerId,
+          taskId: task.id,
+          agentActorId: "actor-target",
+          runtime: "codex",
+          runtimeSessionId: `resume-${index + 1}`,
+        }),
+      ).resolves.toMatchObject({ created: true, claim: { runtime: "codex", runtimeSessionId: `resume-${index + 1}` } });
+    }
+
     await expect(
-      db.prepare("SELECT runtime, runtime_session_id FROM task_session_bindings WHERE task_id = ?").bind(task.id).first(),
-    ).resolves.toEqual({ runtime: "codex", runtime_session_id: "resume-second" });
+      db
+        .prepare("SELECT task_id, runtime_session_id FROM task_session_bindings WHERE task_id IN (?, ?) ORDER BY task_id")
+        .bind(tasks[0].id, tasks[1].id)
+        .all(),
+    ).resolves.toMatchObject({
+      results: [
+        { task_id: tasks[0].id, runtime_session_id: "resume-1" },
+        { task_id: tasks[1].id, runtime_session_id: "resume-2" },
+      ].sort((left, right) => left.task_id.localeCompare(right.task_id)),
+    });
   });
 });

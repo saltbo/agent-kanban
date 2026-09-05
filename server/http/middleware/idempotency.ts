@@ -87,12 +87,15 @@ async function hashUpstreamKey(ownerId: string, actorId: string, apiVersion: str
 }
 
 export function replayResponse(response: IdempotentHttpResponse): Response {
+  const resourceHeaders = {
+    ...(response.location ? { Location: response.location } : {}),
+    ...(response.etag ? { ETag: response.etag } : {}),
+  };
   return new Response(response.body, {
     status: response.status,
     headers: {
       "Content-Type": response.contentType,
-      Location: response.location,
-      ETag: response.etag,
+      ...resourceHeaders,
       "Idempotency-Replayed": "true",
     },
   });

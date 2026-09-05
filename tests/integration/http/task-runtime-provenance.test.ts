@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 describe("verified Task runtime provenance", () => {
-  it("creates, reads, and conditionally deletes the Task Claim subresource by claimId", async () => {
+  it("creates the Task Claim through its collection while authenticated member routes remain unavailable", async () => {
     const board = await createBoard(db, tenantId, "Claim subresource", "ops");
     const task = await createTask(db, tenantId, { title: "Claim subresource Task", board_id: board.id });
     await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
@@ -54,38 +54,27 @@ describe("verified Task runtime provenance", () => {
     expect(created.status, await created.clone().text()).toBe(201);
     const claim = (await created.json()) as { id: string; taskId: string; runtimeSessionId: string };
     expect(claim).toMatchObject({ id: expect.any(String), taskId: task.id, runtimeSessionId: binding.session_id });
-    expect(created.headers.get("Location")).toBe(`${resource}/tasks/${task.id}/claims/${claim.id}`);
-    expect(created.headers.get("ETag")).toBe(`"${claim.id}"`);
+    expect(created.headers.get("Location")).toBeNull();
+    expect(created.headers.get("ETag")).toBeNull();
 
     const existing = await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", binding, {
       idempotencyKey: "claim-subresource-existing",
     });
     expect(existing.status).toBe(200);
-    expect(existing.headers.get("ETag")).toBe(`"${claim.id}"`);
+    expect(existing.headers.get("Location")).toBeNull();
+    expect(existing.headers.get("ETag")).toBeNull();
     const existingBody = await existing.text();
     const replayed = await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", binding, {
       idempotencyKey: "claim-subresource-existing",
     });
     expect(replayed.status).toBe(200);
     expect(replayed.headers.get("Idempotency-Replayed")).toBe("true");
+    expect(replayed.headers.get("Location")).toBeNull();
+    expect(replayed.headers.get("ETag")).toBeNull();
     expect(await replayed.text()).toBe(existingBody);
 
-    const read = await agentRequest("GET", `/tasks/${task.id}/claims/${claim.id}`, "task:read");
-    expect(read.status).toBe(200);
-    expect(read.headers.get("ETag")).toBe(`"${claim.id}"`);
-    await expect(read.json()).resolves.toMatchObject({ id: claim.id, taskId: task.id });
-
-    const stale = await agentRequest("DELETE", `/tasks/${task.id}/claims/${claim.id}`, "task:release", undefined, {
-      ifMatch: '"stale-claim"',
-    });
-    expect(stale.status).toBe(412);
-    await expect(stale.json()).resolves.toMatchObject({ type: expect.stringContaining("task-claim-precondition-failed") });
-
-    const released = await agentRequest("DELETE", `/tasks/${task.id}/claims/${claim.id}`, "task:release", undefined, {
-      ifMatch: `"${claim.id}"`,
-    });
-    expect(released.status).toBe(204);
     expect((await agentRequest("GET", `/tasks/${task.id}/claims/${claim.id}`, "task:read")).status).toBe(404);
+    expect((await agentRequest("DELETE", `/tasks/${task.id}/claims/${claim.id}`, "task:read")).status).toBe(404);
   });
 
   it("rejects a non-empty Task Claim body without creating a Claim while preserving the empty-body contract", async () => {
@@ -367,59 +356,6 @@ describe("verified Task runtime provenance", () => {
     upstream.emitMessage(JSON.stringify({ type: "event", sequence: 1 }));
     expect(browser.received.at(-1)).toBe(JSON.stringify({ type: "event", sequence: 1 }));
   });
-
-  it("[spec: tasks/release] forbids another same-tenant Agent from releasing the Claim and lets the assignee release it", async () => {
-    const board = await createBoard(db, tenantId, "Release authority", "ops");
-    const task = await createTask(db, tenantId, { title: "Assignee-owned Claim", board_id: board.id });
-    await replaceTaskAssignment(d1TaskAssignmentRepository(db), {
-      ownerId: tenantId,
-      taskId: task.id,
-      assigneeActorId: actorId,
-      assignedByActorId: "assigner-a",
-    });
-    const claim = await agentRequest("POST", `/tasks/${task.id}/claims`, "task:claim", {
-      runtime: "codex",
-      session_id: "resume-owned",
-    });
-    expect(claim.status).toBe(201);
-    const etag = claim.headers.get("etag");
-    const claimId = ((await claim.clone().json()) as { id: string }).id;
-    expect(etag).toBeTruthy();
-
-    const foreignRelease = await agentRequest("DELETE", `/tasks/${task.id}/claims/${claimId}`, "task:release", undefined, {
-      agentActorId: "realmroot-agent-other",
-      ifMatch: etag!,
-    });
-    expect(foreignRelease.status).toBe(403);
-    await expect(foreignRelease.json()).resolves.toMatchObject({ type: expect.stringContaining("task-claim-deletion-forbidden") });
-    await expect(db.prepare("SELECT status, active_claim_id FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
-      status: "in_progress",
-      active_claim_id: etag!.replaceAll('"', ""),
-    });
-    await expect(
-      db.prepare("SELECT agent_actor_id, runtime_session_id FROM task_session_bindings WHERE task_id = ?").bind(task.id).first(),
-    ).resolves.toEqual({ agent_actor_id: actorId, runtime_session_id: "resume-owned" });
-
-    const staleRelease = await agentRequest("DELETE", `/tasks/${task.id}/claims/${claimId}`, "task:release", undefined, {
-      ifMatch: '"stale-claim-id"',
-    });
-    expect(staleRelease.status).toBe(412);
-    await expect(db.prepare("SELECT status, active_claim_id FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
-      status: "in_progress",
-      active_claim_id: etag!.replaceAll('"', ""),
-    });
-    await expect(
-      db.prepare("SELECT agent_actor_id, runtime_session_id FROM task_session_bindings WHERE task_id = ?").bind(task.id).first(),
-    ).resolves.toEqual({ agent_actor_id: actorId, runtime_session_id: "resume-owned" });
-
-    const assigneeRelease = await agentRequest("DELETE", `/tasks/${task.id}/claims/${claimId}`, "task:release", undefined, { ifMatch: etag! });
-    expect(assigneeRelease.status).toBe(204);
-    await expect(db.prepare("SELECT status, active_claim_id FROM tasks WHERE id = ?").bind(task.id).first()).resolves.toEqual({
-      status: "todo",
-      active_claim_id: null,
-    });
-    await expect(db.prepare("SELECT * FROM task_session_bindings WHERE task_id = ?").bind(task.id).first()).resolves.toBeNull();
-  });
 });
 
 async function agentRequest(
@@ -427,7 +363,7 @@ async function agentRequest(
   path: string,
   scope: string,
   binding?: { runtime: string; session_id: string },
-  options: { agentActorId?: string; ifMatch?: string; rawBody?: string; idempotencyKey?: string } = {},
+  options: { agentActorId?: string; rawBody?: string; idempotencyKey?: string } = {},
 ): Promise<Response> {
   const url = `${resource}${path}`;
   const authority = await agentAuthority(url, method, scope, binding, options.agentActorId);
@@ -439,7 +375,6 @@ async function agentRequest(
         authorization: `DPoP ${authority.accessToken}`,
         dpop: authority.proof,
         "API-Version": "2026-08-29",
-        ...(options.ifMatch ? { "If-Match": options.ifMatch } : {}),
         ...(idempotencyKey ? { "Idempotency-Key": JSON.stringify(idempotencyKey) } : {}),
         ...(options.rawBody === undefined ? {} : { "Content-Type": "application/json" }),
       },

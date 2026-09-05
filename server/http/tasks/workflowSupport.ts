@@ -32,10 +32,6 @@ export function mediaType(c: TaskContext): string | undefined {
   return c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
 }
 
-export function resourceLocation(c: TaskContext, collection: string, taskId: string): string {
-  return new URL(`/api/${collection}/${encodeURIComponent(taskId)}`, c.req.url).toString();
-}
-
 export function readStrongVersionPrecondition(c: TaskContext, resourceName: string): string | Response {
   const value = c.req.header("if-match");
   if (!value) {

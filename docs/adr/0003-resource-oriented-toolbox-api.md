@@ -12,15 +12,16 @@ commands instead of product resources.
 
 AK is a Realmroot Resource Server and publishes one OpenAPI document. Ordinary
 resources use Toolbox's generic verb-first operations. AK supplies
-resource-first command names only for Task lifecycle resources: claim, release,
-review, reject, complete, cancel, and bounded wait.
+one resource-first command name for bounded Task Event waiting. Assignment and
+lifecycle outcomes are represented by Task fields and status changes. Claiming
+creates a Task Claim through the nested Claim collection; Claims are not
+individually readable or deletable.
 
-HTTP paths contain resource nouns. Known singleton lifecycle resources use
-`PUT` or `DELETE`. `API-Version` is optional and defaults to the current v2
-contract. Expected v2 failures use RFC 9457 Problem Details and every response
-has a server-generated `Request-Id`. Toolbox generates creation idempotency keys
-for resources whose contract requires them and reuses a key across automatic
-retries.
+HTTP paths contain resource nouns. `API-Version` is optional and defaults to the
+current v2 contract. Expected v2 failures use RFC 9457 Problem Details and every
+response has a server-generated `Request-Id`. Toolbox generates creation
+idempotency keys for resources whose contract requires them and reuses a key
+across automatic retries.
 
 ## Consequences
 

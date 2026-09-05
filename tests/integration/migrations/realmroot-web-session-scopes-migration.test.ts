@@ -53,7 +53,7 @@ describe("0054 Realmroot Web Session scopes migration", () => {
       expect(stored?.id).toBe("existing-session");
       const scopes = JSON.parse(stored!.scopes_json) as string[];
       expect(scopes).toEqual(WEB_SESSION_SCOPES);
-      expect(scopes).not.toEqual(expect.arrayContaining(["task:claim", "task:release"]));
+      expect(scopes).not.toContain("task:claim");
     } finally {
       await mf.dispose();
     }
