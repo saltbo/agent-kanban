@@ -1,3 +1,4 @@
+import { isBoardPublic } from "@server/adapters/d1/boardRepo";
 import { getBoardActions, getBoardActionsByBoardId } from "@server/adapters/d1/taskRepo";
 import type { Env } from "@server/env";
 import { createLogger } from "@server/observability/logger";
@@ -109,6 +110,7 @@ export async function createPublicBoardSSEResponse(env: Env, boardId: string): P
       await new Promise((r) => setTimeout(r, 2000));
 
       const notes = await getBoardActionsByBoardId(db, boardId, lastSeen);
+      if (!(await isBoardPublic(db, boardId))) break;
       for (const note of notes) {
         await write(toEvent(note));
       }

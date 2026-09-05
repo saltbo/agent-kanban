@@ -45,7 +45,7 @@ async function assertRepositoryBelongsToBoardOwner(db: D1, boardId: string, repo
   if (!row) throw new ApplicationError("not-found", "Repository not found");
 }
 
-async function assertOwnedTaskIds(db: D1, ownerId: string, taskIds: string[], message: string): Promise<void> {
+async function assertOwnedTaskIds(db: D1, ownerId: string, boardId: string, taskIds: string[], message: string): Promise<void> {
   const ids = [...new Set(taskIds)];
   if (ids.length === 0) return;
   const placeholders = ids.map(() => "?").join(", ");
@@ -53,9 +53,9 @@ async function assertOwnedTaskIds(db: D1, ownerId: string, taskIds: string[], me
     .prepare(
       `SELECT COUNT(*) AS count FROM tasks t
        JOIN boards b ON b.id = t.board_id
-       WHERE t.id IN (${placeholders}) AND b.owner_id = ?`,
+       WHERE t.id IN (${placeholders}) AND b.owner_id = ? AND t.board_id = ?`,
     )
-    .bind(...ids, ownerId)
+    .bind(...ids, ownerId, boardId)
     .first<{ count: number }>();
   if (row?.count !== ids.length) throw new ApplicationError("invalid-request", message);
 }
@@ -99,13 +99,13 @@ export async function createTask(
   const metadataJson = JSON.stringify(taskMetadata);
 
   if (input.depends_on?.length) {
-    await assertOwnedTaskIds(db, ownerId, input.depends_on, "Dependency task not found");
+    await assertOwnedTaskIds(db, ownerId, board.id, input.depends_on, "Dependency task not found in this Board");
     const hasCycle = await detectCycle(db, taskId, input.depends_on);
     if (hasCycle) throw new ApplicationError("invalid-request", "Circular dependency detected");
   }
 
   if (input.created_from) {
-    await assertOwnedTaskIds(db, ownerId, [input.created_from], "Parent task not found");
+    await assertOwnedTaskIds(db, ownerId, board.id, [input.created_from], "Parent task not found in this Board");
   }
 
   await assertKnownLabels(db, board.id, input.labels);
@@ -426,7 +426,7 @@ export async function updateTask(
       const taskOwner =
         ownerId ?? (await db.prepare("SELECT owner_id FROM boards WHERE id = ?").bind(task.board_id).first<{ owner_id: string }>())?.owner_id;
       if (!taskOwner) return null;
-      await assertOwnedTaskIds(db, taskOwner, updates.depends_on, "Dependency task not found");
+      await assertOwnedTaskIds(db, taskOwner, task.board_id, updates.depends_on, "Dependency task not found in this Board");
       const hasCycle = await detectCycle(db, taskId, updates.depends_on);
       if (hasCycle) throw new ApplicationError("invalid-request", "Circular dependency detected");
     }
@@ -678,7 +678,8 @@ export async function getBoardActionsByBoardId(db: D1, boardId: string, since: s
       SELECT n.*
       FROM task_actions n
       JOIN tasks t ON n.task_id = t.id
-      WHERE t.board_id = ? AND n.created_at > ?
+      JOIN boards b ON b.id = t.board_id
+      WHERE t.board_id = ? AND b.visibility = 'public' AND n.created_at > ?
       ORDER BY n.created_at ASC
       LIMIT 100
     `)

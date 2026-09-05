@@ -38,6 +38,10 @@ export async function v2ApiVersionMiddleware(c: Context<{ Bindings: Env }>, next
   c.header("API-Version", V2_API_VERSION);
   c.header("Vary", "API-Version");
   await next();
+  if (c.res.headers.has("ETag")) {
+    // If-Match requires the strong validator issued here, unchanged by edge compression.
+    c.header("Cache-Control", "private, no-cache, no-transform");
+  }
   return undefined;
 }
 

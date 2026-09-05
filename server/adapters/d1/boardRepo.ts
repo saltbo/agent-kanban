@@ -124,7 +124,7 @@ export async function updateBoard(
   db: D1,
   boardId: string,
   ownerId: string,
-  updates: { name?: string; description?: string; visibility?: "private" | "public"; labels?: BoardLabel[] },
+  updates: { name?: string; description?: string | null; visibility?: "private" | "public"; labels?: BoardLabel[] },
 ): Promise<Board | null> {
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -262,6 +262,10 @@ export async function getBoardBySlug(db: D1, slug: string): Promise<BoardWithTas
     .all<Task>();
 
   return parseBoard({ ...board, tasks: tasks.results.map(mapTaskRow) });
+}
+
+export async function isBoardPublic(db: D1, boardId: string): Promise<boolean> {
+  return (await db.prepare("SELECT id FROM boards WHERE id = ? AND visibility = 'public'").bind(boardId).first()) !== null;
 }
 
 export async function countPublicBoardDoneTasks(db: D1, slug: string): Promise<number | null> {

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AgentAvatarOverlay } from "@/features/boards/components/FloatingAvatar";
 import { KanbanColumn } from "@/features/boards/components/KanbanColumn";
@@ -19,6 +19,7 @@ const TASK_STATUS_LABELS: Record<string, string> = {
 
 export function SharePage() {
   const { slug } = useParams<{ slug: string }>();
+  const [mobileTab, setMobileTab] = useState(0);
 
   const {
     data: board,
@@ -103,13 +104,22 @@ export function SharePage() {
         ))}
       </div>
 
-      {/* Mobile: stacked columns */}
-      <div className="md:hidden flex-1 overflow-y-auto">
-        {columns.map((col) => (
-          <div key={col.status}>
-            <KanbanColumn column={col} onTaskClick={() => {}} />
-          </div>
+      <div className="flex md:hidden border-b border-border" aria-label="Task status">
+        {columns.map((col, index) => (
+          <button
+            key={col.status}
+            aria-pressed={mobileTab === index}
+            onClick={() => setMobileTab(index)}
+            className={`flex-1 py-2.5 text-xs font-semibold uppercase tracking-wide text-center transition-colors ${
+              mobileTab === index ? "text-accent border-b-2 border-accent" : "text-content-tertiary"
+            }`}
+          >
+            {col.name} ({col.tasks.length})
+          </button>
         ))}
+      </div>
+      <div className="md:hidden flex-1 overflow-hidden">
+        {columns[mobileTab] && <KanbanColumn column={columns[mobileTab]} labels={board.labels ?? []} onTaskClick={() => {}} />}
       </div>
 
       <AgentAvatarOverlay avatars={avatars} />

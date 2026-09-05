@@ -2,6 +2,14 @@ Feature: Public Board sharing
   A Board owner may publish a read-only view without exposing authenticated
   management capabilities.
 
+  @journey:public-boards/mobile-view @entrypoint:product-ui @proof:e2e
+  Scenario: Browse a published Board on a phone
+    Given a public Board has a Todo Task
+    When an unauthenticated visitor opens the Board on a phone
+    Then the Todo status tab shows that Task
+    And choosing another status shows only Tasks in that status
+    And returning to Todo shows the original Task
+
   @journey:public-boards/shared-view @entrypoint:public-http @proof:integration
   Scenario: Read a published Board by its share slug
     Given a Board is public
