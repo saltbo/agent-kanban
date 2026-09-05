@@ -887,6 +887,26 @@ describe("Realmroot Agent generic Toolbox operations", () => {
     await expect(mixed.json()).resolves.toMatchObject({ detail: "Assignment and status changes must be separate requests" });
   });
 
+  it("[spec: tasks/structured-fields] recursively merges Task JSON fields without losing untouched data", async () => {
+    const board = await createBoard(db, tenantId, "Merge patch fields", "ops");
+    const original = { keep: "important", nested: { keep: true, change: "old", remove: "discard" }, list: [1, 2], scalar: "old" };
+    const task = await createTask(db, tenantId, { title: "Preserve planning data", board_id: board.id, metadata: original, input: original });
+    const session = await createTestWebSession(db, tenantId);
+    const patch = { nested: { change: "new", remove: null }, list: [3], scalar: { added: true, absent: null }, missing: null };
+    const response = await browserTaskPatch(session, task.id, { metadata: patch, input: patch });
+    const expected = { keep: "important", nested: { keep: true, change: "new" }, list: [3], scalar: { added: true } };
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ metadata: expected, input: expected });
+    const stored = await db
+      .prepare("SELECT metadata, input, version FROM tasks WHERE id = ?")
+      .bind(task.id)
+      .first<{ metadata: string; input: string; version: number }>();
+    expect(JSON.parse(stored!.metadata)).toEqual(expected);
+    expect(JSON.parse(stored!.input)).toEqual(expected);
+    expect(stored!.version).toBe(2);
+  });
+
   it("commits only one concurrent Task patch and tells the loser to reread", async () => {
     const board = await createBoard(db, tenantId, "Concurrent Task patch", "ops");
     const task = await createTask(db, tenantId, { title: "Before concurrent patch", board_id: board.id });

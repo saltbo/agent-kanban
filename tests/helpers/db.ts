@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { type ResourceScope, WEB_SESSION_SCOPES } from "../../server/auth/realmroot";
 
-const MIGRATIONS_DIR = join(__dirname, "../../migrations");
+const MIGRATIONS_DIR = join(import.meta.dirname, "../../migrations");
 export function createTestEnv() {
   return {
     DB: null as any as D1Database,

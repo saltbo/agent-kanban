@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, Page } from "@playwright/test";
 
-const d1Dir = join(process.cwd(), ".wrangler/state/v3/d1/miniflare-D1DatabaseObject");
+const d1Dir = join(process.env.AK_E2E_STATE_DIR ?? join(process.cwd(), ".wrangler/state"), "v3/d1/miniflare-D1DatabaseObject");
 
 /**
  * Creates an AK Realmroot-backed web session and completes the onboarding flow,

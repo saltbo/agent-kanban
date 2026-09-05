@@ -42,8 +42,16 @@ function requiresIdempotencyKey(method: string, path: string): boolean {
   return method === "POST" && (path === "/tasks" || path === "/agents" || path === "/machines" || /^\/tasks\/[^/]+\/(?:notes|claims)$/.test(path));
 }
 
-function pageItems<T>(value: { items: T[] }): T[] {
-  return value.items;
+async function allPageItems<T>(path: string, params?: URLSearchParams): Promise<T[]> {
+  const query = new URLSearchParams(params);
+  const items: T[] = [];
+  while (true) {
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const page = await request<{ items: T[]; pagination: { nextPageToken?: string } }>("GET", `${path}${suffix}`);
+    items.push(...page.items);
+    if (!page.pagination.nextPageToken) return items;
+    query.set("pageToken", page.pagination.nextPageToken);
+  }
 }
 
 function fromBoard(board: any): any {
@@ -153,8 +161,7 @@ export const api = {
         if (value !== null) query.set(canonical, value);
         query.delete(legacy);
       }
-      const qs = query.size > 0 ? `?${query.toString()}` : "";
-      return request<{ items: any[] }>("GET", `/tasks${qs}`).then((page) => pageItems(page).map(fromTask));
+      return allPageItems<any>("/tasks", query).then((items) => items.map(fromTask));
     },
     get: (id: string) => request<any>("GET", `/tasks/${id}`).then(fromTask),
     session: (id: string) => request<any>("GET", `/tasks/${id}/session`),
@@ -169,12 +176,12 @@ export const api = {
     reject: (id: string, reason?: string) => patchTask(id, { status: "in-progress", ...(reason ? { statusReason: reason } : {}) }).then(fromTask),
     addNote: (id: string, detail: string) => request<any>("POST", `/tasks/${id}/notes`, { detail }).then(fromTaskNote),
     getNotes: (id: string, since?: string) => {
-      const qs = since ? `?since=${encodeURIComponent(since)}` : "";
-      return request<{ items: any[] }>("GET", `/tasks/${id}/notes${qs}`).then((page) => pageItems(page).map(fromTaskNote));
+      const query = new URLSearchParams(since ? { since } : {});
+      return allPageItems<any>(`/tasks/${id}/notes`, query).then((items) => items.map(fromTaskNote));
     },
   },
   boards: {
-    list: () => request<{ items: any[] }>("GET", "/boards").then((page) => pageItems(page).map(fromBoard)),
+    list: () => allPageItems<any>("/boards").then((items) => items.map(fromBoard)),
     get: (id: string) => request<any>("GET", `/boards/${id}`).then(fromBoard),
     create: (input: { name: string; type: "dev" | "ops"; description?: string }) => request<any>("POST", "/boards", input).then(fromBoard),
     update: (id: string, body: { name?: string; description?: string; visibility?: "private" | "public"; labels?: any[] }) =>
@@ -194,7 +201,7 @@ export const api = {
       }) as Promise<any>,
   },
   repositories: {
-    list: () => request<{ items: any[] }>("GET", "/repositories").then((page) => pageItems(page).map(fromRepository)),
+    list: () => allPageItems<any>("/repositories").then((items) => items.map(fromRepository)),
     create: (input: { name: string; url: string }) => request<any>("POST", "/repositories", input).then(fromRepository),
     delete: (id: string) => request<void>("DELETE", `/repositories/${id}`),
   },

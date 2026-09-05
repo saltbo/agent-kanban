@@ -21,6 +21,7 @@ import type { Env } from "@server/env";
 import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
 import { v2Problem } from "@server/http/middleware/v2Contract";
 import { agencyAuthorization } from "@server/http/resource-server/agencyDependencies";
+import { mergePatch } from "@server/http/resource-server/mergePatch";
 import { pageResponse, readPageWindow } from "@server/http/resource-server/pagination";
 import { taskNoteResource, taskResource } from "@server/http/resource-server/representation";
 import {
@@ -135,6 +136,9 @@ async function updateTaskResource(c: TaskContext): Promise<Response> {
   if (isTransition) return patchTaskStatus(c, patch, current.version);
 
   normalizeTaskUpdate(patch);
+  for (const field of ["input", "metadata"] as const) {
+    if (Object.hasOwn(patch, field)) patch[field] = mergePatch(current[field], patch[field]);
+  }
   const task = await updateTask(c.env.DB, taskId(c), patch, c.get("ownerId"), current.version);
   if (!task) return taskUpdateConflict(c, "Task changed before the patch was committed; reread it before retrying");
   c.header("ETag", `"${task.version}"`);
