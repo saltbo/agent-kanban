@@ -70,7 +70,7 @@ not reported as completed.
 ## Permissions for newly created Agents
 
 `POST /api/agents` exchanges the creating user's saved AK grant for Realmroot
-`permissions:read` and `permissions:write` using the existing AK Web Application.
+`agents:write` using the existing AK Web Application.
 Its token exchange policy maps AK `agent:write` to those target scopes. Agent
 credentials are not used as a substitute for the user's grant.
 

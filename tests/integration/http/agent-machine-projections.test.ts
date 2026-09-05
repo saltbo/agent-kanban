@@ -125,7 +125,7 @@ function delegatedAgencyFetch(scopes: string[], upstream: (request: Request) => 
       expect(body.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
       expect(body.get("subject_token")).toBe("ak-browser-access-token");
       if (body.get("audience") === "https://id.realmroot.dev/api") {
-        expect(body.get("scope")).toBe("permissions:read permissions:write");
+        expect(body.get("scope")).toBe("agents:write");
         return Response.json({ access_token: "platform-user-token" });
       }
       expect(body.get("audience")).toBe("https://enbor.projection.test/api");
