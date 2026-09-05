@@ -6,11 +6,7 @@ export interface Env {
   OIDC_ISSUER: string;
   OIDC_WEB_CLIENT_ID: string;
   OIDC_WEB_CLIENT_SECRET: string;
-  OIDC_SERVICE_CLIENT_ID: string;
-  OIDC_SERVICE_CLIENT_SECRET: string;
   AK_SESSION_ENCRYPTION_KEY: string;
-  INBOX_RESOURCE: string;
-  INBOX_API_VERSION: string;
   AGENCY_ORIGIN: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;

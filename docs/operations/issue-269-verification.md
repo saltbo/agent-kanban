@@ -1,7 +1,81 @@
 # Issue 269 delivery evidence
 
-The full AK Task scheduling acceptance is not complete. This record distinguishes
-the deployed Enbor prerequisite from the remaining AK delivery.
+The full production Task acceptance passed on 2026-09-05. The sections below
+retain the earlier staged evidence; statements about pending delivery in those
+historical sections describe their checkpoint, not the final release status.
+
+## Completed production acceptance
+
+- AK implementation: PR [271](https://github.com/saltbo/agent-kanban/pull/271),
+  merge `e55b74026056fb23abef505ae6870770c7331881`.
+- A real production probe found that Workers rejects `fetch` redirect mode
+  `error`. PR [272](https://github.com/saltbo/agent-kanban/pull/272) changes it
+  to `manual`, retaining rejection of non-success statuses without forwarding
+  credentials. Six adapter cases, typecheck, spec checks and all PR CI passed.
+- Accepted AK commit: `1ddd54f3d716e1de9da94f7710cc1e481f4a7722`.
+  Cloudflare build `7f1b0f34-8e39-4a74-bd7a-76f7f42209ac` succeeded;
+  version `ec42d77b-f709-430f-8216-8cc588fbcafe` serves 100% of production
+  traffic from 2026-09-05T19:12:55Z.
+- Both production POST and PATCH with non-null `scheduledAt` returned 422 with
+  the explicit message that delayed scheduling is not implemented. The field
+  remains nullable. No scheduler, cron or launch table was added.
+
+The real Task is `f03c350k976j` (Self-iteration board, sequence 130), assigned to
+existing Flint Carter identity `01a06824-2513-7828-8cfb-327d1b59b693`.
+Its launch `x5y8dun6gkc6` recovered from the preparation error without replacing
+the assignment, and created Session `01a072fd-ce12-76b9-bdfc-f5e2f25927d7`.
+An exact launch-label inventory returned only that Session. Its ID is in
+`metadata.annotations["agent-kanban.dev/session-id"]`; no separate table exists.
+
+| Journey | Observed evidence |
+| --- | --- |
+| Direct creation | Task remained `todo` after Session creation; Enbor ran the existing Agent with the prepared Git repository and Vault secretRef. |
+| Signed Claim | Claim `gpahsby7iabt` at 19:15:05.564Z binds the assigned Realmroot actor and the exact Session; Task moved to `in-progress`. |
+| Execution | Note `yhnf9pk74xvu` contains `AK269_STAGE1`, repository HEAD `1ddd54f3d716e1de9da94f7710cc1e481f4a7722`, and the independently verified digest below. |
+| Review continuation | Rejection decision `1ulgj8t38l1m` sent message `01a07300-6988-75c0-b571-49139de83de2` to the same Session. The original Claim and Session binding remained unchanged. |
+| Second submission | Note `4oy52fbfoln0` contains `AK269_STAGE2`, the same repository HEAD and Session ID, a second independently verified digest, and clean `git status --short`; the Task returned to `in-review`. |
+| Completion | Task reached `done`, launch reached `settled`; Session closed at 19:18:30.179Z. |
+| Credential cleanup | Vault credential `01a072fd-ca0d-778b-8568-e3871e4e11b4` in `vault_e80c3d2973d045b591dbf8e73a5f4a2f` changed from active to revoked at 19:18:30.992Z with reason `Agent Kanban Task launch settled`. Only metadata was inspected. |
+
+The expected SHA-256 values were independently computed locally:
+
+- `AK269_DIRECT_SESSION_ACCEPTANCE`:
+  `95fc940b8011c7d9989e0a177f60de7a0121af24f3cfc6f7ca147e65136fa2ed`.
+- `AK269_SAME_SESSION_CONTINUATION`:
+  `62da2b4d2cec23b59c2f70e7cb49fa01246953b4d4dccd3924fca994691c679f`.
+
+No repository edits, commits, PRs or subtasks were created by this execution.
+The completed Task and its Notes remain as the acceptance record; its execution
+Session and bootstrap credential are settled.
+
+## Completed cutover
+
+Fourteen verified AK Inbox Triggers were paused. The remaining exact AK Trigger
+`01a06a8c-c3b0-7746-a09a-b3bb203b2860` referenced an Agent that no longer existed:
+its pause operation returned Agent-not-found, so it was soft-deleted through
+Enbor's normal delete operation, preserving run audit history. A fresh complete
+inventory confirmed all 15 retired. No existing Session was closed by cutover;
+pre-existing Session `efe9378f-1377-452d-a318-9e7fb203de49` was still running after
+acceptance.
+
+The dedicated Agent Kanban Service M2M Application
+`01a05923-40b8-742b-b15d-ba176b5b490a` is disabled and was read back to verify it.
+The Web Application retains its existing token-exchange integration and the
+required Task Session/Vault mappings; the obsolete `agent:write` →
+`triggers:write` mapping and its allowlisted scope were removed and verified.
+AK's exact Task Session read still succeeded after disabling M2M. Unused Inbox
+and service-client environment declarations are removed from the code/config.
+
+Rollback to pre-cutover Inbox behavior requires explicitly restoring the old
+Trigger/M2M configuration; a Worker-only rollback is insufficient. The deployed
+Session idempotency migration is additive. Long placement queues can still
+outlive temporary Git credentials; no delayed scheduling or background delegated
+authentication refresh is claimed by this release.
+
+The production journey was a bounded manual API/Agent check. Existing Playwright
+fixtures seed local D1 and start a local server, so they were not pointed at
+production. Local integration tests cover the additional cancellation,
+reassignment, dependency, lease and lost-response cases described below.
 
 ## Enbor prerequisite
 
