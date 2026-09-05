@@ -15,15 +15,12 @@ crons = []
 AK_PUBLIC_ORIGIN = "https://agent-kanban.dev"
 OIDC_ISSUER = "https://id.realmroot.dev/api/auth"
 OIDC_WEB_CLIENT_ID = "01a05a6d-17cf-7053-bfe0-8e6238ec16ca"
-OIDC_SERVICE_CLIENT_ID = "01a05923-40b8-742b-b15d-bc38631f691f"
-INBOX_RESOURCE = "https://inbox.realmroot.dev/api"
-INBOX_API_VERSION = "2026-08-11"
 AGENCY_ORIGIN = "https://enbor.realmroot.dev"
 GITHUB_APP_ID = "4098405"
 GITHUB_APP_SLUG = "agent-kanban"
 
 # Secrets are set via `wrangler secret put`:
-# OIDC_WEB_CLIENT_SECRET, OIDC_SERVICE_CLIENT_SECRET,
+# OIDC_WEB_CLIENT_SECRET,
 # AK_SESSION_ENCRYPTION_KEY, AK_SIGNING_KEY (canonical Base64, 32 bytes),
 # GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_PRIVATE_KEY
 # Local dev overrides are in .dev.vars
@@ -67,9 +64,6 @@ routes = []
 AK_PUBLIC_ORIGIN = "https://bodev.agent-kanban.dev"
 OIDC_ISSUER = "https://id.realmroot.dev/api/auth"
 OIDC_WEB_CLIENT_ID = "01a05a6d-17cf-7053-bfe0-8e6238ec16ca"
-OIDC_SERVICE_CLIENT_ID = "01a05923-40b8-742b-b15d-bc38631f691f"
-INBOX_RESOURCE = "https://inbox.realmroot.dev/api"
-INBOX_API_VERSION = "2026-08-11"
 AGENCY_ORIGIN = "https://enbor.realmroot.dev"
 GITHUB_APP_ID = "4153714"
 GITHUB_APP_SLUG = "agent-kanban-staging"
