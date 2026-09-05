@@ -24,9 +24,14 @@ Before running tests during development:
 
 1. name the observable behavior at risk;
 2. select the lowest owning layer;
-3. run the exact named cases that prove it;
-4. after a failure, rerun that case and directly affected cases only;
-5. run a complete file only when every case in it is relevant.
+3. start with the named cases or focused files that prove it;
+4. after a failure, rerun the failed and directly affected cases;
+5. broaden to a file, project, or suite when shared fixtures, configuration,
+   cross-cutting changes, or required checks make that scope meaningful.
+
+Full suites are not the default iteration loop. Static checks may have a wider
+natural scope, and required CI gates still apply. Reuse passing results until
+subsequent changes affect their validity.
 
 For each changed behavior, select the applicable case families rather than
 copying a fixed matrix into every layer:

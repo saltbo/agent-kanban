@@ -2,6 +2,8 @@
 
 The documentation is split by purpose:
 
+- [Product principles](product-principles.md) explains product direction and UI
+  preferences; concrete scenarios remain in Spec.
 - `architecture/` describes how the system works now. Update it whenever the
   implementation changes.
 - `adr/` records consequential decisions, their context, and trade-offs. ADRs
