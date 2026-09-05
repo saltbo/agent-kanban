@@ -62,15 +62,13 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
     const schedulable = optionalBoolean(c.req.query("schedulable"));
     const runtime = optionalRuntime(c.req.query("runtime"));
     const search = optionalBoundedString(c.req.query("search"), "search", 160);
-    const query = {
-      identityBound: "true" as const,
+    const result = await client.agents.list({
       limit: page.pageSize,
       cursor: page.sourceCursor ?? undefined,
       runtime,
       schedulable: schedulable === undefined ? undefined : (String(schedulable) as "true" | "false"),
       search,
-    };
-    const result = await client.agents.list(query);
+    });
     return externalPageResponse(
       c,
       result.data.map((agent) => agentRepresentation(agent, c.req.url)),
