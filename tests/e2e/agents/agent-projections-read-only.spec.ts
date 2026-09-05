@@ -111,7 +111,10 @@ test("[spec: agents/read-only-browser] Agent list and detail expose identity and
   await expect(detail.getByRole("button", { name: /create|edit|archive|delete/i })).toHaveCount(0);
 });
 
-test("[spec: agents/read-only-browser] Agent without a bound identity remains visible without loading assigned tasks", async ({ page }) => {
+test("[spec: agents/read-only-browser] Identity-bound unavailable Agents remain in the roster while unbound definitions remain accessible by detail", async ({
+  page,
+}) => {
+  const unavailableAgent = { ...agent, schedulable: false };
   const unboundAgent = {
     ...agent,
     id: "agent-unbound",
@@ -123,24 +126,31 @@ test("[spec: agents/read-only-browser] Agent without a bound identity remains vi
     schedulable: false,
   };
   const taskRequests: string[] = [];
+  await page.route("**/.well-known/oauth-protected-resource", (route) =>
+    route.fulfill({ json: { authorization_servers: ["https://identity.example"] } }),
+  );
+  await page.route("https://identity.example/.well-known/oauth-authorization-server", (route) =>
+    route.fulfill({ json: { issuer: "https://identity.example" } }),
+  );
   await page.route(/\/api\/agents(?:\?.*)?$/, (route) =>
-    route.fulfill({ json: { items: [unboundAgent], pagination: { pageSize: 1, nextPageToken: null } } }),
+    route.fulfill({ json: { items: [unavailableAgent], pagination: { pageSize: 1, nextPageToken: null } } }),
   );
   await page.route(/\/api\/agents\/agent-unbound$/, (route) => route.fulfill({ json: unboundAgent }));
   await page.route(/\/api\/tasks(?:\?.*)?$/, (route) => {
     taskRequests.push(route.request().url());
-    return route.fulfill({ json: [] });
+    return route.fulfill({ json: { items: [], pagination: { pageSize: 50, nextPageToken: null } } });
   });
-  await signInWithRealmrootSession(page, `agent_unbound_${Date.now()}@example.com`);
+  await signInWithRealmrootSession(page, "agent_roster@example.com");
 
   await page.goto("/agents");
 
   const list = page.getByRole("main");
-  await expect(list.getByText("Unbound Builder", { exact: true })).toBeVisible();
-  await expect(list.getByText("Identity not bound", { exact: true })).toBeVisible();
+  await expect(list.getByText(unavailableAgent.name, { exact: true })).toBeVisible();
+  await expect(list.getByText("Unbound Builder", { exact: true })).toHaveCount(0);
+  await expect(list.getByText("Identity not bound", { exact: true })).toHaveCount(0);
   await expect(list.getByText("Unavailable", { exact: true })).toBeVisible();
 
-  await list.getByRole("link", { name: /Unbound Builder/ }).click();
+  await page.goto("/agents/agent-unbound");
   await expect(page).toHaveURL(/\/agents\/agent-unbound$/);
 
   const detail = page.getByRole("main");

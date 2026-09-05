@@ -6,10 +6,11 @@ AK presents product resources while Agency remains authoritative.
 
 `GET /agents` and `GET /agents/{id}` return safe projections with identity,
 runtime, model, Skills, identity subject, and Agency's authoritative
-`schedulable` state. AK preserves the membership and cursor of each Agency page;
-it does not post-filter Agents by lifecycle or identity binding. Identity fields
-are null until Agency binds an identity, and the browser marks those Agents as
-`Identity not bound`. The browser pages are read-only and the detail page finds
+`schedulable` state. The account roster selects Identity-bound Agents through
+Agency's `identityBound` collection filter, before Agency applies pagination.
+AK preserves that filtered page and cursor without post-filtering or excluding
+temporarily unavailable Agents. Direct detail reads still support identityless
+definitions. The browser pages are read-only and the detail page finds
 AK Tasks by the projected subject when one exists.
 
 The browser treats the subject as the stable identity key. It discovers the

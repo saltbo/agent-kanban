@@ -20,8 +20,9 @@ Feature: Agent projections
   Scenario: Read safe Agent projections from Enbor
     Given Enbor is authoritative for the tenant's Agents
     When a caller lists Agents or reads one Agent through AK
-    Then AK preserves every Agent in Enbor's page and its continuation cursor
-    And an Agent without a bound identity has null identity fields
+    Then AK requests only Identity-bound Agents from Enbor before pagination and preserves its continuation cursor
+    And Identity-bound Agents remain listed even when not currently schedulable
+    And directly reading an identityless Agent still returns null identity fields
     And AK does not read or persist a local Agent entity
 
   @journey:agents/create-bound-agent @entrypoint:toolbox @proof:integration
@@ -45,7 +46,8 @@ Feature: Agent projections
     Given the browser loads Agent projections from AK
     When a user opens the Agent list or Agent detail
     Then the pages show Agent identity and scheduling information
-    And an Agent without a bound identity remains visible and is marked "Identity not bound"
+    And identityless sub-agent definitions do not appear in the Agent list
+    And an Identity-bound Agent remains visible even when currently unavailable
     And the list filters by search, runtime, and authoritative schedulable state
     And the detail lists AK Tasks whose assignee is the Agent's Realmroot subject
     And the pages offer no create, edit, or archive controls
