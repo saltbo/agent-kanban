@@ -1,5 +1,12 @@
 import { type Agent, EnborApiError, type EnborClient, type RuntimeName } from "@realmroot/enbor-sdk";
 
+import {
+  AgentCreationCleanupError,
+  type AgentPermissionGateway,
+  AgentPermissionProvisioningError,
+  grantDefaultAgentPermissions,
+} from "./defaultPermissions";
+
 const AGENT_KANBAN_SKILL = "saltbo/agent-kanban@agent-kanban";
 
 export interface CreateAgencyAgentInput {
@@ -14,7 +21,12 @@ export interface CreateAgencyAgentInput {
   idempotencyKey: string;
 }
 
-export async function createAgencyAgent(client: EnborClient, input: CreateAgencyAgentInput): Promise<Agent> {
+export async function createAgencyAgent(
+  client: EnborClient,
+  input: CreateAgencyAgentInput,
+  permissions: AgentPermissionGateway,
+  githubResource: string,
+): Promise<Agent> {
   const identity = await client.identities.create(
     {
       metadata: { name: input.name },
@@ -22,6 +34,23 @@ export async function createAgencyAgent(client: EnborClient, input: CreateAgency
     },
     await derivedKey(input.idempotencyKey, "identity"),
   );
+  if (!identity.status.descriptor)
+    throw new EnborApiError(502, `Enbor identity ${identity.metadata.uid} provisioning did not return its Realmroot descriptor`, null);
+  const realmrootAgentId = identity.status.descriptor.agentId;
+  const cleanup = async (cause: unknown) => {
+    try {
+      await client.identities.delete(identity.metadata.uid);
+      await permissions.deleteIdentity(realmrootAgentId);
+    } catch (cleanupCause) {
+      throw new AgentCreationCleanupError(identity.metadata.uid, realmrootAgentId, cause, cleanupCause);
+    }
+  };
+  try {
+    await grantDefaultAgentPermissions(permissions, realmrootAgentId, { githubResource });
+  } catch (error) {
+    await cleanup(error);
+    throw new AgentPermissionProvisioningError(error);
+  }
   let agent: Agent;
   try {
     agent = await client.agents.create(
@@ -46,7 +75,7 @@ export async function createAgencyAgent(client: EnborClient, input: CreateAgency
       error.status !== 408 &&
       error.status !== 429
     ) {
-      await client.identities.delete(identity.metadata.uid);
+      await cleanup(error);
     }
     throw error;
   }

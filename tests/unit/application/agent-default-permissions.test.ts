@@ -5,7 +5,7 @@ import { DEFAULT_GITHUB_SCOPES, grantDefaultAgentPermissions } from "../../../se
 describe("new Agent permissions", () => {
   it("[spec: agents/default-permissions] grants only GitHub scopes and leaves AK to native automatic authorization", async () => {
     const grant = vi.fn().mockResolvedValue(undefined);
-    await grantDefaultAgentPermissions({ grant }, "new-identity", { githubResource: "https://github.test/api" });
+    await grantDefaultAgentPermissions({ grant, deleteIdentity: vi.fn() }, "new-identity", { githubResource: "https://github.test/api" });
     expect(grant.mock.calls).toEqual([["new-identity", { resource: "https://github.test/api", scopes: DEFAULT_GITHUB_SCOPES, mode: "persistent" }]]);
   });
   it("[spec: agents/default-permissions] validates all returned scopes and propagates authority failures", async () => {

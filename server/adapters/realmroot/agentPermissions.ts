@@ -2,6 +2,14 @@ import type { AgentPermissionGateway } from "@server/usecases/agents/defaultPerm
 
 export function createAgentPermissionGateway(origin: string, token: string): AgentPermissionGateway {
   return {
+    async deleteIdentity(agentId) {
+      const response = await fetch(new URL(`/api/agents/${encodeURIComponent(agentId)}`, origin), {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!response.ok && response.status !== 404) throw new Error(`Realmroot identity cleanup failed: HTTP ${response.status}`);
+    },
     async grant(agentId, input) {
       const response = await fetch(new URL(`/api/agents/${encodeURIComponent(agentId)}/permissions`, origin), {
         method: "POST",

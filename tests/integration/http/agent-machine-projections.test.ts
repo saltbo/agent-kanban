@@ -113,7 +113,11 @@ async function browserSessionFor(subject: string) {
   return auth;
 }
 
-function delegatedAgencyFetch(scopes: string[], upstream: (request: Request) => Response | Promise<Response>) {
+function delegatedAgencyFetch(
+  scopes: string[],
+  upstream: (request: Request) => Response | Promise<Response>,
+  permissionRequest?: (request: Request) => Response | Promise<Response>,
+) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     if (request.url === "https://id.realmroot.dev/api/auth/.well-known/openid-configuration") {
@@ -133,6 +137,7 @@ function delegatedAgencyFetch(scopes: string[], upstream: (request: Request) => 
     }
     if (request.url.startsWith("https://id.realmroot.dev/api/agents/")) {
       expect(request.headers.get("authorization")).toBe("Bearer platform-user-token");
+      if (permissionRequest) return permissionRequest(request);
       expect(request.method).toBe("POST");
       expect(new URL(request.url).pathname.endsWith("/permissions")).toBe(true);
       const body = (await request.json()) as { resource: string; scopes: string[]; mode: string };
@@ -659,6 +664,56 @@ describe("Agent and Machine projection HTTP resources", () => {
     expect(created.machine).not.toHaveProperty("runners");
   });
 
+  it.each([false, true])(
+    "[spec: agents/create-bound-agent] reports permission failure and identity cleanup outcome (cleanup fails: %s)",
+    async (cleanupFails) => {
+      const operations: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        delegatedAgencyFetch(
+          ["identities:write", "agents:write"],
+          async (request) => {
+            const path = new URL(request.url).pathname;
+            operations.push(`${request.method} ${path}`);
+            if (request.method === "POST" && path === "/api/v1/identities")
+              return Response.json({
+                metadata: metadata("identity-failed", "Failed Agent"),
+                status: { descriptor: { agentId: "realmroot-failed" } },
+              });
+            if (request.method === "DELETE" && path === "/api/v1/identities/identity-failed") return new Response(null, { status: 204 });
+            throw new Error(`Unexpected request ${request.method} ${path}`);
+          },
+          async (request) => {
+            const path = new URL(request.url).pathname;
+            operations.push(`${request.method} ${path}`);
+            if (request.method === "DELETE") return new Response(null, { status: cleanupFails ? 503 : 204 });
+            return Response.json(
+              { error: { message: "The controller must connect the external resource account before granting Agent permissions." } },
+              { status: 400 },
+            );
+          },
+        ),
+      );
+      const response = await browserPost(
+        "/agents",
+        { name: "Failed Agent", username: "failed-agent", runtime: "codex", systemPrompt: "Handle assigned work" },
+        "failed-permission-create",
+      );
+      expect(response.status).toBe(cleanupFails ? 502 : 409);
+      expect(response.headers.get("Location")).toBeNull();
+      await expect(response.json()).resolves.toMatchObject({
+        type: `${resource}/problems/${cleanupFails ? "agent-creation-cleanup-failed" : "agent-permissions-failed"}`,
+        detail: expect.stringContaining(cleanupFails ? "realmroot-failed" : "Identity cleanup completed"),
+      });
+      expect(operations).toEqual([
+        "POST /api/v1/identities",
+        "POST /api/agents/realmroot-failed/permissions",
+        "DELETE /api/v1/identities/identity-failed",
+        "DELETE /api/agents/realmroot-failed",
+      ]);
+    },
+  );
+
   it("[spec: agents/authoritative-projection] [spec: agents/create-bound-agent] replays the winning Agent response when identical external creations complete concurrently", async () => {
     const synchronizeAgentCreations = twoRequestBarrier();
     let identityCreates = 0;
@@ -673,7 +728,10 @@ describe("Agent and Machine projection HTTP resources", () => {
         if (path === "/api/v1/identities") {
           identityCreates += 1;
           identityUpstreamKeys.push(request.headers.get("Idempotency-Key")!);
-          return Response.json({ metadata: metadata("identity-concurrent", "Concurrent Agent") });
+          return Response.json({
+            metadata: metadata("identity-concurrent", "Concurrent Agent"),
+            status: { descriptor: { agentId: "realmroot-concurrent" } },
+          });
         }
         if (path === "/api/v1/agents") {
           agentCreates += 1;

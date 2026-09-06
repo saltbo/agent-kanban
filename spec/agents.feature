@@ -28,12 +28,14 @@ Feature: Agent projections
   Scenario: Create an Agent with its Realmroot identity
     Given an authorized caller supplies complete Agent configuration
     When the caller creates an Agent through AK
-    Then AK creates a same-tenant Realmroot Identity and bound Enbor Agent with the Agent Kanban work skill
+    Then AK creates a same-tenant Realmroot Identity, grants GitHub permissions, then creates the bound Enbor Agent with the Agent Kanban work skill
+    And a permission failure deletes the Enbor and Realmroot identities before returning an error
+    And cleanup failure explicitly identifies the remaining identity resources
     And AK does not create an Inbox Trigger because Task assignment directly creates a Session
     And replays the compound operation without duplicate resources when its Idempotency-Key is retried
     And stores no local Agent entity
     And grants the new identity its default GitHub permissions before returning success
-    And a permission failure identifies the created Agent and a retry resumes without duplicates
+    And after successful rollback the caller starts a new creation with a new username and Idempotency-Key
 
   @journey:agents/assignment-subject @entrypoint:toolbox @proof:unit
   Scenario: Assign a Task by projected Agent subject

@@ -74,7 +74,7 @@ not reported as completed.
 Its token exchange policy maps AK `agent:write` to those target scopes. Agent
 credentials are not used as a substitute for the user's grant.
 
-After Enbor creates the bound identity and Agent, AK sends one GitHub permission POST
+After Enbor creates the identity, AK sends one GitHub permission POST
 containing only the Resource URL, scopes, and persistent lifetime. Realmroot
 resolves the controller's connected GitHub installation Contexts internally.
 AK permissions use the existing native automatic authorization; AK neither
@@ -88,12 +88,17 @@ and issues read/write. The current Git transport requires workflows write for
 all pushes. Contexts retain the GitHub App installation's repository selection.
 No external automatic-approval policy is introduced.
 
-Creation returns success only after permission configuration succeeds. A 409
-`agent-permissions-incomplete` identifies the created Enbor Agent through its
-Location header and detail. Retry the same creation and Idempotency-Key to
-reuse Enbor resources and complete equivalent permissions. No local Agent or
-permission table is added. Existing Agent reads and assignments do not backfill
-grants; this change applies only to new creations.
+Only after GitHub permissions succeed does AK create the bound Enbor Agent and
+return success. Permission failure first deletes the Enbor identity, then the
+Realmroot identity (which revokes its grants), and returns 409
+`agent-permissions-failed`. Connect GitHub or correct its scopes and start a new
+creation with a new username and Idempotency-Key after successful cleanup.
+Realmroot retains deleted historical identities and reserves their usernames. A cleanup failure
+returns 502 `agent-creation-cleanup-failed` with both identity IDs and the cause.
+A definite Agent creation rejection uses the same cleanup; an uncertain Agent
+creation outcome preserves the identity for reconciliation/retry. Enbor identity
+deletion refuses identities currently selected by an Agent, protecting an already
+created Agent during a concurrent replay.
 
 Acceptance: create a new Agent through Toolbox in Demo, inspect its permissions
 before assignment, then run a repository Task including Issue, PR, CI log, and
