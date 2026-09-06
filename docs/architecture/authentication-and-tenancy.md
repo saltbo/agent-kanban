@@ -74,9 +74,11 @@ not reported as completed.
 Its token exchange policy maps AK `agent:write` to those target scopes. Agent
 credentials are not used as a substitute for the user's grant.
 
-After Enbor creates the bound identity and Agent, AK discovers the controller's
-permission Contexts and grants persistent AK scopes in the current tenant and
-the default GitHub scopes in the connected GitHub installation Contexts. The
+After Enbor creates the bound identity and Agent, AK sends one GitHub permission POST
+containing only the Resource URL, scopes, and persistent lifetime. Realmroot
+resolves the controller's connected GitHub installation Contexts internally.
+AK permissions use the existing native automatic authorization; AK neither
+creates explicit AK grants nor queries permission Contexts. The
 GitHub Resource URL is configured by `GITHUB_RESOURCE`; provider connection and
 installation scope limits remain enforced by Realmroot and its Adapter.
 

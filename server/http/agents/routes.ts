@@ -2,8 +2,6 @@ import type { RuntimeName } from "@realmroot/enbor-sdk";
 import { createAgentPermissionGateway } from "@server/adapters/realmroot/agentPermissions";
 import { delegatedResourceToken } from "@server/adapters/realmroot/delegatedAgencyToken";
 import { authorizeScope } from "@server/auth/middleware";
-import { RESOURCE_SCOPES } from "@server/auth/realmroot";
-import { akResource } from "@server/config/serviceUrls";
 import type { Env } from "@server/env";
 import { agentRepresentation } from "@server/http/agents/representation";
 import { idempotencyMiddleware } from "@server/http/middleware/idempotency";
@@ -62,10 +60,7 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
     try {
       if (!agent.spec.identity) throw new Error("Enbor did not return a bound Realmroot identity");
       await grantDefaultAgentPermissions(createAgentPermissionGateway(platformResource, permissionToken), agent.spec.identity.agentId, {
-        akResource: akResource(c.env),
         githubResource: c.env.GITHUB_RESOURCE,
-        tenantContextId: principal.tenantId.replace(/^user:/, ""),
-        akScopes: RESOURCE_SCOPES,
       });
     } catch (error) {
       throw new AgentPermissionProvisioningError(agent.metadata.uid, error);
