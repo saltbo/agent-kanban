@@ -73,6 +73,35 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
     return c.json(represented, 201);
   });
 
+  api.post("/api/agents/:agentId/permissions", authorizeScope("agent:write"), async (c) => {
+    const body = await readJsonBody<Record<string, unknown>>(c);
+    if (body instanceof Response) return body;
+    assertResourceWriteFields(body, new Set(), "Agent permissions");
+    const { client } = await agencyDependencies(c, ["agents:read"]);
+    const agent = await client.agents.get(c.req.param("agentId")!);
+    if (!agent.spec.identity?.agentId) {
+      throw new HTTPException(409, { message: "Agent has no bound Realmroot identity" });
+    }
+    const principal = c.get("principal");
+    const platformResource = new URL("/api", c.env.OIDC_ISSUER).toString();
+    const permissionToken = await delegatedResourceToken(c.env, {
+      user: { tenantId: principal.tenantId, subjectId: principal.subjectId },
+      resource: platformResource,
+      scopes: ["agents:write"],
+    });
+    try {
+      await grantDefaultAgentPermissions(createAgentPermissionGateway(platformResource, permissionToken), agent.spec.identity.agentId, {
+        githubResource: c.env.GITHUB_RESOURCE,
+      });
+    } catch (cause) {
+      throw new HTTPException(502, {
+        message: `Agent permission configuration failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
+      });
+    }
+    return c.body(null, 204);
+  });
+
   api.get("/api/agents", authorizeScope("agent:read"), async (c) => {
     const page = await readExternalPage(c);
     if (page instanceof Response) return page;

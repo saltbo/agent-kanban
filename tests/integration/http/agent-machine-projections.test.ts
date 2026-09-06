@@ -159,6 +159,66 @@ function twoRequestBarrier(): () => Promise<void> {
 }
 
 describe("Agent and Machine projection HTTP resources", () => {
+  it.each(["bound", "unbound", "missing", "upstream-failure", "missing-login"])(
+    "[spec: agents/existing-permissions] configures existing permissions with explicit outcomes: %s",
+    async (outcome) => {
+      const reads: string[] = [];
+      let grants = 0;
+      if (outcome === "missing-login") {
+        await fixture.db.prepare("DELETE FROM realmroot_user_grants").run();
+      }
+      const delegated = delegatedAgencyFetch(["agents:read"], async (request) => {
+        expect(request.method).toBe("GET");
+        expect(request.headers.get("x-enbor-project-id")).toBe(projectId);
+        reads.push(new URL(request.url).pathname);
+        if (outcome === "missing") return Response.json({ detail: "Not found" }, { status: 404 });
+        return Response.json({
+          metadata: metadata("existing-agent", "Existing"),
+          spec: {
+            identity: outcome === "unbound" ? null : { agentId: "realmroot-concurrent", subject: "existing-subject", runtime: "codex" },
+          },
+          status: { phase: "active", schedulable: outcome !== "unbound" },
+        });
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = input instanceof Request ? input : new Request(String(input), init);
+          if (request.url.endsWith("/permissions")) {
+            grants += 1;
+            if (outcome === "upstream-failure") {
+              return Response.json({ detail: "Connect GitHub before granting permissions" }, { status: 409 });
+            }
+          }
+          return delegated(request);
+        }),
+      );
+      const response = await browserPost("/agents/existing-agent/permissions", {});
+      const expected = outcome === "bound" ? 204 : outcome === "missing" ? 404 : outcome === "upstream-failure" ? 502 : 409;
+      expect(response.status, await response.clone().text()).toBe(expected);
+      if (outcome === "bound") {
+        expect(await response.text()).toBe("");
+        const repeated = await browserPost("/agents/existing-agent/permissions", {});
+        expect(repeated.status, await repeated.clone().text()).toBe(204);
+        expect(grants).toBe(2);
+      } else if (outcome === "upstream-failure") {
+        expect(await response.text()).toContain("Connect GitHub");
+        expect(grants).toBe(1);
+      } else {
+        expect(grants).toBe(0);
+      }
+      expect(reads.every((path) => path === "/api/v1/agents/existing-agent")).toBe(true);
+    },
+  );
+
+  it("[spec: agents/existing-permissions] rejects caller-controlled identity and permission fields", async () => {
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const response = await browserPost("/agents/existing-agent/permissions", { agentId: "someone-else", scopes: ["contents:write"] });
+    expect(response.status).toBe(422);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("[spec: agents/authoritative-projection] returns bound and unbound Enbor Agents as safe AK resources", async () => {
     vi.stubGlobal(
       "fetch",
@@ -750,66 +810,89 @@ describe("Agent and Machine projection HTTP resources", () => {
     ).resolves.toEqual({ count: 2 });
   });
 
-  it("[spec: agents/authoritative-projection] uses exact DPoP Agent authority and minimal delegated Agency scope", async () => {
-    await fixture.db.prepare("DROP TABLE realmroot_user_ama_grants").run();
-    const url = `${resource}/agents`;
-    const issuer = env.OIDC_ISSUER;
-    const issuerKeys = await generateKeyPair("ES256", { extractable: true });
-    const issuerJwk = await exportJWK(issuerKeys.publicKey);
-    issuerJwk.kid = "projection-issuer";
-    const dpopKeys = await generateKeyPair("ES256", { extractable: true });
-    const dpopJwk = await exportJWK(dpopKeys.publicKey);
-    const token = await new SignJWT({
-      scope: "agent:read",
-      client_id: "realmroot-cli",
-      cnf: { jkt: await calculateJwkThumbprint(dpopJwk) },
-      act: { iss: issuer, sub: "agent-projection-subject" },
-      "urn:realmroot:params:oauth:org": ownerId,
-    })
-      .setProtectedHeader({ alg: "ES256", kid: issuerJwk.kid, typ: "at+jwt" })
-      .setIssuer(issuer)
-      .setAudience(resource)
-      .setSubject("controller-exact")
-      .setIssuedAt()
-      .setExpirationTime("5m")
-      .sign(issuerKeys.privateKey);
-    const proof = await new SignJWT({ htu: url, htm: "GET", ath: createHash("sha256").update(token).digest("base64url") })
-      .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopJwk })
-      .setJti(randomUUID())
-      .setIssuedAt()
-      .sign(dpopKeys.privateKey);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const request = input instanceof Request ? input : new Request(String(input), init);
-        if (request.url === `${issuer}/.well-known/openid-configuration`) {
-          return Response.json({
-            issuer,
-            authorization_endpoint: `${issuer}/oauth2/authorize`,
-            token_endpoint: `${issuer}/oauth2/token`,
-            jwks_uri: `${issuer}/jwks`,
-          });
-        }
-        if (request.url === `${issuer}/jwks`) return Response.json({ keys: [issuerJwk] });
-        if (request.url === `${issuer}/oauth2/token`) {
-          const body = new URLSearchParams(await request.text());
-          expect(body.get("subject_token")).toBe(token);
-          expect(body.get("audience")).toBe(`${env.AGENCY_ORIGIN}/api`);
-          expect(body.get("scope")).toBe("agents:read");
-          return Response.json({ access_token: "agent-delegated-enbor-token" });
-        }
-        expect(request.headers.get("authorization")).toBe("Bearer agent-delegated-enbor-token");
-        expect(request.headers.get("x-enbor-project-id")).toBe(projectId);
-        return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
-      }),
-    );
+  it.each(["GET", "POST"])(
+    "[spec: agents/authoritative-projection] [spec: agents/existing-permissions] uses exact DPoP Agent authority for %s",
+    async (method) => {
+      await fixture.db.prepare("DROP TABLE realmroot_user_ama_grants").run();
+      const url = method === "GET" ? `${resource}/agents` : `${resource}/agents/existing-agent/permissions`;
+      if (method === "POST") env.OIDC_ISSUER = `${env.OIDC_ISSUER}/existing-permissions`;
+      const issuer = env.OIDC_ISSUER;
+      const issuerKeys = await generateKeyPair("ES256", { extractable: true });
+      const issuerJwk = await exportJWK(issuerKeys.publicKey);
+      issuerJwk.kid = "projection-issuer";
+      const dpopKeys = await generateKeyPair("ES256", { extractable: true });
+      const dpopJwk = await exportJWK(dpopKeys.publicKey);
+      const token = await new SignJWT({
+        scope: "agent:read agent:write",
+        client_id: "realmroot-cli",
+        cnf: { jkt: await calculateJwkThumbprint(dpopJwk) },
+        act: { iss: issuer, sub: "agent-projection-subject" },
+        "urn:realmroot:params:oauth:org": ownerId,
+      })
+        .setProtectedHeader({ alg: "ES256", kid: issuerJwk.kid, typ: "at+jwt" })
+        .setIssuer(issuer)
+        .setAudience(resource)
+        .setSubject(method === "GET" ? "controller-exact" : subjectId)
+        .setIssuedAt()
+        .setExpirationTime("5m")
+        .sign(issuerKeys.privateKey);
+      const proof = await new SignJWT({ htu: url, htm: method, ath: createHash("sha256").update(token).digest("base64url") })
+        .setProtectedHeader({ typ: "dpop+jwt", alg: "ES256", jwk: dpopJwk })
+        .setJti(randomUUID())
+        .setIssuedAt()
+        .sign(dpopKeys.privateKey);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = input instanceof Request ? input : new Request(String(input), init);
+          if (request.url === `${issuer}/.well-known/openid-configuration`) {
+            return Response.json({
+              issuer,
+              authorization_endpoint: `${issuer}/oauth2/authorize`,
+              token_endpoint: `${issuer}/oauth2/token`,
+              jwks_uri: `${issuer}/jwks`,
+            });
+          }
+          if (request.url === `${issuer}/jwks`) return Response.json({ keys: [issuerJwk] });
+          if (request.url === `${issuer}/oauth2/token`) {
+            const body = new URLSearchParams(await request.text());
+            if (body.get("audience") === "https://id.realmroot.dev/api") {
+              expect(body.get("subject_token")).toBe("ak-browser-access-token");
+              expect(body.get("scope")).toBe("agents:write");
+              return Response.json({ access_token: "platform-user-token" });
+            }
+            expect(body.get("subject_token")).toBe(token);
+            expect(body.get("audience")).toBe(`${env.AGENCY_ORIGIN}/api`);
+            expect(body.get("scope")).toBe("agents:read");
+            return Response.json({ access_token: "agent-delegated-enbor-token" });
+          }
+          if (request.url.endsWith("/permissions")) {
+            expect(request.headers.get("authorization")).toBe("Bearer platform-user-token");
+            const body = (await request.json()) as { scopes: string[] };
+            expect(body.scopes).toEqual(DEFAULT_GITHUB_SCOPES);
+            return Response.json({
+              items: body.scopes.map((scope) => ({ agentId: "existing-identity", scope, mode: "persistent", status: "active" })),
+            });
+          }
+          expect(request.headers.get("authorization")).toBe("Bearer agent-delegated-enbor-token");
+          expect(request.headers.get("x-enbor-project-id")).toBe(projectId);
+          if (method === "POST")
+            return Response.json({ metadata: metadata("existing-agent", "Existing"), spec: { identity: { agentId: "existing-identity" } } });
+          return Response.json({ data: [], pagination: { nextCursor: null, hasMore: false } });
+        }),
+      );
 
-    const response = await api.fetch(
-      new Request(url, { headers: { authorization: `DPoP ${token}`, dpop: proof, "API-Version": "2026-08-29" } }),
-      env,
-    );
-    expect(response.status, await response.clone().text()).toBe(200);
-  });
+      const response = await api.fetch(
+        new Request(url, {
+          method,
+          headers: { authorization: `DPoP ${token}`, dpop: proof, "API-Version": "2026-08-29", "content-type": "application/json" },
+          ...(method === "POST" ? { body: "{}" } : {}),
+        }),
+        env,
+      );
+      expect(response.status, await response.clone().text()).toBe(method === "POST" ? 204 : 200);
+    },
+  );
 
   it("[spec: machines/archive-environment] archives the authoritative Enbor Environment without a local Machine entity", async () => {
     await fixture.db.prepare("DROP TABLE machines").run();

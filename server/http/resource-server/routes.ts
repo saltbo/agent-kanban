@@ -202,6 +202,16 @@ function baseDocument(env: Env) {
           responses: { "200": entityResponse("Agent", { $ref: "#/components/schemas/Agent" }), ...projectionReadProblems },
         },
       },
+      "/agents/{agentId}/permissions": {
+        parameters: [{ name: "agentId", in: "path", required: true, schema: { type: "string" } }],
+        post: {
+          ...operation("createAgentPermissions", "agent:write", "Persistent default GitHub permissions configured", "204"),
+          description:
+            "Grant the default GitHub development, Issue and CI scopes to an existing bound Agent using the caller's saved user authorization. Existing equivalent permissions are reused; other grants are retained. No identity is created. Missing identity or user login returns 409. Repeat with an empty object to complete an interrupted grant.",
+          requestBody: { required: true, ...json({ type: "object", additionalProperties: false }) },
+          responses: { "204": response("Default GitHub permissions confirmed active"), ...projectionCreateProblems },
+        },
+      },
       "/machines": {
         get: {
           ...operation("listMachines", "machine:read", "Machines"),

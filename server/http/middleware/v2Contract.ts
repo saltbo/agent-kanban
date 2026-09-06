@@ -17,6 +17,7 @@ export function isPublishedV2Operation(method: string, path: string): boolean {
   if (/^\/api\/repositories\/[^/]+$/.test(path)) return method === "GET" || method === "DELETE";
   if (path === "/api/github-app/config" || path === "/api/github-app/repositories") return method === "GET";
   if (/^\/api\/repository-installations\/[^/]+$/.test(path)) return method === "PUT";
+  if (/^\/api\/agents\/[^/]+\/permissions$/.test(path)) return method === "POST";
   if (path === "/api/agents") return method === "GET" || method === "POST";
   if (/^\/api\/agents\/[^/]+$/.test(path)) return method === "GET";
   if (path === "/api/machines") return method === "GET" || method === "POST";

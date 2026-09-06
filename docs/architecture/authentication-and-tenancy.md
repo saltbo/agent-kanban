@@ -99,3 +99,15 @@ Acceptance: create a new Agent through Toolbox in Demo, inspect its permissions
 before assignment, then run a repository Task including Issue, PR, CI log, and
 review continuation operations. Use a new Session to prove existing grants can
 be acquired without controller approval. Keep existing Agent grants unchanged.
+
+## Permissions for existing Agents
+
+`POST /api/agents/{agentId}/permissions` requires `agent:write` and an empty JSON
+object. AK resolves the existing identity through the tenant-scoped Enbor project,
+then uses the same saved user grant, Token Exchange and GitHub defaults as Agent
+creation. It returns 204 after Realmroot confirms the grants. Equivalent grants
+are reused and other permissions are retained. It does not create or delete
+Agents or identities, and does not modify AK native grants. An unbound identity
+or missing user login returns 409; a permission upstream failure returns 502 with
+the cause. Repeating the explicit POST completes missing permissions. Ordinary
+reads and assignments still do not change existing permissions.
