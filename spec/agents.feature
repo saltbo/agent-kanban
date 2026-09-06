@@ -32,7 +32,7 @@ Feature: Agent projections
     And AK does not create an Inbox Trigger because Task assignment directly creates a Session
     And replays the compound operation without duplicate resources when its Idempotency-Key is retried
     And stores no local Agent entity
-    And grants the new identity its default AK and GitHub permissions before returning success
+    And grants the new identity its default GitHub permissions before returning success
     And a permission failure identifies the created Agent and a retry resumes without duplicates
 
   @journey:agents/assignment-subject @entrypoint:toolbox @proof:unit
@@ -77,3 +77,14 @@ Feature: Agent projections
     And Realmroot resolves the authorization Contexts internally without a preliminary AK query
     And missing scopes fail explicitly instead of returning partial permission success
     And existing Agents are not updated
+
+  @journey:agents/existing-permissions @entrypoint:toolbox @proof:integration
+  Scenario: Explicitly grant default GitHub permissions to an existing bound Agent
+    Given an authorized caller has a saved user grant and connected GitHub installations
+    When the caller posts an empty object to an existing Agent's permissions collection
+    Then AK resolves the identity from the current tenant's Enbor project
+    And grants the default persistent GitHub scopes through user Token Exchange
+    And preserves the existing Agent and identity on success or permission failure
+    And a repeated request reuses equivalent grants without removing other permissions
+    And an Agent without an identity is rejected without creating one
+    And missing user authorization and upstream failures are reported explicitly

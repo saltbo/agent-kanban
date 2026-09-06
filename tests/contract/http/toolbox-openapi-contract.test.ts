@@ -66,7 +66,7 @@ describe("published Resource Server contract", () => {
       ["/tasks/{taskId}/claims", "post"],
     ] as const;
 
-    expect(Object.values(contract.paths).flatMap((pathItem) => Object.keys(pathItem).filter((key) => key !== "parameters"))).toHaveLength(36);
+    expect(Object.values(contract.paths).flatMap((pathItem) => Object.keys(pathItem).filter((key) => key !== "parameters"))).toHaveLength(37);
     for (const [path, method] of additionalOperations) {
       expect(contract.paths[path]?.[method], `${method.toUpperCase()} ${path}`).toBeDefined();
     }
@@ -142,7 +142,7 @@ describe("published Resource Server contract", () => {
       .sort();
 
     expect(commands).toEqual(["wait"]);
-    for (const path of ["/agents", "/agents/{agentId}", "/machines", "/machines/{machineId}"]) {
+    for (const path of ["/agents", "/agents/{agentId}", "/agents/{agentId}/permissions", "/machines", "/machines/{machineId}"]) {
       expect(toolbox.paths).toHaveProperty(path);
     }
     expect(toolbox.paths).not.toHaveProperty("/ama/provision");
