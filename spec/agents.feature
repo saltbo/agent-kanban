@@ -72,7 +72,8 @@ Feature: Agent projections
   Scenario: New Agents receive permissions before their first task
     Given the creating user has connected GitHub and authorized the required scopes
     When AK provisions a new Agent
-    Then AK grants persistent AK permissions in the current tenant Context
-    And AK grants the development, Issue, and CI permissions in the connected GitHub Contexts
+    Then AK posts only the GitHub resource, development, Issue and CI scopes and persistent lifetime
+    And AK permissions use the existing native automatic authorization without explicit grants
+    And Realmroot resolves the authorization Contexts internally without a preliminary AK query
     And missing scopes fail explicitly instead of returning partial permission success
     And existing Agents are not updated

@@ -1,4 +1,3 @@
-import { RESOURCE_SCOPES } from "../../../server/auth/realmroot";
 import { DEFAULT_GITHUB_SCOPES } from "../../../server/usecases/agents/defaultPermissions";
 // @vitest-environment node
 
@@ -134,25 +133,13 @@ function delegatedAgencyFetch(scopes: string[], upstream: (request: Request) => 
     }
     if (request.url.startsWith("https://id.realmroot.dev/api/agents/")) {
       expect(request.headers.get("authorization")).toBe("Bearer platform-user-token");
-      const url = new URL(request.url);
-      if (url.pathname.endsWith("/permission-contexts")) {
-        const ak = url.searchParams.get("resource") === resource;
-        return Response.json({
-          resourceServerId: ak ? "ak-resource" : "github-resource",
-          items: [
-            {
-              id: ak ? ownerId : null,
-              name: ak ? "AK" : "GitHub",
-              authorizationDetail: { type: "context", id: ak ? ownerId : "github" },
-              authorizedScopes: [],
-              requestableScopes: ak ? RESOURCE_SCOPES : DEFAULT_GITHUB_SCOPES,
-            },
-          ],
-          pagination: { totalPages: 1 },
-        });
-      }
-      const body = (await request.json()) as { scope: string };
-      return Response.json({ agentId: "realmroot-concurrent", scope: body.scope, mode: "persistent", status: "active" });
+      expect(request.method).toBe("POST");
+      expect(new URL(request.url).pathname.endsWith("/permissions")).toBe(true);
+      const body = (await request.json()) as { resource: string; scopes: string[]; mode: string };
+      expect(Object.keys(body).sort()).toEqual(["mode", "resource", "scopes"]);
+      expect(body.resource).toBe(env.GITHUB_RESOURCE);
+      expect(body.scopes).toEqual(DEFAULT_GITHUB_SCOPES);
+      return Response.json({ items: body.scopes.map((scope) => ({ agentId: "realmroot-concurrent", scope, mode: "persistent", status: "active" })) });
     }
     return upstream(request);
   });
