@@ -3,7 +3,7 @@ import { applyRequestIdHeader } from "@server/http/middleware/requestContext";
 import { isPublishedV2Operation, v2Problem } from "@server/http/middleware/v2Contract";
 import { AgencyProjectInitializationBusy } from "@server/usecases/agency/ensureAgencyProject";
 import { RealmrootDelegationFailure } from "@server/usecases/agency/failures";
-import { AgentPermissionProvisioningError } from "@server/usecases/agents/defaultPermissions";
+import { AgentCreationCleanupError, AgentPermissionProvisioningError } from "@server/usecases/agents/defaultPermissions";
 import { ApplicationError } from "@server/usecases/applicationError";
 import type { ErrorHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -12,9 +12,11 @@ export const apiErrorHandler: ErrorHandler = (error, c) => {
   applyRequestIdHeader(c);
   c.set("requestError", error);
   const published = isPublishedV2Operation(c.req.method, c.req.path);
+  if (error instanceof AgentCreationCleanupError) {
+    return v2Problem(c, 502, "agent-creation-cleanup-failed", "Agent creation cleanup failed", error.message);
+  }
   if (error instanceof AgentPermissionProvisioningError) {
-    c.header("Location", new URL(`/api/agents/${encodeURIComponent(error.agentId)}`, c.req.url).toString());
-    return v2Problem(c, 409, "agent-permissions-incomplete", "Agent permissions incomplete", error.message);
+    return v2Problem(c, 409, "agent-permissions-failed", "Agent permissions failed", error.message);
   }
   if (error instanceof RealmrootDelegationFailure) {
     if (error.kind === "user-login-required") {

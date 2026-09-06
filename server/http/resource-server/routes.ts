@@ -189,7 +189,9 @@ function baseDocument(env: Env) {
           responses: { "200": response("Agent collection", { $ref: "#/components/schemas/AgentCollection" }), ...projectionReadProblems },
         },
         post: {
-          ...operation("createAgent", "agent:write", "Agent created with persistent AK and GitHub development permissions", "201"),
+          ...operation("createAgent", "agent:write", "Agent created after persistent GitHub permissions are granted", "201"),
+          description:
+            "Create the identity, grant default GitHub permissions, then create the bound Agent. Permission failure cleans up both identities and returns 409 agent-permissions-failed. After successful cleanup, use a new username and Idempotency-Key; deleted usernames remain reserved. Cleanup failure returns 502 agent-creation-cleanup-failed. An uncertain Agent creation outcome preserves its identity for retry with the original key. AK scopes use native automatic authorization.",
           parameters: [version, idempotencyKey],
           requestBody: { required: true, ...json({ $ref: "#/components/schemas/AgentWrite" }) },
           responses: { "201": createdResponse("Agent created", { $ref: "#/components/schemas/Agent" }), ...projectionCreateProblems },

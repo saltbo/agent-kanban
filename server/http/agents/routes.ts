@@ -14,7 +14,7 @@ import {
   externalCreationIdempotencyKey,
   readJsonBody,
 } from "@server/http/resource-server/request";
-import { AgentPermissionProvisioningError, grantDefaultAgentPermissions } from "@server/usecases/agents/defaultPermissions";
+import { grantDefaultAgentPermissions } from "@server/usecases/agents/defaultPermissions";
 import { createAgencyAgent } from "@server/usecases/agents/projectAgents";
 import { AGENCY_RUNTIMES } from "@shared";
 import type { Hono } from "hono";
@@ -46,25 +46,22 @@ export function registerAgentRoutes(api: Hono<{ Bindings: Env }>): void {
       scopes: ["agents:write"],
     });
     const { client } = await agencyDependencies(c, ["identities:write", "agents:write"]);
-    const agent = await createAgencyAgent(client, {
-      name,
-      username,
-      runtime,
-      systemPrompt,
-      description,
-      provider,
-      model,
-      skills,
-      idempotencyKey,
-    });
-    try {
-      if (!agent.spec.identity) throw new Error("Enbor did not return a bound Realmroot identity");
-      await grantDefaultAgentPermissions(createAgentPermissionGateway(platformResource, permissionToken), agent.spec.identity.agentId, {
-        githubResource: c.env.GITHUB_RESOURCE,
-      });
-    } catch (error) {
-      throw new AgentPermissionProvisioningError(agent.metadata.uid, error);
-    }
+    const agent = await createAgencyAgent(
+      client,
+      {
+        name,
+        username,
+        runtime,
+        systemPrompt,
+        description,
+        provider,
+        model,
+        skills,
+        idempotencyKey,
+      },
+      createAgentPermissionGateway(platformResource, permissionToken),
+      c.env.GITHUB_RESOURCE,
+    );
     const represented = agentRepresentation(agent, c.req.url);
     const etag = await representationEtag(represented);
     await completeExternalCreation(c, "agents", agent.metadata.uid, etag.slice(1, -1), represented);
